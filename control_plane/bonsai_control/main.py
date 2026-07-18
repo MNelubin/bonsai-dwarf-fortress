@@ -31,7 +31,7 @@ async def lifespan(_: FastAPI):
     close_pool()
 
 
-app = FastAPI(title="Bonsai Control Plane", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Bonsai Control Plane", version="0.4.0", lifespan=lifespan)
 
 
 def _event(

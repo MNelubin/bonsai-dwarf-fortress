@@ -121,9 +121,7 @@ class Api:
         )
 
     def complete(self, job: dict[str, Any], result: dict[str, Any], artifacts: list[str]) -> None:
-        completion_status = (
-            "candidate" if result.get("changed") and result.get("candidate_requested") else "completed"
-        )
+        completion_status = "candidate" if result.get("changed") else "rejected"
         self.request(
             "POST",
             f"/api/v1/jobs/{job['id']}/complete",
@@ -279,11 +277,13 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
 def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     repo, base_commit, branch = prepare_run(config, job)
     trace_path = repo.parent / "opencode-trace.jsonl"
+    previous_cycle = job.get("payload", {}).get("previous_cycle") or {}
     prompt = f"""
 Work autonomously as the senior coding and research agent for Bonsai Dwarf Fortress.
 
 Objective payload: {json.dumps(job.get('payload', {}), ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
+Previous cycle outcome: {json.dumps(previous_cycle, ensure_ascii=False)}
 
 You are root inside an isolated Debian LXC containing Steam Dwarf Fortress 53.15 and DFHack
 53.15-r2 at /srv/df-bonsai/current. This repository clone has no GitHub, PostgreSQL, Steam, or
@@ -300,6 +300,18 @@ Finish only when the working tree contains a tested, reviewable improvement; exp
 Automatic promotion only accepts bridge/, game_runner/, player/, skills/, curricula/,
 evaluator_public/, tests/, and docs/. Every candidate must add or update a public test or evaluator
 artifact. Do not add symlinks, submodules, secrets, generated binaries, or files over 2 MiB.
+
+Execution discipline is mandatory:
+1. Use at most 6 discovery tool calls before the first write/edit. Inspect narrowly with `file`,
+   `find -maxdepth`, `grep -m`, and bounded output; never dump a whole binary or directory tree.
+2. Before reading any unknown path under /srv/df-bonsai, run `file` on it. Only read known text
+   extensions such as .lua, .txt, .md, .json, .proto, .py, or .rst. Never use cat/head on an
+   executable, shared object, archive, image, database, or extensionless unknown file.
+3. Create a small coherent implementation early. If live game control is not yet supportable, add a
+   deterministic bridge protocol/contract, captured verified API findings, and executable pure tests.
+4. You MUST change at least one implementation or documentation file and at least one file under
+   tests/ or evaluator_public/. Run those tests. A prose answer with a clean git tree is a rejected
+   cycle. Check `git status --short` before finishing.
 """.strip()
 
     command = [

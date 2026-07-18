@@ -7,8 +7,9 @@ from .settings import get_settings
 
 DEFAULT_CONSTRAINTS = {
     "editable_paths": ["bridge/", "game_runner/", "player/", "skills/", "curricula/", "tests/", "docs/"],
-    "wall_time_seconds": 3600,
-    "llm_request_limit": 40,
+    "wall_time_seconds": 1800,
+    "llm_request_limit": 24,
+    "discovery_tool_budget_before_write": 6,
     "episode_budget": 20,
     "promotion_mode": "automatic_if_gated",
 }
@@ -62,6 +63,27 @@ def tick() -> None:
         if objective is None:
             return
 
+        previous = connection.execute(
+            """
+            SELECT id, state, result, error
+            FROM bonsai.jobs
+            WHERE objective_id = %s AND state IN ('completed', 'rejected', 'failed')
+            ORDER BY completed_at DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """,
+            (objective["id"],),
+        ).fetchone()
+        previous_cycle = None
+        if previous is not None:
+            summary = previous["result"].get("summary") if previous["result"] else None
+            previous_cycle = {
+                "job_id": str(previous["id"]),
+                "state": previous["state"],
+                "model": (previous["result"] or {}).get("model"),
+                "changed": (previous["result"] or {}).get("changed"),
+                "summary_tail": (summary or previous["error"] or "")[-2_000:],
+            }
+
         job = connection.execute(
             """
             INSERT INTO bonsai.jobs
@@ -72,7 +94,13 @@ def tick() -> None:
             (
                 objective["id"],
                 objective["priority"],
-                json.dumps({"objective": objective["title"], "description": objective["description"]}),
+                json.dumps(
+                    {
+                        "objective": objective["title"],
+                        "description": objective["description"],
+                        "previous_cycle": previous_cycle,
+                    }
+                ),
                 json.dumps(DEFAULT_CONSTRAINTS),
                 system_state["current_baseline_commit"],
             ),

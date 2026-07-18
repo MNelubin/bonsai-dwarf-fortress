@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bonsai-control"
-version = "0.3.0"
+version = "0.4.0"
 description = "Trusted orchestrator and self-tracking dashboard for Bonsai Dwarf Fortress"
 requires-python = ">=3.13"
 dependencies = [
