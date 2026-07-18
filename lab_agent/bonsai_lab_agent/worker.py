@@ -515,8 +515,14 @@ Execution discipline is mandatory:
 
     started = time.monotonic()
     last_heartbeat = 0.0
-    def run_harness(harness_prompt: str, phase: str, append: bool) -> None:
+    def run_harness(
+        harness_prompt: str,
+        phase: str,
+        append: bool,
+        max_tool_uses: int | None = None,
+    ) -> None:
         nonlocal last_heartbeat
+        budget_exhausted = False
         command = [
             config.opencode_bin,
             "run",
@@ -547,6 +553,14 @@ Execution discipline is mandatory:
                     elapsed = time.monotonic() - started
                     if elapsed > config.harness_timeout:
                         raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
+                    if max_tool_uses is not None and trace_path.exists():
+                        tool_uses = trace_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        ).count('"type":"tool_use"')
+                        if tool_uses >= max_tool_uses:
+                            budget_exhausted = True
+                            stop_process_group(process)
+                            break
                     if elapsed - last_heartbeat >= 35:
                         try:
                             progress = {
@@ -563,11 +577,24 @@ Execution discipline is mandatory:
                 return_code = process.returncode
             finally:
                 stop_process_group(process)
+        if budget_exhausted:
+            with trace_path.open("a", encoding="utf-8") as trace:
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "harness_budget_exhausted",
+                            "phase": phase,
+                            "max_tool_uses": max_tool_uses,
+                        }
+                    )
+                    + "\n"
+                )
+            return
         if return_code != 0:
             trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
             raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
 
-    run_harness(prompt, "opencode", append=False)
+    run_harness(prompt, "opencode", append=False, max_tool_uses=8 if discovery_mode else None)
     if discovery_mode and discovery_needs_synthesis(repo):
         synthesize_discovery(config, api, job, repo, trace_path, started)
 
