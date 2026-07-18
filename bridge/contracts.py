@@ -63,3 +63,8 @@ def validate_act_input(action):
     return isinstance(action, dict) and (
         "command" in action or "name" in action
     )
+
+
+def validate_advance_result(result):
+    """Return True if the advance result has the required 'ok' boolean."""
+    return isinstance(result, dict) and isinstance(result.get("ok"), bool)

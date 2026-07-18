@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from unittest import mock
 
 from bridge.contracts import (
-    CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_episode_metrics,
-    validate_episode_outcome, validate_act_input,
+    CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_advance_result,
+    validate_episode_metrics, validate_episode_outcome, validate_act_input,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -963,6 +963,119 @@ class TestConfidenceIntervals:
         assert lo == hi
 
 
+class TestAdvanceValidation:
+    """validate_advance_result enforces the advance output contract."""
+
+    def test_passes_with_ok_bool(self):
+        assert validate_advance_result({"ok": True}) is True
+        assert validate_advance_result({"ok": False}) is True
+        assert validate_advance_result({"ok": True, "advanced_ticks": 100}) is True
+
+    def test_fails_without_ok(self):
+        assert validate_advance_result({"message": "hi"}) is False
+
+    def test_fails_non_bool_ok(self):
+        assert validate_advance_result({"ok": 1}) is False
+        assert validate_advance_result({"ok": "yes"}) is False
+        assert validate_advance_result({"ok": None}) is False
+
+    def test_fails_non_dict(self):
+        assert validate_advance_result("ok") is False
+        assert validate_advance_result([{"ok": True}]) is False
+
+
+class TestDiskCheckpoint:
+    """EpisodeRunner save_checkpoint / load_checkpoint roundtrips correctly."""
+
+    _id_counter = 0
+
+    @classmethod
+    def _next_id(cls):
+        cls._id_counter += 1
+        return cls._id_counter
+
+    def _tmp_file(self, suffix=".json"):
+        return os.path.join(
+            os.path.dirname(__file__),
+            f".checkpoint_test_{TestDiskCheckpoint._next_id()}{suffix}",
+        )
+
+    @staticmethod
+    def _cleanup(f):
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
+
+    def test_save_and_load_file(self):
+        f = self._tmp_file()
+        try:
+            r = EpisodeRunner(seed=7, max_steps=10, action_budget=6)
+            m1 = r.run(baseline_policy)
+            written = r.save_checkpoint(f)
+            assert os.path.isfile(written)
+
+            r2 = EpisodeRunner.load_checkpoint(f)
+            assert r2.seed == 7
+            assert r2.metrics["steps_taken"] == m1["steps_taken"]
+            assert r2.metrics["survivors"] == m1["survivors"]
+        finally:
+            self._cleanup(f)
+
+    def test_save_to_directory(self):
+        d = os.path.join(os.path.dirname(__file__), ".ckpt_dir_test")
+        try:
+            os.makedirs(d, exist_ok=True)
+            r = EpisodeRunner(seed=3, max_steps=8, action_budget=5)
+            m1 = r.run(baseline_policy)
+            written = r.save_checkpoint(d)
+            assert written.startswith(os.path.abspath(d))
+
+            r2 = EpisodeRunner.load_checkpoint(d)
+            assert r2.metrics["steps_taken"] == m1["steps_taken"]
+        finally:
+            for f in os.listdir(d):
+                self._cleanup(os.path.join(d, f))
+            try:
+                os.rmdir(d)
+            except OSError:
+                pass
+
+    def test_roundtrip_preserves_trace_determinism(self):
+        f = self._tmp_file()
+        try:
+            r = EpisodeRunner(seed=42, max_steps=20, action_budget=15)
+            m1_before = r.run(baseline_policy)
+            trace_a = r.get_trace()
+
+            written = r.save_checkpoint(f)
+            r2 = EpisodeRunner.load_checkpoint(written)
+            # The restored runner reproduces the same metrics.
+            assert r2.metrics["steps_taken"] == m1_before["steps_taken"]
+        finally:
+            self._cleanup(f)
+
+    def test_load_nonexistent_raises(self):
+        try:
+            EpisodeRunner.load_checkpoint("/tmp/does_not_exist_bonsai.json")
+            assert False, "Expected FileNotFoundError"
+        except FileNotFoundError:
+            pass
+
+    def test_metrics_after_restore_are_valid_contract(self):
+        f = self._tmp_file()
+        try:
+            r = EpisodeRunner(seed=99, max_steps=30, action_budget=20)
+            r.run(cpu_policy)
+            written = r.save_checkpoint(f)
+
+            r2 = EpisodeRunner.load_checkpoint(written)
+            # The restored metrics conform to the schema.
+            assert validate_episode_metrics(r2.metrics) is True
+        finally:
+            self._cleanup(f)
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -980,7 +1093,8 @@ if __name__ == "__main__":
                   TestTraceDeterminism, TestRunnerEnhancements,
                   TestCitizenSimulation, TestBenchmarkRunner,
                   TestValidationTypeSafety, TestEpisodeSerialization,
-                  TestConfidenceIntervals]
+                  TestConfidenceIntervals, TestAdvanceValidation,
+                  TestDiskCheckpoint]
 
     for cls in tc_classes:
         inst = cls()

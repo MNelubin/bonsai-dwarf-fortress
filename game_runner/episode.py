@@ -199,6 +199,56 @@ class EpisodeRunner:
         return json.dumps(payload, indent=2)
 
     # ------------------------------------------------------------------
+    def save_checkpoint(self, path):
+        """Write a full episode snapshot to *path* for later restoration.
+
+        Parameters:
+            path: filesystem path (file or directory).  If the path is an
+                  existing directory a file named ``<save_id>.checkpoint.json``
+                  will be created inside it.
+        Returns:
+            Normalized absolute path that was written.
+        """
+        payload = self.serialize()
+        if os.path.isdir(path):
+            dest = os.path.join(path, f"{self.save_id}.checkpoint.json")
+        else:
+            dest = path
+
+        # Ensure parent directory exists.
+        parent = os.path.dirname(dest) or "."
+        os.makedirs(parent, exist_ok=True)
+
+        with open(dest, "w") as fp:
+            json.dump(payload, fp, indent=2)
+
+        return os.path.abspath(dest)
+
+    @classmethod
+    def load_checkpoint(cls, path):
+        """Restore an EpisodeRunner from a previously written checkpoint file.
+
+        Parameters:
+            path: filesystem path to a ``.checkpoint.json`` file created by
+                  ``save_checkpoint()``.  May also be a directory in which case
+                  the first ``*.checkpoint.json`` file inside will be used.
+        Returns:
+            Deserialized EpisodeRunner instance at the saved evaluation point.
+        """
+        if os.path.isdir(path):
+            files = [f for f in os.listdir(path) if f.endswith(".checkpoint.json")]
+            if not files:
+                raise FileNotFoundError(
+                    f"No *.checkpoint.json found inside {path}"
+                )
+            path = os.path.join(path, sorted(files)[0])
+
+        with open(path) as fp:
+            payload = json.load(fp)
+
+        return cls.deserialize(payload)
+
+    # ------------------------------------------------------------------
     def serialize(self):
         """Return a JSON-serializable dict of the complete episode state.
 
