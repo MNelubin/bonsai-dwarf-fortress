@@ -198,7 +198,7 @@ def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
     note_markdown = payload.get("note_markdown")
     if not isinstance(note_path, str) or DISCOVERY_NOTE_PATH.fullmatch(note_path) is None:
         raise ValueError("structured discovery returned an unsafe note_path")
-    if not isinstance(index_markdown, str) or not 200 <= len(index_markdown) <= 50_000:
+    if not isinstance(index_markdown, str) or not 50 <= len(index_markdown) <= 50_000:
         raise ValueError("structured discovery returned an invalid INDEX.md")
     if not isinstance(note_markdown, str) or not 500 <= len(note_markdown) <= 100_000:
         raise ValueError("structured discovery returned an invalid focused note")
