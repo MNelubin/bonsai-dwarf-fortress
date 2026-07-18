@@ -27,6 +27,7 @@ SECRET_PATTERNS = (
     re.compile(rb"BONSAI_(?:LAB|ADMIN)_TOKEN\s*="),
     re.compile(rb"postgres(?:ql)?://[^\s:/]+:[^\s@]+@"),
 )
+MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 
 
 class GateRejected(RuntimeError):
@@ -47,23 +48,29 @@ class Candidate:
 
 
 def _run(command: list[str], cwd: Path | None = None, timeout: int = 120) -> str:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        env={
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "HOME": "/home/bonsai",
-            "LANG": "C.UTF-8",
-            "GIT_TERMINAL_PROMPT": "0",
-        },
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env={
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "HOME": "/home/bonsai",
+                "LANG": "C.UTF-8",
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+        )
+    except subprocess.CalledProcessError as exc:
+        output = (exc.stdout or "").strip()[-4_000:]
+        raise RuntimeError(
+            f"command failed ({exc.returncode}): {' '.join(command)}\n{output}"
+        ) from exc
     return completed.stdout.strip()
 
 
@@ -89,6 +96,27 @@ def _safe_path(path: str) -> bool:
         and "\\" not in path
         and not path.startswith(".git")
     )
+
+
+def _knowledge_link_target(source_path: str, raw_target: str) -> str | None:
+    target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+    if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+        return None
+    target = target.split("#", 1)[0].split("?", 1)[0]
+    if not target:
+        return None
+    resolved = PurePosixPath(source_path).parent / target
+    normalized: list[str] = []
+    for part in resolved.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not normalized:
+                return ""
+            normalized.pop()
+        else:
+            normalized.append(part)
+    return "/".join(normalized)
 
 
 def inspect_candidate(
@@ -161,12 +189,37 @@ def inspect_candidate(
                     reasons.append(f"discovery mode may only change knowledge/: {path}")
             if not any(path.endswith((".md", ".json")) for path in changed_paths):
                 reasons.append("discovery candidate must contain Markdown or JSON knowledge")
-            if subprocess.run(
+            index_exists = subprocess.run(
                 ["git", "-C", str(repo), "cat-file", "-e", f"{candidate_commit}:knowledge/INDEX.md"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-            ).returncode != 0:
+            ).returncode == 0
+            if not index_exists:
                 reasons.append("discovery candidate must provide knowledge/INDEX.md")
+            knowledge_files = _git(repo, "ls-tree", "-r", "--name-only", candidate_commit, "--", "knowledge/").splitlines()
+            substantive_notes = [
+                path for path in knowledge_files
+                if path != "knowledge/INDEX.md" and path.endswith((".md", ".json"))
+            ]
+            checks["knowledge_files"] = knowledge_files
+            if not substantive_notes:
+                reasons.append("discovery candidate must provide at least one knowledge note besides INDEX.md")
+            broken_links: list[dict[str, str]] = []
+            for source_path in (path for path in knowledge_files if path.endswith(".md")):
+                markdown = _git(repo, "show", f"{candidate_commit}:{source_path}")
+                for raw_target in MARKDOWN_LINK.findall(markdown):
+                    target = _knowledge_link_target(source_path, raw_target)
+                    if target is None:
+                        continue
+                    if not target or not target.startswith("knowledge/") or subprocess.run(
+                        ["git", "-C", str(repo), "cat-file", "-e", f"{candidate_commit}:{target}"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    ).returncode != 0:
+                        broken_links.append({"source": source_path, "target": raw_target})
+            checks["broken_knowledge_links"] = broken_links
+            if broken_links:
+                reasons.append("discovery knowledge contains broken or escaping local links")
         else:
             if any(path.startswith("knowledge/") for path in changed_paths):
                 reasons.append("coding mode may not change the discovery knowledge library")

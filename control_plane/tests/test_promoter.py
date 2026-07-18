@@ -61,11 +61,43 @@ def test_discovery_candidate_only_updates_knowledge(tmp_path: Path):
     repo, base, candidate, bundle = candidate_bundle(
         tmp_path, "knowledge/INDEX.md", include_test_evidence=False
     )
+    (repo / "knowledge" / "bridge.md").write_text("# Bridge\n", encoding="utf-8")
+    (repo / "knowledge" / "INDEX.md").write_text(
+        "# Index\n\n[Bridge](bridge.md)\n", encoding="utf-8"
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "--amend", "--no-edit")
+    candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "-f", "agent/test", candidate)
+    bundle.unlink()
+    git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
     report = inspect_candidate(
         repo, bundle, base, candidate, tmp_path / "eval", job_type="discovery_cycle"
     )
     assert report["allowed"] is True
     assert report["job_type"] == "discovery_cycle"
+
+
+def test_discovery_rejects_missing_index_targets(tmp_path: Path):
+    repo, base, candidate, bundle = candidate_bundle(
+        tmp_path, "knowledge/INDEX.md", include_test_evidence=False
+    )
+    (repo / "knowledge" / "INDEX.md").write_text(
+        "# Index\n\n[Missing](dfhack/missing.md)\n", encoding="utf-8"
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "--amend", "--no-edit")
+    candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "-f", "agent/test", candidate)
+    bundle.unlink()
+    git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
+    with pytest.raises(GateRejected) as rejected:
+        inspect_candidate(
+            repo, bundle, base, candidate, tmp_path / "eval", job_type="discovery_cycle"
+        )
+    reasons = rejected.value.report["reasons"]
+    assert any("besides INDEX.md" in reason for reason in reasons)
+    assert any("broken or escaping" in reason for reason in reasons)
 
 
 def test_discovery_rejects_code_changes(tmp_path: Path):
