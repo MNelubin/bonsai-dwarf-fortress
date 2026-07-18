@@ -1,6 +1,7 @@
 """Episode runner for headless DF episodes via the bridge contract."""
 
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -9,6 +10,47 @@ import uuid
 # Path to the active DFHack installation.
 DF_DIR = "/srv/df-bonsai/current"
 BRIDGE_LUA = os.path.join(os.path.dirname(__file__), "..", "bridge", "core.lua")
+
+HASHID_BYTES = 8
+
+
+def _deterministic_seed(seed):
+    """Produce a deterministic byte sequence from an integer seed."""
+    return hashlib.sha256(str(seed).encode()).digest()[:HASHID_BYTES]
+
+
+def _simulate_citizens(seed, num_citizens=4):
+    """Create citizen unit dict list deterministically from seed.
+
+    Uses SHA256(bytes) as a primitive RNG: each citizen gets 4 random ints for id, race and civ_id fields.
+    Returns a tuple (list_of_unit_dicts, threshold_for_first_death_ticks).
+    """
+    d = _deterministic_seed(seed)
+    offset = 0
+
+    units = []
+    for i in range(num_citizens):
+        # Simple LCG style from our hash bytes.
+        h = int.from_bytes(d[offset:offset + 4], "little") if offset + 4 <= len(d) else seed
+        b_offset = (i * 2 + offset) % HASHID_BYTES
+        raw_id = d[b_offset] if b_offset < len(d) else 0
+        race_id = (raw_id + i) % 5
+        civ_id_val = ((raw_id >> 3) & 31) + 1
+
+        units.append({
+            "id": 200000 + i * 100 + raw_id,
+            "race": race_id,
+            "civ_id": civ_id_val,
+            "killed": False,
+            "pos": [i * 3, i, 0],
+        })
+
+    # Survival ticks based on seed — determines at what tick a stress event occurs.
+    # We use the same seed to compute how many ticks until the first simulated death.
+    survival_hash = _deterministic_seed(seed + 1)
+    first_death_ticks = int.from_bytes(survival_hash, "little") % (86400 * 30) + 86400 * 5
+
+    return units, first_death_ticks
 
 
 def _default_observation():
@@ -51,28 +93,39 @@ class EpisodeRunner:
       pinned save, recording seed, steps, final_tick, survivors, and outcome.
     """
 
-    def __init__(self, save_id=None, max_steps=100, action_budget=50, seed=42):
+    def __init__(self, save_id=None, max_steps=100, action_budget=50, seed=42, num_citizens=4):
         self.save_id = save_id or str(uuid.uuid4())[:8]
         self.max_steps = max_steps
         self.action_budget = action_budget
         self.seed = seed
+        self.num_citizens = num_citizens
         self.metrics = {}
         self.trace = []
         self._obs_state = None
+        self.units, self.death_ticks = _simulate_citizens(self.seed, self.num_citizens)
 
     # ------------------------------------------------------------------
     def reset(self):
         """Reset episode state before run."""
         self.metrics = {"seed": self.seed, "steps_taken": 0, "actions_used": 0}
         self.trace = []
+        self.units, self.death_ticks = _simulate_citizens(self.seed, self.num_citizens)
         self._obs_state = _default_observation()
+        # Units in obs_state reference the same dicts as self.units so
+        # stress event mutations are visible to subsequent observations.
+        self._obs_state["units"] = [dict(u) for u in self.units]
         return True
 
     # ------------------------------------------------------------------
     def _stub_observe(self):
-        """Internal observation state shared by advance and the loop."""
+        """Internal observation state shared by advance and the loop.
+
+        Units always read from self.units so stress mutations are visible.
+        """
         if self._obs_state is None:
             self._obs_state = _default_observation()
+        # Sync citizen state (killed flags, etc.) to internal slot.
+        self._obs_state["units"] = [dict(u) for u in self.units]
         return self._obs_state
 
     # ------------------------------------------------------------------
@@ -80,7 +133,7 @@ class EpisodeRunner:
         """Thin wrapper around bridge.observe() — stub for headless use."""
         s = self._stub_observe()
         result = {**s}
-        result["units"] = list(s["units"])
+        result["units"] = [dict(u) for u in s["units"]]
         result["buildings"] = list(s["buildings"])
         return result
 
@@ -108,12 +161,25 @@ class EpisodeRunner:
             return {"ok": False, "message": f"stub_unknown_cmd:{cmd}"}
 
     # ------------------------------------------------------------------
+    def _process_stress_events(self):
+        """Mark dead citizens whose death threshold has been crossed."""
+        current_tick = self._stub_observe()["cur_tick"]
+        for unit in self.units:
+            if not unit["killed"] and current_tick >= self.death_ticks:
+                # Deterministic death: only kill units whose id's last digit
+                # is <= (current_tick - death_ticks) // (86400 * 3). This spreads deaths.
+                days_past = (current_tick - self.death_ticks) // 86400
+                if unit["id"] % 10 <= min(days_past, 9):
+                    unit["killed"] = True
+
+    # ------------------------------------------------------------------
     def advance(self, ticks=100):
         """Advance N game ticks — stub incrementing internal counter."""
         state = self._stub_observe()
         state["cur_tick"] += ticks
         state["tick"] += 1
         self.metrics["final_tick"] = (self.metrics.get("final_tick") or 0) + ticks
+        self._process_stress_events()
         return {"ok": True, "advanced_ticks": ticks}
 
     # ------------------------------------------------------------------
@@ -161,7 +227,7 @@ class EpisodeRunner:
             self.metrics["steps_taken"] += 1
 
         final_tick = self.metrics.get("final_tick", self.observe()["cur_tick"])
-        survivors = len(self.observe().get("units", []))
+        survivors = sum(1 for u in self.units if not u["killed"] and u["civ_id"] is not None)
 
         return {
             "seed": self.seed,

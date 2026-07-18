@@ -130,6 +130,45 @@ def aggregate_runs(metrics_list):
 
 
 # ---------------------------------------------------------------------------
+# Benchmarking helpers
+# ---------------------------------------------------------------------------
+def benchmark_runners(*runner_policies, num_runs=10, max_steps=100, action_budget=50):
+    """Run a set of policies multiple times and return per-policy aggregates.
+
+    Parameters:
+        *runner_policies: tuples of (policy_name, policy_callable) or just callables.
+        num_runs: how many seeded episodes to run per policy.
+        max_steps/max_budget: passed through EpisodeRunner constructor.
+
+    Returns:
+        dict mapping policy name -> aggregate stats from `aggregate_runs()`.
+    """
+    from game_runner.episode import EpisodeRunner
+
+    results = {}
+    for item in runner_policies:
+        if isinstance(item, tuple):
+            name, policy = item
+        else:
+            name = getattr(policy, "__name__", "unnamed")  # noqa: E999
+            policy = item
+
+        metrics_list = []
+        for i in range(num_runs):
+            runner = EpisodeRunner(
+                seed=i * 1000 + hash(name) % 100,  # Unique seeds per policy.
+                max_steps=max_steps,
+                action_budget=action_budget,
+            )
+            m = runner.run(policy)
+            metrics_list.append(m)
+
+        results[name] = aggregate_runs(metrics_list)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Verification helpers
 # ---------------------------------------------------------------------------
 def verify_trace_determinism(trace_a, trace_b):
