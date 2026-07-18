@@ -19,6 +19,7 @@ from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
 from player.skill_chain import make_skill_chain
 from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, Skill
 from curricula.levels import CURRICULUM_LEVELS, get_level, run_curriculum
+from evaluator_public import score_episode, aggregate_runs, verify_trace_determinism, contract_checksum
 
 
 def _sample_obs(tick=0, paused=True, n_units=4):
@@ -515,6 +516,135 @@ class TestSkillChainPlayer:
         assert metrics["final_tick"] >= TICKS_7D
 
 
+class TestPublicEvaluator:
+    """evaluator_public.score_episode and aggregate_runs are correct."""
+
+    def test_score_perfect_episode(self):
+        m = {
+            "seed": 1, "steps_taken": 6,
+            "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+            "actions_used": 6, "outcome": "success",
+        }
+        score, verdict = score_episode(m)
+        assert isinstance(score, float) and 0 <= score <= 1
+        assert verdict == "pass"
+
+    def test_score_zero_ticks(self):
+        m = {
+            "seed": 2, "steps_taken": 1,
+            "final_tick": 0, "survivors": 0,
+            "actions_used": 1, "outcome": "failure",
+        }
+        score, verdict = score_episode(m)
+        assert score < 0.5
+        assert verdict == "failed"
+
+    def test_score_partial_progress(self):
+        half_ticks = TICKS_PER_DAY * 30 / 2
+        m = {
+            "seed": 3, "steps_taken": 4,
+            "final_tick": half_ticks, "survivors": 1,
+            "actions_used": 4, "outcome": "success",
+        }
+        score, verdict = score_episode(m)
+        assert 0.5 <= score <= 1.0
+        assert verdict == "pass" or verdict == "below_baseline"
+
+    def test_score_invalid_metrics(self):
+        score, verdict = score_episode({"garbage": True})
+        assert score == 0.0
+        assert verdict == "failed"
+
+    def test_aggregate_empty(self):
+        agg = aggregate_runs([])
+        assert agg["runs"] == 0
+        assert agg["std_dev"] == 0.0
+        assert agg["worst_run"] is None
+
+    def test_aggregate_stats(self):
+        runs = [
+            {"seed": i, "steps_taken": 5,
+             "final_tick": TICKS_PER_DAY * (30 if i < 3 else 10),
+             "survivors": 4 if i < 3 else 0,
+             "actions_used": 5, "outcome": "success"}
+            for i in range(5)
+        ]
+        agg = aggregate_runs(runs)
+        assert agg["runs"] == 5
+        assert 0 <= agg["mean_score"] <= 1
+        assert agg["std_dev"] >= 0
+        assert len(agg["failing_runs"]) == 2
+
+
+class TestTraceDeterminism:
+    """Episode traces are byte-deterministic across identical runs."""
+
+    def test_same_seed_identical_trace(self):
+        ra = EpisodeRunner(seed=42, max_steps=30, action_budget=25)
+        ra.run(baseline_policy)
+        ta = ra.get_trace()
+
+        rb = EpisodeRunner(seed=42, max_steps=30, action_budget=25)
+        rb.run(baseline_policy)
+        tb = rb.get_trace()
+
+        ok, _ = verify_trace_determinism(ta, tb)
+        assert ok is True
+
+    def test_different_seed_differs(self):
+        ra = EpisodeRunner(seed=1, max_steps=10, action_budget=8)
+        ra.run(cpu_policy)
+
+        rb = EpisodeRunner(seed=99, max_steps=10, action_budget=8)
+        rb.run(cpu_policy)
+
+        ok, details = verify_trace_determinism(ra.get_trace(), rb.get_trace())
+        assert ok is False or len(ra.get_trace()) == len(rb.get_trace())
+
+    def test_observation_checksum(self):
+        obs = _sample_obs(tick=5000, paused=False, n_units=3)
+        cs1 = contract_checksum(obs)
+        cs2 = contract_checksum(obs)
+        assert cs1 == cs2
+        # Tick excluded: same content regardless of tick count.
+        obs_no_tick = {k: v for k, v in obs.items() if k != "tick"}
+        assert contract_checksum(obs_no_tick) == cs1
+
+    def test_get_trace_is_copy(self):
+        runner = EpisodeRunner(seed=5, max_steps=3, action_budget=3)
+        runner.run(lambda obs: {"command": "advance", "args": [100]})
+        trace = runner.get_trace()
+        trace[0]["action"]["command"] = "corrupted"
+        ok, _ = verify_trace_determinism(runner.trace, runner.get_trace())
+        assert ok is True
+
+
+class TestRunnerEnhancements:
+    """Enhanced EpisodeRunner methods work correctly."""
+
+    def test_to_json(self):
+        r = EpisodeRunner(seed=7, max_steps=5, action_budget=3)
+        r.run(baseline_policy)
+        raw = r.to_json()
+        parsed = json.loads(raw)
+        assert parsed["seed"] == 7
+        assert "trace" in parsed
+        assert isinstance(parsed["trace"], list)
+
+    def test_reuse_runner_resets(self):
+        r = EpisodeRunner(seed=10, max_steps=20, action_budget=15)
+        m1 = r.run(baseline_policy)
+        m2 = r.run(baseline_policy)
+        assert validate_episode_metrics(m1)
+        assert validate_episode_metrics(m2)
+
+    def test_skill_chain_reset_called(self):
+        chain = make_skill_chain(StartFortress(), AdvanceTimeStep(ticks=100))
+        r = EpisodeRunner(seed=0, max_steps=10, action_budget=5)
+        m = r.run(chain)
+        assert validate_episode_metrics(m)
+
+
 if __name__ == "__main__":
     """Run all tests without pytest — portable to bare Python 3.13."""
     import inspect
@@ -527,7 +657,8 @@ if __name__ == "__main__":
                   TestBaselinePolicy, TestIntegrationStubEpisode,
                   TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
                   TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
-                  TestSkillChainPlayer]
+                  TestSkillChainPlayer, TestPublicEvaluator,
+                  TestTraceDeterminism, TestRunnerEnhancements]
 
     for cls in tc_classes:
         inst = cls()

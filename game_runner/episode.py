@@ -1,10 +1,9 @@
 """Episode runner for headless DF episodes via the bridge contract."""
 
+import copy
 import json
-import subprocess
-import tempfile
 import os
-import time
+import subprocess
 import uuid
 
 # Path to the active DFHack installation.
@@ -12,13 +11,30 @@ DF_DIR = "/srv/df-bonsai/current"
 BRIDGE_LUA = os.path.join(os.path.dirname(__file__), "..", "bridge", "core.lua")
 
 
+def _default_observation():
+    """Fresh observation state matching the contracts.json observe output."""
+    return {
+        "version": "1.0",
+        "gametype": None,
+        "cur_year": 0,
+        "cur_season": 0,
+        "cur_tick": 0,
+        "paused": True,
+        "units": [],
+        "buildings": [],
+        "tick": 0,
+        "source": "stub",
+    }
+
+
 def _dfhack_run(lua_code, timeout=30):
     """Execute a Lua snippet via the DFHack CLI runner and return JSON."""
     env = {**os.environ, "HOME": "/srv/df-bonsai/state/home"}
     try:
         proc = subprocess.run(
-            ["python3", "-c", lua_code],
+            [os.path.join(DF_DIR, "hack", "dfhack-run"), "-q", lua_code],
             capture_output=True, text=True, timeout=timeout, env=env,
+            cwd=DF_DIR,
         )
         return json.loads(proc.stdout.strip()) if proc.returncode == 0 else {
             "error": f"rc={proc.returncode}", "stderr": proc.stderr[:500]
@@ -42,38 +58,27 @@ class EpisodeRunner:
         self.seed = seed
         self.metrics = {}
         self.trace = []
+        self._obs_state = None
 
     # ------------------------------------------------------------------
     def reset(self):
         """Reset episode state before run."""
         self.metrics = {"seed": self.seed, "steps_taken": 0, "actions_used": 0}
         self.trace = []
+        self._obs_state = _default_observation()
         return True
 
     # ------------------------------------------------------------------
     def _stub_observe(self):
         """Internal observation state shared by advance and the loop."""
-        if not hasattr(self, "_obs_state"):
-            self._obs_state = {
-                "version": "1.0",
-                "gametype": None,
-                "cur_year": 0,
-                "cur_season": 0,
-                "cur_tick": 0,
-                "paused": True,
-                "units": [],
-                "buildings": [],
-                "tick": 0,
-                "source": "stub",
-            }
+        if self._obs_state is None:
+            self._obs_state = _default_observation()
         return self._obs_state
 
     # ------------------------------------------------------------------
     def observe(self):
         """Thin wrapper around bridge.observe() — stub for headless use."""
         s = self._stub_observe()
-        # Return a copy so the caller can't mutate internal state.
-        import copy
         result = {**s}
         result["units"] = list(s["units"])
         result["buildings"] = list(s["buildings"])
@@ -112,6 +117,22 @@ class EpisodeRunner:
         return {"ok": True, "advanced_ticks": ticks}
 
     # ------------------------------------------------------------------
+    def get_trace(self):
+        """Return a deep copy of the episode trace for external inspection."""
+        return copy.deepcopy(self.trace)
+
+    # ------------------------------------------------------------------
+    def to_json(self):
+        """Serialize full episode state (metrics + trace) to JSON string."""
+        payload = {
+            "seed": self.seed,
+            "save_id": self.save_id,
+            "metrics": self.metrics,
+            "trace": self.trace,
+        }
+        return json.dumps(payload, indent=2)
+
+    # ------------------------------------------------------------------
     def run(self, action_policy):
         """Execute the full episode loop.
 
@@ -119,6 +140,8 @@ class EpisodeRunner:
             action_policy: callable(observation) -> action_dict | None
         """
         self.reset()
+        if callable(getattr(action_policy, '_reset', None)):
+            action_policy._reset()
         outcome = "success"
 
         for step in range(self.max_steps):
@@ -140,7 +163,7 @@ class EpisodeRunner:
         final_tick = self.metrics.get("final_tick", self.observe()["cur_tick"])
         survivors = len(self.observe().get("units", []))
 
-        result = {
+        return {
             "seed": self.seed,
             "save_id": self.save_id,
             "steps_taken": self.metrics["steps_taken"],
@@ -149,7 +172,6 @@ class EpisodeRunner:
             "actions_used": self.metrics["actions_used"],
             "outcome": outcome,
         }
-        return result
 
 
 def evaluate_multiple_runs(run_metrics_list):
