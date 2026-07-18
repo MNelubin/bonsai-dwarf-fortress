@@ -7,3 +7,5 @@ It has no PostgreSQL or GitHub credential. The parent wrapper holds only a capab
 The wrapper publishes an idle/running/error heartbeat with its model, harness version, current job,
 and progress. It refuses jobs without a trusted `base_commit` and checks out that exact commit before
 OpenCode starts, so a stale lab checkout cannot silently change the experiment baseline.
+Before each job the wrapper fetches the public trusted `main` into a local remote-tracking ref and
+then checks out the job's exact commit. The lab receives no GitHub credential.

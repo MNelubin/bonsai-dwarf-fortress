@@ -1,0 +1,22 @@
+[Unit]
+Description=Bonsai trusted candidate gate and GitHub promoter
+After=network-online.target tailscaled.service bonsai-api.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/srv/bonsai-control/repo
+EnvironmentFile=/etc/bonsai-control/app.env
+ExecStart=/opt/bonsai-control/venv/bin/bonsai-promoter
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/bonsai-control
+
+[Install]
+WantedBy=multi-user.target

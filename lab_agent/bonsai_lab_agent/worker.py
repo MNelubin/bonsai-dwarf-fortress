@@ -21,6 +21,7 @@ class Config:
     lab_token: str
     model: str
     baseline_repo: Path
+    baseline_remote: str
     runs_dir: Path
     outbox_dir: Path
     poll_seconds: int
@@ -35,6 +36,10 @@ class Config:
             lab_token=os.environ["BONSAI_LAB_TOKEN"],
             model=os.environ.get("BONSAI_MODEL", "ollama/qwen3.6:27b-64k"),
             baseline_repo=Path(os.environ.get("BONSAI_BASELINE_REPO", "/srv/bonsai-agent/workspace")),
+            baseline_remote=os.environ.get(
+                "BONSAI_BASELINE_REMOTE",
+                "https://github.com/MNelubin/bonsai-dwarf-fortress.git",
+            ),
             runs_dir=Path(os.environ.get("BONSAI_RUNS_DIR", "/srv/bonsai-agent/runs")),
             outbox_dir=Path(os.environ.get("BONSAI_OUTBOX_DIR", "/srv/bonsai-agent/outbox")),
             poll_seconds=int(os.environ.get("BONSAI_POLL_SECONDS", "10")),
@@ -222,6 +227,26 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
     run_root = config.runs_dir / run_id
     repo = run_root / "repo"
     run_root.mkdir(parents=True, exist_ok=False)
+    requested_base = job.get("base_commit")
+    if not requested_base:
+        raise RuntimeError("job has no trusted base_commit")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(config.baseline_repo),
+            "fetch",
+            "--no-tags",
+            config.baseline_remote,
+            "main:refs/remotes/bonsai-trusted/main",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=180,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
     subprocess.run(
         ["git", "clone", "--no-hardlinks", str(config.baseline_repo), str(repo)],
         check=True,
@@ -229,9 +254,6 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
         stderr=subprocess.STDOUT,
         text=True,
     )
-    requested_base = job.get("base_commit")
-    if not requested_base:
-        raise RuntimeError("job has no trusted base_commit")
     subprocess.run(
         ["git", "-C", str(repo), "cat-file", "-e", f"{requested_base}^{{commit}}"],
         check=True,
@@ -275,6 +297,9 @@ symbols, docs or a controlled probe; do not invent APIs. Never cat binary files.
 bridge/, game_runner/, player/, skills/, curricula/, evaluator_public/, tests/, and docs/. Run useful
 tests. Do not modify protected control_plane/, db/, evaluator_private/, infra/, security/ or .github/.
 Finish only when the working tree contains a tested, reviewable improvement; explain the evidence.
+Automatic promotion only accepts bridge/, game_runner/, player/, skills/, curricula/,
+evaluator_public/, tests/, and docs/. Every candidate must add or update a public test or evaluator
+artifact. Do not add symlinks, submodules, secrets, generated binaries, or files over 2 MiB.
 """.strip()
 
     command = [

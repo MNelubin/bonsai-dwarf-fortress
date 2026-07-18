@@ -15,8 +15,12 @@ class Settings(BaseSettings):
     scheduler_interval_seconds: int = 10
     ollama_url: str = "http://100.96.0.4:11434"
     github_repo: str = ""
+    github_remote: str = "github"
     artifact_dir: str = "/srv/bonsai-control/artifacts"
     artifact_max_bytes: int = 268_435_456
+    trusted_repo: str = "/srv/bonsai-control/repo"
+    evaluator_dir: str = "/srv/bonsai-control/evaluator"
+    promotion_poll_seconds: int = 10
 
 
 @lru_cache

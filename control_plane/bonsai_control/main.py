@@ -31,7 +31,7 @@ async def lifespan(_: FastAPI):
     close_pool()
 
 
-app = FastAPI(title="Bonsai Control Plane", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Bonsai Control Plane", version="0.3.0", lifespan=lifespan)
 
 
 def _event(
@@ -513,6 +513,14 @@ def dashboard(request: Request) -> HTMLResponse:
         artifacts = connection.execute(
             "SELECT * FROM bonsai.artifacts ORDER BY created_at DESC LIMIT 25"
         ).fetchall()
+        promotions = connection.execute(
+            """
+            SELECT g.*, j.state AS job_state, j.result->>'model' AS model
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            ORDER BY g.created_at DESC LIMIT 25
+            """
+        ).fetchall()
         counts = connection.execute(
             """
             SELECT
@@ -541,6 +549,7 @@ def dashboard(request: Request) -> HTMLResponse:
             "events": events,
             "workers": workers,
             "artifacts": artifacts,
+            "promotions": promotions,
             "counts": counts,
             "github_url": github_url,
             "now": now,

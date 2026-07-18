@@ -15,7 +15,7 @@
     main { padding:20px; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:15px; }
     section { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:15px; overflow:auto; }
     .status { grid-column:span 12; display:grid; grid-template-columns:repeat(7,minmax(130px,1fr)); gap:10px; }
-    .workers { grid-column:span 5; } .objectives { grid-column:span 7; } .jobs,.artifacts,.events { grid-column:span 12; }
+    .workers { grid-column:span 5; } .objectives { grid-column:span 7; } .jobs,.promotions,.artifacts,.events { grid-column:span 12; }
     .events { max-height:520px; }
     .metric { border-left:3px solid var(--green); padding:3px 0 3px 10px; min-width:0; }
     .label { color:var(--muted); font-size:11px; letter-spacing:.04em; } .value { font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -72,6 +72,10 @@
         <div class="box"><div class="label">ARTIFACTS</div>{% for sha in j.artifact_hashes %}<div><a href="/artifacts/{{ sha }}">{{ sha[:16] }}… download</a></div>{% else %}<span class="muted">none</span>{% endfor %}</div>
       </div></details></td>
     </tr>{% else %}<tr><td colspan="8">No jobs yet</td></tr>{% endfor %}
+  </tbody></table></section>
+
+  <section class="promotions"><h2>Candidate promotion gates</h2><table><thead><tr><th>state</th><th>job</th><th>base → candidate</th><th>model</th><th>changed paths</th><th>gate evidence</th></tr></thead><tbody>
+    {% for p in promotions %}<tr><td><span class="pill {{ p.promotion_state }}">{{ p.promotion_state }}</span><br><span class="label">job {{ p.job_state }}</span></td><td><code>{{ p.job_id }}</code></td><td>{% if github_url %}<a href="{{ github_url }}/commit/{{ p.base_commit }}" target="_blank">{{ p.base_commit[:9] }}</a>{% else %}<code>{{ p.base_commit[:9] }}</code>{% endif %} → {% if p.candidate_commit %}{% if github_url %}<a href="{{ github_url }}/commit/{{ p.candidate_commit }}" target="_blank">{{ p.candidate_commit[:9] }}</a>{% else %}<code>{{ p.candidate_commit[:9] }}</code>{% endif %}{% else %}-{% endif %}</td><td>{{ p.model or '-' }}</td><td>{% for path in p.changed_paths %}<div><code>{{ path }}</code></div>{% else %}<span class="muted">none</span>{% endfor %}</td><td><details><summary>inspect gates</summary><pre>{{ p.evidence|tojson(indent=2) }}</pre></details></td></tr>{% else %}<tr><td colspan="6">No candidate promotions yet</td></tr>{% endfor %}
   </tbody></table></section>
 
   <section class="artifacts"><h2>Artifacts</h2><table><thead><tr><th>created</th><th>sha256</th><th>type</th><th>size</th><th>job</th><th>metadata</th></tr></thead><tbody>
