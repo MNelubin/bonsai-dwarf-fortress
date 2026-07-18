@@ -1,6 +1,7 @@
 # DFHack bridge package
 from .contracts import (
     CONTRACT_SCHEMA,
+    EpisodeLogger,
     validate_observe,
     validate_act_result,
     validate_advance_result,
@@ -11,6 +12,7 @@ from .contracts import (
 
 __all__ = [
     "CONTRACT_SCHEMA",
+    "EpisodeLogger",
     "validate_observe",
     "validate_act_result",
     "validate_advance_result",

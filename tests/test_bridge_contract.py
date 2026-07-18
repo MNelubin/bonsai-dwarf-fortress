@@ -13,14 +13,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from unittest import mock
 
 from bridge.contracts import (
-    CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_advance_result,
+    CONTRACT_SCHEMA, EpisodeLogger,
+    validate_observe, validate_act_result, validate_advance_result,
     validate_episode_metrics, validate_episode_outcome, validate_act_input,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
 from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
 from player.skill_chain import make_skill_chain
-from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard, Skill, GradualAdvance, ResourceMonitor
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard, Skill, GradualAdvance, ResourceMonitor, EmergencyPause
 from curricula.levels import CURRICULUM_LEVELS, get_level, run_curriculum
 from evaluator_public import score_episode, aggregate_runs, verify_trace_determinism, contract_checksum, benchmark_runner
 
