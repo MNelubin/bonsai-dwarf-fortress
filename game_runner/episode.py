@@ -320,6 +320,7 @@ class EpisodeRunner:
         survivors = sum(1 for u in self.units if not u["killed"] and u["civ_id"] is not None)
 
         self.metrics["survivors"] = survivors
+        self.metrics["outcome"] = outcome
         return {
             "seed": self.seed,
             "save_id": self.save_id,

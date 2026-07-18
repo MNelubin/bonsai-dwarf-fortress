@@ -79,3 +79,63 @@ class SurvivalGuard(Skill):
         if alive < self.min_citizens:
             return None
         return [{"command": "observe", "meta_alive": alive}]
+
+
+class GradualAdvance(Skill):
+    """Incremental advance that scales tick steps by progress.
+
+    Early game = large chunks, late game = smaller chunks.  This produces
+    smoother trace output useful for CPU-policy distillation."""
+
+    def __init__(self, max_ticks=None):
+        if max_ticks is None:
+            from player.baseline import TICKS_PER_DAY
+            max_ticks = TICKS_PER_DAY * 30
+        super().__init__(
+            name="gradual_advance",
+            description="Advance in variable-sized chunks based on progress.",
+        )
+        self.max_ticks = max_ticks
+
+    def steps(self, observation):
+        cur = observation.get("cur_tick") or 0
+        if cur >= self.max_ticks:
+            return None
+
+        remaining = self.max_ticks - cur
+        # Adaptive step: clamp between 1 day and 7 days.
+        frac = min(1.0, remaining / self.max_ticks)
+        import math
+        chunk_days = max(1, min(7, int(math.ceil(frac * 7))))
+        from player.baseline import TICKS_PER_DAY
+        chunk = chunk_days * TICKS_PER_DAY
+        return [{"command": "advance", "args": [chunk]}]
+
+
+class ResourceMonitor(Skill):
+    """Records observation summary without acting.
+
+    Emits an 'observe' action that carries structured metadata for logging
+    (tick progress, unit survival rate, building count).  Intended as a
+    passive skill appended to chains for telemetry."""
+
+    def __init__(self):
+        super().__init__(
+            name="resource_monitor",
+            description="Passive observation with rich metadata.",
+        )
+
+    def steps(self, observation):
+        units = observation.get("units", [])
+        total = len(units)
+        alive = sum(
+            1 for u in units
+            if not u.get("killed", False) and u.get("civ_id") is not None
+        )
+        return [{
+            "command": "observe",
+            "meta_tick_progress": (observation.get("cur_tick") or 0),
+            "meta_total_units": total,
+            "meta_alive": alive,
+            "meta_survival_rate": (alive / total) if total else 0.0,
+        }]

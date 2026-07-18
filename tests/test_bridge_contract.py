@@ -20,7 +20,7 @@ from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
 from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
 from player.skill_chain import make_skill_chain
-from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard, Skill
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard, Skill, GradualAdvance, ResourceMonitor
 from curricula.levels import CURRICULUM_LEVELS, get_level, run_curriculum
 from evaluator_public import score_episode, aggregate_runs, verify_trace_determinism, contract_checksum, benchmark_runner
 
@@ -1076,6 +1076,146 @@ class TestDiskCheckpoint:
             self._cleanup(f)
 
 
+class TestGradualAdvance:
+    """GradualAdvance produces adaptive tick chunks."""
+
+    def test_returns_none_at_target(self):
+        skill = GradualAdvance()
+        assert skill.steps({"cur_tick": TARGET_TICKS}) is None
+
+    def test_large_early_chunk(self):
+        skill = GradualAdvance()
+        result = skill.steps({"cur_tick": 0})
+        # Full progress → largest chunk (7 days).
+        assert result[0]["command"] == "advance"
+        assert result[0]["args"][0] == 7 * TICKS_PER_DAY
+
+    def test_smaller_late_chunk(self):
+        skill = GradualAdvance()
+        near_end = TARGET_TICKS - 86400
+        result = skill.steps({"cur_tick": near_end})
+        assert result is not None
+        assert result[0]["command"] == "advance"
+        # Near end → small chunk (1 day).
+        assert result[0]["args"][0] == 1 * TICKS_PER_DAY
+
+    def test_mid_chunk(self):
+        skill = GradualAdvance()
+        mid = TARGET_TICKS // 2
+        result = skill.steps({"cur_tick": mid})
+        assert result is not None
+        assert result[0]["command"] == "advance"
+        # Halfway → between 1 and 7 days.
+        chunk_days = result[0]["args"][0] // TICKS_PER_DAY
+        assert 1 <= chunk_days <= 7
+
+    def test_in_chain_reaches_target(self):
+        chain = make_skill_chain(StartFortress(), GradualAdvance())
+        runner = EpisodeRunner(seed=5, max_steps=100, action_budget=60)
+        m = runner.run(chain)
+        assert validate_episode_metrics(m)
+        # Should get close to 30 days.
+        assert m["final_tick"] >= TARGET_TICKS * 0.8
+
+
+class TestResourceMonitor:
+    """ResourceMonitor emits structured observation metadata."""
+
+    def test_emits_observe_with_metadata(self):
+        skill = ResourceMonitor()
+        units = [
+            {"killed": False, "civ_id": 1},
+            {"killed": True, "civ_id": 2},
+        ]
+        obs = {
+            "cur_tick": 86400 * 10,
+            "units": units,
+        }
+        result = skill.steps(obs)
+        assert result is not None
+        assert result[0]["command"] == "observe"
+        assert result[0]["meta_total_units"] == 2
+        assert result[0]["meta_alive"] == 1
+        assert result[0]["meta_survival_rate"] == 0.5
+
+    def test_empty_units(self):
+        skill = ResourceMonitor()
+        obs = {"cur_tick": 0, "units": []}
+        result = skill.steps(obs)
+        assert result is not None
+        assert result[0]["meta_total_units"] == 0
+        assert result[0]["meta_alive"] == 0
+        assert result[0]["meta_survival_rate"] == 0.0
+
+    def test_no_dead_units(self):
+        skill = ResourceMonitor()
+        units = [
+            {"killed": False, "civ_id": 1},
+            {"killed": False, "civ_id": 2},
+            {"killed": False, "civ_id": 3},
+        ]
+        obs = {"cur_tick": 5000, "units": units}
+        result = skill.steps(obs)
+        assert result[0]["meta_survival_rate"] == 1.0
+
+
+class TestMultiSeedStress:
+    """Statistical properties hold across many seeds and policies."""
+
+    def _runs_for_policy(self, policy, n=20):
+        metrics = []
+        for i in range(n):
+            r = EpisodeRunner(seed=i * 37 + 13, max_steps=80, action_budget=50)
+            metrics.append(r.run(policy))
+        return metrics
+
+    def test_baseline_mean_above_4(self):
+        runs = self._runs_for_policy(baseline_policy, n=20)
+        agg = evaluate_multiple_runs(runs)
+        assert agg["mean_score"] >= 0.4
+
+    def test_cpu_mean_above_4(self):
+        runs = self._runs_for_policy(cpu_policy, n=20)
+        agg = evaluate_multiple_runs(runs)
+        assert agg["mean_score"] >= 0.4
+
+    def test_worst_run_not_zero(self):
+        """Every seed should achieve at least some progress."""
+        runs = self._runs_for_policy(baseline_policy, n=15)
+        agg = evaluate_multiple_runs(runs)
+        assert agg["worst_score"] > 0
+
+    def test_deterministic_across_policies(self):
+        """Same seed + same policy always yields same metrics."""
+        for policy in (baseline_policy, cpu_policy):
+            r1 = EpisodeRunner(seed=420, max_steps=50, action_budget=30)
+            m1 = r1.run(policy)
+            r2 = EpisodeRunner(seed=420, max_steps=50, action_budget=30)
+            m2 = r2.run(policy)
+            assert m1["final_tick"] == m2["final_tick"]
+            assert m1["survivors"] == m2["survivors"]
+
+
+class TestCurriculumGradualAndMonitor:
+    """Curriculum exercises new GradualAdvance and ResourceMonitor skills."""
+
+    def test_gradual_chain_survives(self):
+        chain = make_skill_chain(StartFortress(), GradualAdvance(), SurvivalGuard(min_citizens=1))
+        runner = EpisodeRunner(seed=0, max_steps=100, action_budget=60)
+        m = runner.run(chain)
+        assert validate_episode_metrics(m)
+
+    def test_monitor_in_chain_no_regression(self):
+        chain = make_skill_chain(
+            StartFortress(),
+            GradualAdvance(),
+            ResourceMonitor(),
+        )
+        runner = EpisodeRunner(seed=1, max_steps=50, action_budget=40)
+        m = runner.run(chain)
+        assert validate_episode_metrics(m)
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -1094,7 +1234,8 @@ if __name__ == "__main__":
                   TestCitizenSimulation, TestBenchmarkRunner,
                   TestValidationTypeSafety, TestEpisodeSerialization,
                   TestConfidenceIntervals, TestAdvanceValidation,
-                  TestDiskCheckpoint]
+                  TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                  TestMultiSeedStress, TestCurriculumGradualAndMonitor]
 
     for cls in tc_classes:
         inst = cls()
