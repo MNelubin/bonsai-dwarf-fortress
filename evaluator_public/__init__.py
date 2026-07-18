@@ -168,6 +168,8 @@ def benchmark_runners(*runner_policies, num_runs=10, max_steps=100, action_budge
     return results
 
 
+benchmark_runner = benchmark_runners
+
 # ---------------------------------------------------------------------------
 # Verification helpers
 # ---------------------------------------------------------------------------

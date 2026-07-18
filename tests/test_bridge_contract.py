@@ -695,18 +695,19 @@ class TestCitizenSimulation:
         assert m["survivors"] == alive
 
     def test_episodereporter_reuse_resets_units(self):
-        """Running twice resets citizen simulation."""
+        """Running twice resets citizen simulation and produces identical metrics."""
         r = EpisodeRunner(seed=10, max_steps=20, action_budget=15)
         m1 = r.run(baseline_policy)
-        # After the first run some may be dead. Remember count.
-        s1 = m1["survivors"]
+        # Re-running on the same runner resets citizens (reset() in run()).
         m2 = r.run(baseline_policy)
-        # Run 2 starts with fresh citizens again.
-        assert m2["survivors"] == 4  # All 4 alive at start of episode 2's run loop? No; after run() they may have died.
-        # More robustly: same seed, same config → identical metrics.
+        # Same runner, same config → identical output.
+        assert m1["survivors"] == m2["survivors"]
+        assert m1["steps_taken"] == m2["steps_taken"]
+        # Fresh runner with the same seed also reproduces.
         r3 = EpisodeRunner(seed=10, max_steps=20, action_budget=15)
         m3 = r3.run(baseline_policy)
         assert m1["survivors"] == m3["survivors"]
+        assert m1["steps_taken"] == m3["steps_taken"]
 
 
 class TestBenchmarkRunner:
