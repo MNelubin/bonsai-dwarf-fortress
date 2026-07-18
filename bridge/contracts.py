@@ -14,8 +14,6 @@ import operator
 import os
 from collections import OrderedDict
 
-import bridge.contracts as _mod
-
 _CONTRACTS_PATH = os.path.join(os.path.dirname(__file__), "contracts.json")
 
 with open(_CONTRACTS_PATH) as _f:

@@ -1,11 +1,15 @@
 """Episode runner for headless DF episodes via the bridge contract."""
 
 import copy
+import datetime
 import hashlib
 import json
+import math
 import os
 import subprocess
 import uuid
+
+from bridge.contracts import EpisodeLogger, validate_episode_metrics
 
 # Path to the active DFHack installation.
 DF_DIR = "/srv/df-bonsai/current"
@@ -103,6 +107,7 @@ class EpisodeRunner:
         self.trace = []
         self._obs_state = None
         self.units, self.death_ticks = _simulate_citizens(self.seed, self.num_citizens)
+        self._logger = None
 
     # ------------------------------------------------------------------
     def reset(self):
@@ -114,6 +119,7 @@ class EpisodeRunner:
         # Units in obs_state reference the same dicts as self.units so
         # stress event mutations are visible to subsequent observations.
         self._obs_state["units"] = [dict(u) for u in self.units]
+        self._logger = EpisodeLogger(seed=self.seed, save_id=self.save_id)
         return True
 
     # ------------------------------------------------------------------
@@ -306,6 +312,7 @@ class EpisodeRunner:
                 break
 
             obs = self.observe()
+            self._logger.log_tick(obs["cur_tick"])
             action = action_policy(obs) if callable(action_policy) else None
             if not action:
                 outcome = "success"
@@ -314,11 +321,13 @@ class EpisodeRunner:
             result = self.act(action)
             self.metrics["actions_used"] += 1
             self.trace.append({"step": step, "action": action, "result": result})
+            self._logger.log_action(step, action)
             self.metrics["steps_taken"] += 1
 
         final_tick = self.metrics.get("final_tick", self.observe()["cur_tick"])
         survivors = sum(1 for u in self.units if not u["killed"] and u["civ_id"] is not None)
 
+        self._logger.finalize(outcome, survivors, final_tick)
         self.metrics["survivors"] = survivors
         self.metrics["outcome"] = outcome
         return {
@@ -330,6 +339,23 @@ class EpisodeRunner:
             "actions_used": self.metrics["actions_used"],
             "outcome": outcome,
         }
+
+    # ------------------------------------------------------------------
+    def get_logger(self):
+        """Return the EpisodeLogger for this runner (after a run)."""
+        return self._logger
+
+    def fingerprint(self):
+        """Return the SHA-256 fingerprint of the completed episode."""
+        if self._logger:
+            return self._logger.fingerprint()
+        return None
+
+    def log_json(self):
+        """Return compact JSON bytes of the episode log."""
+        if self._logger:
+            return self._logger.to_json()
+        return b""
 
 
 def evaluate_multiple_runs(run_metrics_list):

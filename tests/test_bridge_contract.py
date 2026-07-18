@@ -1217,6 +1217,174 @@ class TestCurriculumGradualAndMonitor:
         assert validate_episode_metrics(m)
 
 
+class TestEpisodeLoggerIntegration:
+    """EpisodeLogger is wired into EpisodeRunner and produces fingerprints."""
+
+    def test_logger_initialized_after_run(self):
+        r = EpisodeRunner(seed=10, max_steps=5, action_budget=3)
+        assert r._logger is None
+        r.run(baseline_policy)
+        logger = r.get_logger()
+        assert logger is not None
+        assert logger.seed == 10
+
+    def test_fingerprint_deterministic(self):
+        """Two identical runs produce the same SHA-256 fingerprint."""
+        ra = EpisodeRunner(seed=42, max_steps=20, action_budget=15)
+        ra.run(baseline_policy)
+        fp_a = ra.fingerprint()
+
+        rb = EpisodeRunner(seed=42, max_steps=20, action_budget=15)
+        rb.run(baseline_policy)
+        fp_b = rb.fingerprint()
+
+        assert fp_a == fp_b
+        assert len(fp_a) == 64  # SHA-256 hex length
+
+    def test_fingerprint_differs_across_seeds(self):
+        """Different seeds yield different fingerprints."""
+        ra = EpisodeRunner(seed=1, max_steps=20, action_budget=15)
+        ra.run(baseline_policy)
+        fp_a = ra.fingerprint()
+
+        rb = EpisodeRunner(seed=999, max_steps=20, action_budget=15)
+        rb.run(baseline_policy)
+        fp_b = rb.fingerprint()
+
+        assert fp_a != fp_b
+
+    def test_log_json_contains_seed(self):
+        r = EpisodeRunner(seed=77, max_steps=10, action_budget=8)
+        r.run(cpu_policy)
+        data = json.loads(r.log_json())
+        assert data["seed"] == 77
+        assert "actions" in data
+        assert "ticks" in data
+
+    def test_logger_records_ticks(self):
+        r = EpisodeRunner(seed=5, max_steps=10, action_budget=8)
+        r.run(baseline_policy)
+        logger = r.get_logger()
+        ticks = logger.as_dict()["ticks"]
+        assert len(ticks) > 0
+
+    def test_logger_action_count_matches_trace(self):
+        r = EpisodeRunner(seed=3, max_steps=6, action_budget=4)
+        r.run(baseline_policy)
+        logger = r.get_logger()
+        assert logger.action_count() == r.metrics["actions_used"]
+
+
+class TestInferenceLatency:
+    """evaluator_public latency benchmarking is functional and bounded."""
+
+    def test_baseline_latency_sub_ms(self):
+        from evaluator_public import measure_policy_latency
+        obs = {"paused": False, "cur_tick": 5000, "units": [
+            {"killed": False, "civ_id": 1}
+        ]}
+        ms = measure_policy_latency(baseline_policy, obs, n_bench=200)
+        assert ms < 1e-3
+
+    def test_cpu_latency_sub_ms(self):
+        from evaluator_public import measure_policy_latency
+        obs = {"paused": False, "cur_tick": 5000, "units": [
+            {"killed": False, "civ_id": 1}
+        ]}
+        ms = measure_policy_latency(cpu_policy, obs, n_bench=200)
+        assert ms < 1e-3
+
+    def test_batch_latency_returns_dict(self):
+        from evaluator_public import benchmark_inference_latency
+        results = benchmark_inference_latency(
+            ("baseline", baseline_policy),
+            ("cpu", cpu_policy),
+            n_bench=50,
+        )
+        assert "baseline" in results
+        assert "cpu" in results
+        for name in ("baseline", "cpu"):
+            assert 0 < results[name] < 1.0
+
+    def test_cpu_faster_than_or_equal_baseline(self):
+        """CPU policy should not be meaningfully slower than baseline."""
+        from evaluator_public import measure_policy_latency, benchmark_inference_latency
+        obs = {"paused": False, "cur_tick": 5000, "units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        ms_baseline = measure_policy_latency(baseline_policy, obs, n_bench=200)
+        ms_cpu = measure_policy_latency(cpu_policy, obs, n_bench=200)
+        # CPU should not be 10x slower
+        assert ms_cpu <= ms_baseline * 10
+
+
+class TestEmergencyPauseSkill:
+    """EmergencyPause detects death spikes and resets cleanly."""
+
+    def test_no_pause_safe(self):
+        skill = EmergencyPause(max_deaths=2)
+        obs = {"units": [
+            {"killed": False, "civ_id": 1},
+            {"killed": False, "civ_id": 2},
+        ]}
+        assert skill.steps(obs) is None
+
+    def test_pause_on_spike(self):
+        skill = EmergencyPause(max_deaths=1)
+        obs_before = {"units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        skill.steps(obs_before)
+        # Two die
+        obs_after = {"units": [
+            {"killed": True, "civ_id": 0},
+            {"killed": True, "civ_id": 1},
+            {"killed": False, "civ_id": 2},
+            {"killed": False, "civ_id": 3},
+        ]}
+        result = skill.steps(obs_after)
+        assert result is not None
+        assert result[0]["command"] == "pause"
+
+    def test_reset_clears_state(self):
+        skill = EmergencyPause(max_deaths=1)
+        obs_before = {"units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        skill.steps(obs_before)
+        # Reset should allow further observation without triggering.
+        skill.reset()
+        obs_safe = {"units": [
+            {"killed": True, "civ_id": 0},
+            {"killed": False, "civ_id": 1},
+        ]}
+        assert skill.steps(obs_safe) is None
+
+    def test_in_chain_with_guard(self):
+        chain = make_skill_chain(
+            StartFortress(),
+            AdvanceTimeStep(ticks=5000),
+            EmergencyPause(max_deaths=2),
+        )
+        r = EpisodeRunner(seed=0, max_steps=10, action_budget=6)
+        m = r.run(chain)
+        assert validate_episode_metrics(m)
+
+
+class TestEmergencyPauseCurriculum:
+    """Curriculum exposes a level that uses EmergencyPause."""
+
+    def test_emergency_pause_level_present(self):
+        names = [lvl["name"] for lvl in CURRICULUM_LEVELS]
+        assert "survive_30_days_with_safety" in names
+
+    def test_emergency_pause_level_runs(self):
+        from curricula.levels import _emergency_chain
+        runner = EpisodeRunner(seed=0, max_steps=100, action_budget=50)
+        metrics = runner.run(_emergency_chain)
+        assert validate_episode_metrics(metrics)
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
