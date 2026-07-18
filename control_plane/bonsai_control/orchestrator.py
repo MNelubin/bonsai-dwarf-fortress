@@ -1,16 +1,25 @@
 import json
 import time
 
+from .cycle_policy import choose_cycle
 from .db import close_pool, connection as db_connection, open_pool
 from .settings import get_settings
 
 
-DEFAULT_CONSTRAINTS = {
+CODING_CONSTRAINTS = {
     "editable_paths": ["bridge/", "game_runner/", "player/", "skills/", "curricula/", "tests/", "docs/"],
     "wall_time_seconds": 1800,
     "llm_request_limit": 24,
     "discovery_tool_budget_before_write": 6,
     "episode_budget": 20,
+    "promotion_mode": "automatic_if_gated",
+}
+
+DISCOVERY_CONSTRAINTS = {
+    "editable_paths": ["knowledge/"],
+    "wall_time_seconds": 1800,
+    "llm_request_limit": 24,
+    "discovery_tool_budget_before_first_note": 8,
     "promotion_mode": "automatic_if_gated",
 }
 
@@ -65,9 +74,9 @@ def tick() -> None:
 
         previous = connection.execute(
             """
-            SELECT id, state, result, error
+            SELECT id, job_type, state, result, error
             FROM bonsai.jobs
-            WHERE objective_id = %s AND state IN ('completed', 'rejected', 'failed')
+            WHERE objective_id = %s AND state IN ('completed', 'rejected', 'failed', 'cancelled')
             ORDER BY completed_at DESC NULLS LAST, created_at DESC
             LIMIT 1
             """,
@@ -78,30 +87,73 @@ def tick() -> None:
             summary = previous["result"].get("summary") if previous["result"] else None
             previous_cycle = {
                 "job_id": str(previous["id"]),
+                "job_type": previous["job_type"],
                 "state": previous["state"],
                 "model": (previous["result"] or {}).get("model"),
                 "changed": (previous["result"] or {}).get("changed"),
                 "summary_tail": (summary or previous["error"] or "")[-2_000:],
             }
 
+        last_discovery_at = connection.execute(
+            """
+            SELECT max(g.promoted_at) AS promoted_at
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            WHERE j.objective_id = %s
+              AND j.job_type = 'discovery_cycle'
+              AND g.promotion_state = 'promoted'
+            """,
+            (objective["id"],),
+        ).fetchone()["promoted_at"]
+        promoted_coding_since_discovery = 0
+        if last_discovery_at is not None:
+            promoted_coding_since_discovery = connection.execute(
+                """
+                SELECT count(*) AS count
+                FROM bonsai.git_changes g
+                JOIN bonsai.jobs j ON j.id = g.job_id
+                WHERE j.objective_id = %s
+                  AND j.job_type = 'coding_cycle'
+                  AND g.promotion_state = 'promoted'
+                  AND g.promoted_at > %s
+                """,
+                (objective["id"], last_discovery_at),
+            ).fetchone()["count"]
+        decision = choose_cycle(
+            has_promoted_discovery=last_discovery_at is not None,
+            last_job_type=previous["job_type"] if previous else None,
+            last_job_state=previous["state"] if previous else None,
+            last_job_changed=(previous["result"] or {}).get("changed") if previous else None,
+            promoted_coding_since_discovery=promoted_coding_since_discovery,
+        )
+        constraints = (
+            DISCOVERY_CONSTRAINTS if decision.job_type == "discovery_cycle" else CODING_CONSTRAINTS
+        )
+
         job = connection.execute(
             """
             INSERT INTO bonsai.jobs
                 (objective_id, job_type, priority, payload, constraints, base_commit, max_attempts)
-            VALUES (%s, 'research_cycle', %s, %s, %s, %s, 2)
+            VALUES (%s, %s, %s, %s, %s, %s, 2)
             RETURNING id
             """,
             (
                 objective["id"],
+                decision.job_type,
                 objective["priority"],
                 json.dumps(
                     {
                         "objective": objective["title"],
                         "description": objective["description"],
                         "previous_cycle": previous_cycle,
+                        "cycle_decision": {
+                            "job_type": decision.job_type,
+                            "reason": decision.reason,
+                            "promoted_coding_since_discovery": promoted_coding_since_discovery,
+                        },
                     }
                 ),
-                json.dumps(DEFAULT_CONSTRAINTS),
+                json.dumps(constraints),
                 system_state["current_baseline_commit"],
             ),
         ).fetchone()
@@ -115,7 +167,17 @@ def tick() -> None:
                 (event_type, actor_type, actor_id, aggregate_type, aggregate_id, payload)
             VALUES ('job.queued', 'control', 'orchestrator', 'job', %s, %s)
             """,
-            (str(job["id"]), json.dumps({"objective_id": str(objective["id"]), "automatic": True})),
+            (
+                str(job["id"]),
+                json.dumps(
+                    {
+                        "objective_id": str(objective["id"]),
+                        "automatic": True,
+                        "job_type": decision.job_type,
+                        "decision_reason": decision.reason,
+                    }
+                ),
+            ),
         )
 
 

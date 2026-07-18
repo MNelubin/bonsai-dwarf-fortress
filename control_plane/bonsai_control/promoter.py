@@ -38,6 +38,7 @@ class GateRejected(RuntimeError):
 @dataclass(frozen=True)
 class Candidate:
     job_id: str
+    job_type: str
     base_commit: str
     candidate_commit: str
     branch_name: str
@@ -96,6 +97,7 @@ def inspect_candidate(
     base_commit: str,
     candidate_commit: str,
     evaluator_dir: Path,
+    job_type: str = "coding_cycle",
 ) -> dict[str, Any]:
     reasons: list[str] = []
     checks: dict[str, Any] = {}
@@ -153,8 +155,23 @@ def inspect_candidate(
                 reasons.append(f"protected path changed: {path}")
             elif not path.startswith(AUTO_PATHS):
                 reasons.append(f"path outside auto-promotion allowlist: {path}")
-        if not any(path.startswith(("tests/", "evaluator_public/")) for path in changed_paths):
-            reasons.append("candidate must add or update public test/evaluation evidence")
+        if job_type == "discovery_cycle":
+            for path in changed_paths:
+                if not path.startswith("knowledge/"):
+                    reasons.append(f"discovery mode may only change knowledge/: {path}")
+            if not any(path.endswith((".md", ".json")) for path in changed_paths):
+                reasons.append("discovery candidate must contain Markdown or JSON knowledge")
+            if subprocess.run(
+                ["git", "-C", str(repo), "cat-file", "-e", f"{candidate_commit}:knowledge/INDEX.md"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode != 0:
+                reasons.append("discovery candidate must provide knowledge/INDEX.md")
+        else:
+            if any(path.startswith("knowledge/") for path in changed_paths):
+                reasons.append("coding mode may not change the discovery knowledge library")
+            if not any(path.startswith(("tests/", "evaluator_public/")) for path in changed_paths):
+                reasons.append("coding candidate must add or update public test/evaluation evidence")
 
         diff_check = subprocess.run(
             ["git", "-C", str(repo), "diff", "--check", base_commit, candidate_commit],
@@ -206,6 +223,7 @@ def inspect_candidate(
 
     report = {
         "gate_mode": "bootstrap_static_v1",
+        "job_type": job_type,
         "allowed": not reasons,
         "reasons": reasons,
         "checks": checks,
@@ -298,6 +316,7 @@ def _next_candidate() -> Candidate | None:
         _event(connection, "promotion.started", "job", str(row["id"]), {"candidate_commit": row["candidate_commit"]})
         return Candidate(
             job_id=str(row["id"]),
+            job_type=row["job_type"],
             base_commit=row["base_commit"],
             candidate_commit=row["candidate_commit"],
             branch_name=row["branch_name"],
@@ -400,6 +419,7 @@ def tick() -> bool:
             candidate.base_commit,
             candidate.candidate_commit,
             Path(settings.evaluator_dir),
+            candidate.job_type,
         )
         _promote(candidate, report)
         print(f"promoted {candidate.job_id} -> {candidate.candidate_commit}", flush=True)

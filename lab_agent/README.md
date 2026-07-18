@@ -9,3 +9,7 @@ and progress. It refuses jobs without a trusted `base_commit` and checks out tha
 OpenCode starts, so a stale lab checkout cannot silently change the experiment baseline.
 Before each job the wrapper fetches the public trusted `main` into a local remote-tracking ref and
 then checks out the job's exact commit. The lab receives no GitHub credential.
+
+Discovery and coding use separate prompts and promotion permissions. Discovery writes only the
+source-tagged `knowledge/` library. Coding reads that library, writes implementation/docs plus public
+tests, and cannot silently alter the knowledge base. A cycle with no commit is reported as rejected.

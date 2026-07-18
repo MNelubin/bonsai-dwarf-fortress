@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 
 AUTO_PATHS = (
+    "knowledge/",
     "bridge/",
     "game_runner/",
     "player/",
@@ -65,4 +66,3 @@ def evaluate_promotion(evidence: PromotionEvidence) -> PromotionDecision:
     if not evidence.fast_forward:
         reasons.append("promotion is not a fast-forward")
     return PromotionDecision(allowed=not reasons, reasons=tuple(reasons))
-

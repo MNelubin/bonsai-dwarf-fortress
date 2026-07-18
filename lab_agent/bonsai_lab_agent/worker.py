@@ -278,8 +278,34 @@ def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str
     repo, base_commit, branch = prepare_run(config, job)
     trace_path = repo.parent / "opencode-trace.jsonl"
     previous_cycle = job.get("payload", {}).get("previous_cycle") or {}
+    discovery_mode = job.get("job_type") == "discovery_cycle"
+    if discovery_mode:
+        mode_instructions = """
+You are in DISCOVERY MODE. Do not implement or modify executable product code. Your only writable
+tree is knowledge/. Build a durable, versioned knowledge library for later coding agents.
+
+Within at most 8 discovery calls, create or update knowledge/INDEX.md and at least one focused note
+under knowledge/dfhack/. Continue updating notes while you investigate instead of saving all writing
+for the end. Each claim must be tagged VERIFIED, INFERRED, or OPEN; include the exact DF/DFHack
+version, source path or bounded probe command, result, implications for reset/observe/act/advance,
+and the next concrete coding recommendation. Deduplicate existing notes and link them from INDEX.md.
+Do not touch bridge/, game_runner/, player/, tests/, docs/, control_plane/, lab_agent/, or infra/.
+A prose chat answer with no knowledge/ commit is a rejected cycle.
+""".strip()
+    else:
+        mode_instructions = """
+You are in CODING MODE. Read knowledge/INDEX.md and the relevant focused notes before probing the
+game. Treat VERIFIED notes as the starting point and explicitly record when reality contradicts
+them. Use at most 4 external discovery calls before the first write/edit.
+
+Create the smallest coherent implementation advancing reset/observe/act/advance, the episode
+runner, evaluation, or the CPU player. You MUST modify an implementation or user-facing document
+and add or update a deterministic test under tests/ or evaluator_public/. Run the tests. Do not
+change knowledge/ in coding mode; unresolved questions are a reason for the next discovery cycle.
+A clean git tree is a rejected cycle.
+""".strip()
     prompt = f"""
-Work autonomously as the senior coding and research agent for Bonsai Dwarf Fortress.
+Work autonomously as the senior agent for Bonsai Dwarf Fortress.
 
 Objective payload: {json.dumps(job.get('payload', {}), ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
@@ -291,27 +317,21 @@ control-plane credentials. Never search for or print secrets. You may inspect th
 non-interactive shell commands and game probes, and edit this repository.
 
 Long-term target: a deterministic DFHack bridge with reset/observe/act/advance, reproducible
-headless episodes and metrics, curricula, then a tiny CPU inference player. Make the smallest
-coherent improvement that advances the objective. Verify installed DFHack APIs from actual scripts,
-symbols, docs or a controlled probe; do not invent APIs. Never cat binary files. Prefer changes in
-bridge/, game_runner/, player/, skills/, curricula/, evaluator_public/, tests/, and docs/. Run useful
-tests. Do not modify protected control_plane/, db/, evaluator_private/, infra/, security/ or .github/.
-Finish only when the working tree contains a tested, reviewable improvement; explain the evidence.
-Automatic promotion only accepts bridge/, game_runner/, player/, skills/, curricula/,
-evaluator_public/, tests/, and docs/. Every candidate must add or update a public test or evaluator
-artifact. Do not add symlinks, submodules, secrets, generated binaries, or files over 2 MiB.
+headless episodes and metrics, curricula, then a tiny CPU inference player. Verify installed DFHack
+APIs from actual scripts, docs, source definitions, or controlled probes; do not invent APIs. Never
+read binary content. Do not modify protected control_plane/, db/, evaluator_private/, infra/,
+security/, .github/, or lab_agent/. Do not add symlinks, submodules, secrets, generated binaries, or
+files over 2 MiB.
+
+{mode_instructions}
 
 Execution discipline is mandatory:
-1. Use at most 6 discovery tool calls before the first write/edit. Inspect narrowly with `file`,
-   `find -maxdepth`, `grep -m`, and bounded output; never dump a whole binary or directory tree.
+1. Inspect narrowly with `file`, `find -maxdepth`, `grep -m`, and bounded output; never dump a whole
+   binary or directory tree.
 2. Before reading any unknown path under /srv/df-bonsai, run `file` on it. Only read known text
    extensions such as .lua, .txt, .md, .json, .proto, .py, or .rst. Never use cat/head on an
    executable, shared object, archive, image, database, or extensionless unknown file.
-3. Create a small coherent implementation early. If live game control is not yet supportable, add a
-   deterministic bridge protocol/contract, captured verified API findings, and executable pure tests.
-4. You MUST change at least one implementation or documentation file and at least one file under
-   tests/ or evaluator_public/. Run those tests. A prose answer with a clean git tree is a rejected
-   cycle. Check `git status --short` before finishing.
+3. Check `git status --short` before finishing and summarize exact files and verification evidence.
 """.strip()
 
     command = [
@@ -374,7 +394,7 @@ Execution discipline is mandatory:
     if status:
         subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
         subprocess.run(
-            ["git", "-C", str(repo), "commit", "-m", "agent: OpenCode research cycle"],
+            ["git", "-C", str(repo), "commit", "-m", f"agent: {job['job_type']}"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -412,6 +432,7 @@ Execution discipline is mandatory:
     return (
         {
             "summary": summary,
+            "job_type": job["job_type"],
             "harness": "opencode",
             "model": config.model,
             "base_commit": base_commit,
