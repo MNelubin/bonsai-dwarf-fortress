@@ -1399,12 +1399,14 @@ if __name__ == "__main__":
                   TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
                   TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
                   TestSkillChainPlayer, TestPublicEvaluator,
-                  TestTraceDeterminism, TestRunnerEnhancements,
-                  TestCitizenSimulation, TestBenchmarkRunner,
-                  TestValidationTypeSafety, TestEpisodeSerialization,
-                  TestConfidenceIntervals, TestAdvanceValidation,
-                  TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
-                  TestMultiSeedStress, TestCurriculumGradualAndMonitor]
+                   TestTraceDeterminism, TestRunnerEnhancements,
+                   TestCitizenSimulation, TestBenchmarkRunner,
+                   TestValidationTypeSafety, TestEpisodeSerialization,
+                   TestConfidenceIntervals, TestAdvanceValidation,
+                   TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                   TestMultiSeedStress, TestCurriculumGradualAndMonitor,
+                   TestEpisodeLoggerIntegration, TestInferenceLatency,
+                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum]
 
     for cls in tc_classes:
         inst = cls()

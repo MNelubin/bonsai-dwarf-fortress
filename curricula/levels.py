@@ -22,6 +22,13 @@ _survive_30_chain = make_skill_chain(
     SurvivalGuard(min_citizens=1),
 )
 
+_emergency_chain = make_skill_chain(
+    StartFortress(),
+    GradualAdvance(),
+    EmergencyPause(max_deaths=2),
+    SurvivalGuard(min_citizens=1),
+)
+
 
 # ---------------------------------------------------------------------------
 # Curriculum level definitions
@@ -77,6 +84,15 @@ CURRICULUM_LEVELS = [
         "name": "survive_30_days_skill_chain",
         "description": "Skill-chain: unpause → advance(5d) × N with survival guard.",
         "policy": _survive_30_chain,
+        "max_steps": 100,
+        "action_budget": 50,
+        "target_days": 30,
+        "min_survivors": 1,
+    },
+    {
+        "name": "survive_30_days_with_safety",
+        "description": "Full 30-day with EmergencyPause safety brake and survival guard.",
+        "policy": _emergency_chain,
         "max_steps": 100,
         "action_budget": 50,
         "target_days": 30,
