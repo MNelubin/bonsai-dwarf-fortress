@@ -4,12 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bonsai-lab-agent"
-version = "0.5.0"
+version = "0.6.0"
 description = "Durable OpenCode harness wrapper for the Bonsai Dwarf Fortress lab"
 requires-python = ">=3.13"
 
 [project.scripts]
 bonsai-lab-agent = "bonsai_lab_agent.worker:main"
 
+[project.optional-dependencies]
+test = ["pytest>=8.3,<9"]
+
 [tool.setuptools.packages.find]
 include = ["bonsai_lab_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

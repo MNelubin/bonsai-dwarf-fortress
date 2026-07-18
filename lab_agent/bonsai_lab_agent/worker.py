@@ -119,7 +119,6 @@ class Api:
                 "details": details or {},
             },
         )
-
     def complete(self, job: dict[str, Any], result: dict[str, Any], artifacts: list[str]) -> None:
         completion_status = "candidate" if result.get("changed") else "rejected"
         self.request(
@@ -148,6 +147,42 @@ class Api:
             content_type=media_type,
         )
         return digest
+
+
+def working_tree_paths(repo: Path) -> set[str]:
+    paths: set[str] = set()
+    for command in (
+        ["git", "-C", str(repo), "diff", "--name-only", "HEAD"],
+        ["git", "-C", str(repo), "diff", "--cached", "--name-only", "HEAD"],
+        ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
+    ):
+        paths.update(
+            line
+            for line in subprocess.check_output(command, text=True).splitlines()
+            if line
+        )
+    return paths
+
+
+def discovery_needs_synthesis(repo: Path) -> bool:
+    changed_paths = working_tree_paths(repo)
+    index = repo / "knowledge" / "INDEX.md"
+    focused_root = repo / "knowledge" / "dfhack"
+    focused_notes = (
+        [
+            path
+            for path in focused_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in {".md", ".json"}
+        ]
+        if focused_root.is_dir()
+        else []
+    )
+    return (
+        not changed_paths
+        or any(not path.startswith("knowledge/") for path in changed_paths)
+        or not index.is_file()
+        or not focused_notes
+    )
 
 
 def run(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
@@ -334,61 +369,82 @@ Execution discipline is mandatory:
 3. Check `git status --short` before finishing and summarize exact files and verification evidence.
 """.strip()
 
-    command = [
-        config.opencode_bin,
-        "run",
-        "--auto",
-        "--format",
-        "json",
-        "--model",
-        config.model,
-        prompt,
-    ]
     started = time.monotonic()
     last_heartbeat = 0.0
-    with trace_path.open("w", encoding="utf-8") as trace:
-        process = subprocess.Popen(
-            command,
-            cwd=repo,
-            env=harness_environment(config),
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=trace,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            while process.poll() is None:
-                elapsed = time.monotonic() - started
-                if elapsed > config.harness_timeout:
-                    raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
-                if elapsed - last_heartbeat >= 35:
-                    try:
-                        api.heartbeat(
-                            job,
-                            {
-                                "phase": "opencode",
+    def run_harness(harness_prompt: str, phase: str, append: bool) -> None:
+        nonlocal last_heartbeat
+        command = [
+            config.opencode_bin,
+            "run",
+            "--auto",
+            "--format",
+            "json",
+            "--model",
+            config.model,
+            harness_prompt,
+        ]
+        with trace_path.open("a" if append else "w", encoding="utf-8") as trace:
+            if append:
+                trace.write(json.dumps({"type": "harness_phase", "phase": phase}) + "\n")
+                trace.flush()
+            process = subprocess.Popen(
+                command,
+                cwd=repo,
+                env=harness_environment(config),
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=trace,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                while process.poll() is None:
+                    elapsed = time.monotonic() - started
+                    if elapsed > config.harness_timeout:
+                        raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
+                    if elapsed - last_heartbeat >= 35:
+                        try:
+                            progress = {
+                                "phase": phase,
                                 "model": config.model,
                                 "elapsed_seconds": round(elapsed),
-                            },
-                        )
-                        api.worker_heartbeat(
-                            "running",
-                            str(job["id"]),
-                            {"elapsed_seconds": round(elapsed), "phase": "opencode"},
-                        )
-                    except Exception as exc:
-                        print(f"heartbeat failed: {exc}", flush=True)
-                    last_heartbeat = elapsed
-                time.sleep(2)
-            return_code = process.returncode
-        finally:
-            stop_process_group(process)
+                            }
+                            api.heartbeat(job, progress)
+                            api.worker_heartbeat("running", str(job["id"]), progress)
+                        except Exception as exc:
+                            print(f"heartbeat failed: {exc}", flush=True)
+                        last_heartbeat = elapsed
+                    time.sleep(2)
+                return_code = process.returncode
+            finally:
+                stop_process_group(process)
+        if return_code != 0:
+            trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
+            raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
+
+    run_harness(prompt, "opencode", append=False)
+    if discovery_mode and discovery_needs_synthesis(repo):
+        synthesis_prompt = """
+You are in the mandatory SYNTHESIS PASS for a Bonsai Dwarf Fortress discovery cycle. The preceding
+research session ended without a promotable knowledge tree. Do not do broad research and do not
+write executable product code.
+
+Your only task now is to make the working tree promotable:
+1. Inspect `git status --short` and the existing `knowledge/` tree.
+2. Revert any change outside `knowledge/`.
+3. Create or repair `knowledge/INDEX.md` and at least one substantive note under
+   `knowledge/dfhack/` using only evidence you can verify from the installed DF 53.15 / DFHack
+   53.15-r2 text docs or scripts. Use at most three narrowly bounded evidence calls before writing.
+4. Tag every claim VERIFIED, INFERRED, or OPEN; include source paths/commands, bridge implications,
+   and the next coding recommendation. Every relative Markdown link must resolve to a real file.
+5. Finish only after `git status --short` shows changes exclusively under `knowledge/`.
+
+A prose response or another clean tree is a failed synthesis pass. Write the files now.
+""".strip()
+        run_harness(synthesis_prompt, "discovery_synthesis", append=True)
 
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
-    if return_code != 0:
-        raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
 
     status = run("git status --porcelain", repo, 30)["output"].strip()
     if status:
