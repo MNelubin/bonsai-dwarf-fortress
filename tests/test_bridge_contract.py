@@ -742,7 +742,17 @@ class TestValidationTypeSafety:
     """Updated validate_observe enforces field types from the schema."""
 
     def test_rejects_non_int_tick(self):
-        obs = _sample_obs(tick="abc")
+        units = [{"id": 100, "race": 0, "civ_id": 1, "killed": False, "pos": [0, 0, 0]}]
+        obs = {
+            "version": "1.0",
+            "gametype": "df.game_type.DWARF_FORTRESS",
+            "cur_year": 1, "cur_season": 1,
+            "cur_tick": "abc",
+            "paused": False,
+            "units": units,
+            "buildings": [{"idx": 0}],
+            "tick": 1,
+        }
         assert validate_observe(obs) is False
 
     def test_rejects_non_bool_paused(self):
@@ -830,10 +840,10 @@ class TestConfidenceIntervals:
 
     def test_ci_zero_width_for_identical_scores(self):
         runs = [
-            {"seed": i, "steps_taken": 6,
-             "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
-             "actions_used": 6, "outcome": "success"}
-            for _ in range(10)
+            {"seed": idx, "steps_taken": 6,
+              "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+              "actions_used": 6, "outcome": "success"}
+            for idx in range(10)
         ]
         agg = aggregate_runs(runs)
         lo, hi = agg["confidence_interval_95"]
@@ -841,16 +851,16 @@ class TestConfidenceIntervals:
 
     def test_ci_wider_with_variance(self):
         runs_good = [
-            {"seed": i, "steps_taken": 6,
-             "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
-             "actions_used": 6, "outcome": "success"}
-            for _ in range(5)
+            {"seed": idx, "steps_taken": 6,
+              "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+              "actions_used": 6, "outcome": "success"}
+            for idx in range(5)
         ]
         runs_bad = [
-            {"seed": i, "steps_taken": 1,
-             "final_tick": 0, "survivors": 0,
-             "actions_used": 1, "outcome": "failure"}
-            for _ in range(5)
+            {"seed": idx + 100, "steps_taken": 1,
+              "final_tick": 0, "survivors": 0,
+              "actions_used": 1, "outcome": "failure"}
+            for idx in range(5)
         ]
         agg_mixed = aggregate_runs(runs_good + runs_bad)
         agg_uniform = aggregate_runs(runs_good * 2)
@@ -886,7 +896,9 @@ if __name__ == "__main__":
                   TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
                   TestSkillChainPlayer, TestPublicEvaluator,
                   TestTraceDeterminism, TestRunnerEnhancements,
-                  TestCitizenSimulation, TestBenchmarkRunner]
+                  TestCitizenSimulation, TestBenchmarkRunner,
+                  TestValidationTypeSafety, TestEpisodeSerialization,
+                  TestConfidenceIntervals]
 
     for cls in tc_classes:
         inst = cls()

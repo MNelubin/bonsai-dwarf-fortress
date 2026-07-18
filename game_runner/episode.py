@@ -269,6 +269,7 @@ class EpisodeRunner:
         final_tick = self.metrics.get("final_tick", self.observe()["cur_tick"])
         survivors = sum(1 for u in self.units if not u["killed"] and u["civ_id"] is not None)
 
+        self.metrics["survivors"] = survivors
         return {
             "seed": self.seed,
             "save_id": self.save_id,
