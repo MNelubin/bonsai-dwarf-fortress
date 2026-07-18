@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -143,6 +142,8 @@ def run(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
         ["/bin/bash", "-lc", command],
         cwd=cwd,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         timeout=timeout,
@@ -250,6 +251,10 @@ Start with the smallest tested improvement that advances the objective. Inspect 
 Do not attempt to access control-plane, PostgreSQL, GitHub, Steam, or lab API credentials and never
 print secrets. The trusted publisher will reject changes to protected paths. Prefer edits under
 bridge/, game_runner/, player/, skills/, curricula/, evaluator_public/, tests/, and docs/.
+
+Never `cat` an unknown or binary file. Use `file`, `head`, `readelf`, `nm`, or `strings` with a small
+output limit. Verify DFHack APIs against installed scripts/docs before writing code; do not invent
+Lua functions. A useful documentation or probe improvement is better than an untested fake bridge.
 
 Return exactly one JSON action per turn. `shell` is a real root shell in the lab and can run tests or
 DFHack; `write` replaces a file under the repo. Never use an interactive command. When the change is
