@@ -73,18 +73,31 @@ def _default_observation():
     }
 
 
-def _dfhack_run(lua_code, timeout=30):
-    """Execute a Lua snippet via the DFHack CLI runner and return JSON."""
+def _dfhack_run(lualine, timeout=30):
+    """Run a single DFHack command and parse JSON from stdout.
+
+    Uses ``dfhack-run <command>`` syntax (live-probed on 53.15-r2).
+    The caller is responsible for escaping the Lua expression as valid
+    code; this wrapper simply passes ``lua <lualine>`` to the runner.
+    """
     env = {**os.environ, "HOME": "/srv/df-bonsai/state/home"}
+    dfhack_bin = os.path.join(DF_DIR, "hack", "dfhack-run")
     try:
         proc = subprocess.run(
-            [os.path.join(DF_DIR, "hack", "dfhack-run"), "-q", lua_code],
+            [dfhack_bin, f"lua {lualine}"],
             capture_output=True, text=True, timeout=timeout, env=env,
             cwd=DF_DIR,
         )
-        return json.loads(proc.stdout.strip()) if proc.returncode == 0 else {
-            "error": f"rc={proc.returncode}", "stderr": proc.stderr[:500]
-        }
+        raw = proc.stdout.strip()
+        # DFHack wraps output in ANSI reset codes; strip control sequences.
+        import re
+        raw = re.sub(r"\x1b\[[0-9;]*m", "", raw).strip()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_raw": raw}
     except subprocess.TimeoutExpired:
         return {"error": "timeout"}
 

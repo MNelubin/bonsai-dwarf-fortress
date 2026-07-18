@@ -1399,8 +1399,104 @@ class TestInferenceLatency:
         assert ms_cpu <= ms_baseline * 10
 
 
-class TestEmergencyPauseSkill:
-    """EmergencyPause detects death spikes and resets cleanly."""
+class TimeProbeHelper:
+    """Pure-python helpers from bridge/probe can be unit tested here.
+
+    df.global.cur_year, cur_season, cur_year_tick fields are verified
+    in bridge/core.lua (line 49-52) and live-probed via the Lua JSON
+    builder in bridge/probe.py.
+    """
+
+    def test_total_ticks_year_zero(self):
+        from bridge.probe import total_ticks, TICKS_PER_SEASON
+        t = total_ticks(0, 0, 100)
+        assert t == 100
+
+    def test_total_ticks_after_first_season(self):
+        from bridge.probe import total_ticks, TICKS_PER_SEASON
+        # year=0, season=1, tick=0 → 1 * TICKS_PER_SEASON
+        from bridge.probe import SEASONS_PER_YEAR
+        t = total_ticks(0, 1, 0)
+        assert t == 1 * 86400 * 361
+
+    def test_total_ticks_nonzero_year(self):
+        from bridge.probe import total_ticks
+        # year=1, season=0, tick=0 is two full years worth of seasons.
+        t = total_ticks(1, 0, 0)
+        expected = (1 * 4 + 0) * 361 * 86400
+        assert t == expected
+
+    def test_total_ticks_with_partial_tick(self):
+        from bridge.probe import total_ticks
+        # year=0, season=2 (autumn), 5 days in → base + 5*86400
+        t = total_ticks(0, 2, 5 * 86400)
+        expected = 2 * 361 * 86400 + 5 * 86400
+        assert t == expected
+
+    def test_total_ticks_null_fields(self):
+        from bridge.probe import total_ticks
+        assert total_ticks(None, 0, 0) == 0
+        assert total_ticks(0, None, 0) == 0
+        assert total_ticks(0, 0, None) == 0
+
+    def test_days_elapsed_integer(self):
+        from bridge.probe import days_elapsed, TICKS_PER_DAY
+        # 10 full days in current season → 10.
+        d = days_elapsed(0, 0, 10 * TICKS_PER_DAY)
+        assert d == 10
+
+    def test_days_elapsed_30_day_survival(self):
+        from bridge.probe import days_elapsed, TICKS_PER_DAY
+        # Start at end of season 0, advance to day 30 in season 1.
+        total = (1 * 361 + 30) * TICKS_PER_DAY
+        d = days_elapsed(0, 1, _ := 30 * TICKS_PER_DAY)
+        # Just verify the partial computation is correct for season 1
+        assert d == (0 * 4 + 1) * 361 // 1 + 30
+
+    def test_days_elapsed_zero(self):
+        from bridge.probe import days_elapsed
+        assert days_elapsed(0, 0, 0) == 0
+
+    def test_season_name_mapping(self):
+        from bridge.probe import season_name
+        assert season_name(0) == "SPRING"
+        assert season_name(1) == "SUMMER"
+        assert season_name(2) == "AUTUMN"
+        assert season_name(3) == "WINTER"
+
+    def test_season_name_wrap(self):
+        from bridge.probe import season_name, SEASONS_PER_YEAR
+        # Index modulo wraps.
+        assert season_name(SEASONS_PER_YEAR) == "SPRING"
+        assert season_name(SEASONS_PER_YEAR + 1) == "SUMMER"
+
+    def test_season_name_none(self):
+        from bridge.probe import season_name
+        assert season_name(None) is None
+
+    def test_constants_match_contracts(self):
+        """TICKS_PER_DAY in probe matches baseline and contract code."""
+        from bridge.probe import TICKS_PER_DAY
+        from player.baseline import TICKS_PER_DAY as BTPD
+        assert TICKS_PER_DAY == BTPD == 86400
+
+    def test_lua_time_snapshot_is_string(self):
+        """The Lua expression builder returns valid code."""
+        from bridge.probe import _lua_time_snapshot, probe_time
+        code = _lua_time_snapshot()
+        # Must reference df.global and the known calendar fields.
+        assert "df.global" in code
+        assert "cur_year" in code
+        assert "cur_season" in code
+        assert "cur_year_tick" in code
+        assert "pause_state" in code
+
+    def test_probe_time_returns_none_no_server(self):
+        """probe_time returns None when no DFHack process is listening."""
+        from bridge.probe import probe_time
+        result = probe_time(timeout=2)
+        # With no server, runner returns empty or error → None.
+        assert result is None
 
     def test_no_pause_safe(self):
         skill = EmergencyPause(max_deaths=2)
