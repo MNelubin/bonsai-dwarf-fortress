@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "bridge_api": {
+    "observe": {
+      "description": "Return deterministic snapshot of current game state.",
+      "input": {},
+      "output": {
+        "type": "object",
+        "required": ["version", "gametype", "cur_year", "cur_season", "cur_tick", "paused"],
+        "properties": {
+          "version": { "type": "string" },
+          "gametype": { "type": "string", "nullable": true },
+          "cur_year": { "type": "integer", "nullable": true },
+          "cur_season": { "type": "integer", "nullable": true },
+          "cur_tick":   { "type": "integer", "nullable": true },
+          "paused":     { "type": "boolean" },
+          "units":      { "type": "array" },
+          "buildings":  { "type": "array" },
+          "tick":       { "type": "integer", "description": "monotonic bridge tick counter" }
+        }
+      }
+    },
+    "reset": {
+      "description": "Reset bridge internal state between episodes.",
+      "input": {},
+      "output": { "type": "null" }
+    },
+    "act": {
+      "description": "Dispatch a single action command to DFHack.",
+      "input": {
+        "command": { "type": "string" },
+        "args":    { "oneOf": [{ "type": "array" }, { "type": "string" }], "optional": true }
+      },
+      "output": {
+        "ok":     { "type": "boolean" },
+        "message": { "type": "string" },
+        "output":  { "type": "string", "nullable": true, "optional": true }
+      }
+    },
+    "advance": {
+      "description": "Advance the game by N ticks.",
+      "input": {
+        "ticks": { "type": "integer", "minimum": 1 }
+      },
+      "output": {
+        "ok":             { "type": "boolean" },
+        "advanced_ticks": { "type": "integer", "optional": true },
+        "message":        { "type": "string", "optional": true }
+      }
+    }
+  },
+  "episode_contract": {
+    "description": "A headless episode runs reset-observe-act-advance cycles against a pinned save.",
+    "input": {
+      "seed":         { "type": "integer" },
+      "max_steps":    { "type": "integer", "default": 100 },
+      "save_id":      { "type": "string" },
+      "action_budget": { "type": "integer" }
+    },
+    "output_metrics": {
+      "seed":         { "type": "integer" },
+      "steps_taken":  { "type": "integer" },
+      "final_tick":   { "type": "integer", "nullable": true },
+      "survivors":    { "type": "integer" },
+      "actions_used": { "type": "integer" },
+      "outcome":      { "enum": ["success", "failure", "timeout"] }
+    }
+  }
+}
