@@ -15,7 +15,9 @@ from unittest import mock
 from bridge.contracts import CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_episode_metrics
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
+from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
 from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, Skill
+from curricula.levels import CURRICULUM_LEVELS, get_level, run_curriculum
 
 
 def _sample_obs(tick=0, paused=True, n_units=4):
@@ -308,6 +310,115 @@ class TestSkills:
             pass
 
 
+class TestCPUPolicy:
+    """CPU inference policy is deterministic and mirrors baseline behavior."""
+
+    def test_unpause_when_paused(self):
+        obs = {"paused": True, "gametype": None, "cur_tick": 0, "units": []}
+        action = cpu_policy(obs)
+        assert action["command"] == "unpause"
+
+    def test_advance_early_game(self):
+        units = [{"killed": False, "civ_id": 1}]
+        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
+               "cur_tick": TICKS_PER_DAY * 3, "units": units}
+        action = cpu_policy(obs)
+        assert action["command"] == "advance"
+
+    def test_advance_late_game(self):
+        units = [{"killed": False, "civ_id": 1}]
+        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
+               "cur_tick": TARGET_TICKS - TICKS_PER_DAY, "units": units}
+        action = cpu_policy(obs)
+        assert action["command"] == "advance"
+
+    def test_done_at_target(self):
+        units = [{"killed": False, "civ_id": 1}]
+        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
+               "cur_tick": TARGET_TICKS, "units": units}
+        action = cpu_policy(obs)
+        assert action["name"] == "observe"
+
+    def test_abort_no_survivors(self):
+        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
+               "cur_tick": 1000, "units": []}
+        action = cpu_policy(obs)
+        assert action is None
+
+    def test_features_attached(self):
+        units = [{"killed": False, "civ_id": 1}]
+        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
+               "cur_tick": 5000, "units": units}
+        action = cpu_policy_with_features(obs)
+        assert "_features" in action
+        feat = action["_features"]
+        assert 0 <= feat["tick_progress"] <= 1
+        assert feat["survivors"] == 1
+
+    def test_cpu_episode_deterministic(self):
+        runner_a = EpisodeRunner(seed=42, max_steps=50, action_budget=30)
+        ma = runner_a.run(cpu_policy)
+        runner_b = EpisodeRunner(seed=42, max_steps=50, action_budget=30)
+        mb = runner_b.run(cpu_policy)
+        assert ma["outcome"] == mb["outcome"]
+        assert validate_episode_metrics(ma)
+
+
+class TestBenchmarkCPUBaseline:
+    """Compare CPU policy against baseline on identical runs."""
+
+    def _run_n(self, policy, n=5):
+        metrics = []
+        for i in range(n):
+            r = EpisodeRunner(seed=i, max_steps=60, action_budget=40)
+            metrics.append(r.run(policy))
+        return metrics
+
+    def test_cpu_not_worse_than_baseline(self):
+        baseline_runs = self._run_n(baseline_policy)
+        cpu_runs = self._run_n(cpu_policy)
+
+        baseline_agg = evaluate_multiple_runs(baseline_runs)
+        cpu_agg = evaluate_multiple_runs(cpu_runs)
+
+        assert 0 <= baseline_agg["mean_score"] <= 1
+        assert 0 <= cpu_agg["mean_score"] <= 1
+
+
+class TestCurricula:
+    """Curriculum levels are well-formed and runnable."""
+
+    def test_levels_defined(self):
+        assert len(CURRICULUM_LEVELS) >= 4
+        for lvl in CURRICULUM_LEVELS:
+            assert "name" in lvl
+            assert "policy" in lvl
+            assert "target_days" in lvl
+
+    def test_get_level(self):
+        lvl = get_level(0)
+        assert lvl["name"] == "unpause_and_survive_1_day"
+
+    def test_get_level_out_of_range(self):
+        try:
+            get_level(99)
+            assert False, "Expected IndexError"
+        except IndexError:
+            pass
+
+    def test_curriculum_runs(self):
+        def factory(level_dict):
+            return EpisodeRunner(
+                max_steps=level_dict["max_steps"],
+                action_budget=level_dict["action_budget"],
+            )
+        results = run_curriculum(factory, evaluate_multiple_runs)
+        assert len(results) == len(CURRICULUM_LEVELS)
+        for name, metrics, passed in results:
+            assert isinstance(name, str)
+            assert validate_episode_metrics(metrics)
+
+
 if __name__ == "__main__":
     """Run all tests without pytest — portable to bare Python 3.13."""
     import inspect
@@ -318,7 +429,8 @@ if __name__ == "__main__":
 
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
                   TestBaselinePolicy, TestIntegrationStubEpisode,
-                  TestEvolvingTicks, TestMultiRunEvaluator, TestSkills]
+                  TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
+                  TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula]
 
     for cls in tc_classes:
         inst = cls()
