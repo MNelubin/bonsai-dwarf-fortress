@@ -54,3 +54,28 @@ class CheckSurvivors(Skill):
             if not u.get("killed", False) and u.get("civ_id") is not None
         )
         return [{"command": "observe", "meta_alive": alive}]
+
+
+class SurvivalGuard(Skill):
+    """Terminal guard: stop the episode if survivors drop below threshold.
+
+    Returns None when alive < min_citizens (signal skill-chain to terminate).
+    Returns an observe action with alive count otherwise.
+    """
+
+    def __init__(self, min_citizens=1):
+        super().__init__(
+            name="survival_guard",
+            description="Terminate if survivors fall below threshold.",
+        )
+        self.min_citizens = min_citizens
+
+    def steps(self, observation):
+        units = observation.get("units", [])
+        alive = sum(
+            1 for u in units
+            if not u.get("killed", False) and u.get("civ_id") is not None
+        )
+        if alive < self.min_citizens:
+            return None
+        return [{"command": "observe", "meta_alive": alive}]

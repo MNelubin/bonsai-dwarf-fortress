@@ -20,7 +20,7 @@ from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
 from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
 from player.skill_chain import make_skill_chain
-from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, Skill
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard, Skill
 from curricula.levels import CURRICULUM_LEVELS, get_level, run_curriculum
 from evaluator_public import score_episode, aggregate_runs, verify_trace_determinism, contract_checksum, benchmark_runner
 
@@ -314,6 +314,57 @@ class TestSkills:
         except NotImplementedError:
             pass
 
+    def test_survival_guard_passes_with_alive(self):
+        skill = SurvivalGuard(min_citizens=1)
+        obs = {
+            "units": [
+                {"killed": False, "civ_id": 1},
+                {"killed": True, "civ_id": 1},
+            ]
+        }
+        result = skill.steps(obs)
+        assert result is not None
+        assert result[0]["meta_alive"] == 1
+
+    def test_survival_guard_fails_no_alive(self):
+        skill = SurvivalGuard(min_citizens=1)
+        obs = {
+            "units": [
+                {"killed": True, "civ_id": 1},
+                {"killed": True, "civ_id": 2},
+            ]
+        }
+        assert skill.steps(obs) is None
+
+    def test_survival_guard_higher_threshold(self):
+        skill = SurvivalGuard(min_citizens=3)
+        obs = {
+            "units": [
+                {"killed": False, "civ_id": 1},
+                {"killed": False, "civ_id": 2},
+            ]
+        }
+        assert skill.steps(obs) is None
+
+    def test_survival_guard_terminal_in_chain(self):
+        chain = make_skill_chain(StartFortress(), SurvivalGuard(min_citizens=1))
+        dead_obs = {
+            "paused": False,
+            "units": [{"killed": True, "civ_id": 1}],
+        }
+        assert chain(dead_obs) is None
+
+    def test_survival_guard_epilogue_in_chain(self):
+        chain = make_skill_chain(AdvanceTimeStep(ticks=100), SurvivalGuard(min_citizens=1))
+        alive_obs = {
+            "cur_tick": 0,
+            "units": [{"killed": False, "civ_id": 1}],
+        }
+        a1 = chain(alive_obs)
+        assert a1["command"] == "advance"
+        a2 = chain({"cur_tick": 100, "units": [{"killed": False, "civ_id": 1}]})
+        assert a2["command"] == "observe"
+
 
 class TestCPUPolicy:
     """CPU inference policy is deterministic and mirrors baseline behavior."""
@@ -421,6 +472,21 @@ class TestBenchmarkCPUBaseline:
             f"baseline worst {baseline_agg['worst_score']:.4f}"
         )
 
+    def test_skill_chain_not_worse_than_baseline(self):
+        """Skill-chain policy must not regress beyond tolerance of baseline."""
+        from curricula.levels import _survive_30_chain
+        baseline_runs = self._run_n(baseline_policy, n=5)
+        chain_runs = self._run_n(_survive_30_chain, n=5)
+
+        baseline_agg = evaluate_multiple_runs(baseline_runs)
+        chain_agg = evaluate_multiple_runs(chain_runs)
+
+        tolerance = 0.25
+        assert chain_agg["mean_score"] >= baseline_agg["mean_score"] - tolerance, (
+            f"Chain mean {chain_agg['mean_score']:.4f} too far below "
+            f"baseline mean {baseline_agg['mean_score']:.4f}"
+        )
+
 
 class TestCurricula:
     """Curriculum levels are well-formed and runnable."""
@@ -459,6 +525,22 @@ class TestCurricula:
         """Objective C: the 7-day skill-chain level exists in curricula."""
         names = [lvl["name"] for lvl in CURRICULUM_LEVELS]
         assert "survive_7_days_skill_chain" in names
+
+    def test_30_day_skill_chain_level_present(self):
+        """Objective D: 30-day skill-chain level exists with survival guard."""
+        names = [lvl["name"] for lvl in CURRICULUM_LEVELS]
+        assert "survive_30_days_skill_chain" in names
+
+    def test_30_day_skill_chain_runs(self):
+        """The 30-day chain should advance far enough to reach target ticks."""
+        from curricula.levels import _survive_30_chain
+        runner = EpisodeRunner(
+            seed=0, max_steps=100, action_budget=50,
+        )
+        metrics = runner.run(_survive_30_chain)
+        assert validate_episode_metrics(metrics)
+        target_ticks = TICKS_PER_DAY * 30
+        assert metrics["final_tick"] >= target_ticks
 
 
 class TestSkillChainPlayer:

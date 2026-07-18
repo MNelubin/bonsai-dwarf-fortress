@@ -7,7 +7,8 @@ Each entry specifies the policy, runner parameters, and success criteria.
 from player.baseline import baseline_policy
 from player.cpu_policy import cpu_policy
 from player.skill_chain import make_skill_chain
-from skills import StartFortress, AdvanceTimeStep, CheckSurvivors
+from player.baseline import TICKS_PER_DAY
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard
 
 
 # ---------------------------------------------------------------------------
@@ -15,6 +16,11 @@ from skills import StartFortress, AdvanceTimeStep, CheckSurvivors
 # ---------------------------------------------------------------------------
 
 _survive_7_chain = make_skill_chain(StartFortress(), AdvanceTimeStep())
+_survive_30_chain = make_skill_chain(
+    StartFortress(),
+    AdvanceTimeStep(ticks=TICKS_PER_DAY * 5),
+    SurvivalGuard(min_citizens=1),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +68,15 @@ CURRICULUM_LEVELS = [
         "name": "survive_30_days_cpu",
         "description": "Full 30-day survival with CPU inference policy.",
         "policy": cpu_policy,
+        "max_steps": 100,
+        "action_budget": 50,
+        "target_days": 30,
+        "min_survivors": 1,
+    },
+    {
+        "name": "survive_30_days_skill_chain",
+        "description": "Skill-chain: unpause → advance(5d) × N with survival guard.",
+        "policy": _survive_30_chain,
         "max_steps": 100,
         "action_budget": 50,
         "target_days": 30,
