@@ -269,6 +269,7 @@ Research trace:
         {
             "model": config.model.removeprefix("ollama/"),
             "stream": False,
+            "think": False,
             "messages": [
                 {
                     "role": "system",
@@ -277,7 +278,7 @@ Research trace:
                 {"role": "user", "content": prompt},
             ],
             "format": schema,
-            "options": {"temperature": 0.1, "num_ctx": 65536},
+            "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 4096},
         }
     ).encode("utf-8")
     request = urllib.request.Request(
