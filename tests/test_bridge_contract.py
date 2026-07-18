@@ -340,10 +340,23 @@ class TestCPUPolicy:
         assert action["name"] == "observe"
 
     def test_abort_no_survivors(self):
-        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
-               "cur_tick": 1000, "units": []}
+        # Must have non-empty units list with all killed for abort to fire.
+        dead_units = [{"killed": True, "civ_id": 1}, {"killed": True, "civ_id": 1}]
+        obs = {
+            "paused": False,
+            "gametype": "df.game_type.DWARF_FORTRESS",
+            "cur_tick": 1000,
+            "units": dead_units,
+        }
         action = cpu_policy(obs)
         assert action is None
+
+    def test_no_abort_on_empty_units(self):
+        """Empty units list means unknown — CPU policy falls through to advance."""
+        obs = {"paused": False, "gametype": "df.game_type.DWARF_FORTRESS",
+                "cur_tick": 1000, "units": []}
+        action = cpu_policy(obs)
+        assert action is not None
 
     def test_features_attached(self):
         units = [{"killed": False, "civ_id": 1}]
@@ -375,6 +388,12 @@ class TestBenchmarkCPUBaseline:
         return metrics
 
     def test_cpu_not_worse_than_baseline(self):
+        """CPU policy mean score must be within tolerance of baseline.
+
+        Tolerance = 0.25 covers the small distributional differences in
+        advance chunk sizes between the two policies.  Failures indicate
+        a regression in cpu_policy or baseline evaluation.
+        """
         baseline_runs = self._run_n(baseline_policy)
         cpu_runs = self._run_n(cpu_policy)
 
@@ -383,6 +402,19 @@ class TestBenchmarkCPUBaseline:
 
         assert 0 <= baseline_agg["mean_score"] <= 1
         assert 0 <= cpu_agg["mean_score"] <= 1
+
+        # CPU score ≥ (baseline - tolerance); ensures CPU has not regressed.
+        tolerance = 0.25
+        assert cpu_agg["mean_score"] >= baseline_agg["mean_score"] - tolerance, (
+            f"CPU mean {cpu_agg['mean_score']:.4f} too far below "
+            f"baseline mean {baseline_agg['mean_score']:.4f}"
+        )
+
+        # CPU worst run ≥ (baseline worst - tolerance).
+        assert cpu_agg["worst_score"] >= baseline_agg["worst_score"] - tolerance, (
+            f"CPU worst {cpu_agg['worst_score']:.4f} too far below "
+            f"baseline worst {baseline_agg['worst_score']:.4f}"
+        )
 
 
 class TestCurricula:

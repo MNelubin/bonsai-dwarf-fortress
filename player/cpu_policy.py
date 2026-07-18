@@ -18,16 +18,17 @@ TARGET_TICKS = TICKS_PER_DAY * DAYS_TARGET
 _DECISION_TABLE = [
     # Phase 1: game paused → unpause immediately
     ("unpause_phase", lambda obs: obs.get("paused") and not obs.get("gametype")),
-    # Phase 2: early game, survivors alive → aggressive advance
-    ("advance_early", lambda obs: _alive(obs) >= 1 and (obs.get("cur_tick") or 0) < TARGET_TICKS * 0.3),
+    # Phase 2: early game → aggressive advance; allows forward progress when units unknown
+    ("advance_early", lambda obs:
+         _alive(obs) >= 1 and (obs.get("cur_tick") or 0) < TARGET_TICKS * 0.3),
     # Phase 3: mid game, monitor more carefully
     ("advance_mid", lambda obs: _alive(obs) >= 1 and (obs.get("cur_tick") or 0) < TARGET_TICKS * 0.7),
     # Phase 4: approaching target, conservative advance
     ("advance_late", lambda obs: _alive(obs) >= 1 and (obs.get("cur_tick") or 0) < TARGET_TICKS),
     # Terminal: survived long enough → signal success
     ("done", lambda obs: (obs.get("cur_tick") or 0) >= TARGET_TICKS),
-    # Failure: no survivors and game started
-    ("abort", lambda obs: _alive(obs) == 0 and obs.get("gametype")),
+    # Failure: confirmed units exist but all dead
+    ("abort", lambda obs: len(obs.get("units", [])) > 0 and _alive(obs) == 0 and obs.get("gametype")),
 ]
 
 _ADVANCE_EARLY = 5 * TICKS_PER_DAY
