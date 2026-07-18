@@ -54,6 +54,9 @@ def make_skill_chain(*skills):
         nonlocal _needs_refill
         buffer.clear()
         _needs_refill = True
+        for skill in skills:
+            if callable(getattr(skill, "reset", None)):
+                skill.reset()
 
     policy._reset = _reset
 

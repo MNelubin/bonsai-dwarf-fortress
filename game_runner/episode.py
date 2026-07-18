@@ -357,6 +357,26 @@ class EpisodeRunner:
             return self._logger.to_json()
         return b""
 
+    # ------------------------------------------------------------------
+    def run_multiple(self, action_policy, num_runs, seed_start=0):
+        """Execute *num_runs* episodes with incrementing seeds.
+
+        Parameters:
+            action_policy: callable(observation) -> action_dict | None
+            num_runs: number of independent episodes to execute.
+            seed_start: integer; each episode gets seed = seed_start + i.
+
+        Returns:
+            List of metrics dicts (one per run), each conforming to the
+            episode output contract from ``contracts.json``.
+        """
+        results = []
+        for i in range(num_runs):
+            self.seed = seed_start + i
+            m = self.run(action_policy)
+            results.append(m)
+        return results
+
 
 def evaluate_multiple_runs(run_metrics_list):
     """Aggregate metrics across multiple episode runs.

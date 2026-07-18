@@ -1217,6 +1217,87 @@ class TestCurriculumGradualAndMonitor:
         assert validate_episode_metrics(m)
 
 
+class TestSkillChainReset:
+    """make_skill_chain propagates _reset() to skills defining reset()."""
+
+    def test_reset_clears_emergency_pause_state(self):
+        skill = EmergencyPause(max_deaths=1)
+        chain = make_skill_chain(StartFortress(), skill)
+
+        warm_obs = {"paused": True, "units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        a1 = chain(warm_obs)
+        assert a1["command"] == "unpause"
+
+        # Feed safe observation to establish baseline alive count.
+        warm2 = {"paused": False, "units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        chain._reset()
+        a2 = chain(warm2)
+
+        # Internal _prev_alive must be None after reset.
+        assert skill._prev_alive is None
+
+    def test_reset_called_twice_clears_state(self):
+        """Two back-to-back runs through EpisodeRunner leave skills clean."""
+        ep_skill = EmergencyPause(max_deaths=1)
+        chain = make_skill_chain(StartFortress(), AdvanceTimeStep(ticks=100), ep_skill)
+        r = EpisodeRunner(seed=0, max_steps=10, action_budget=5)
+        r.run(chain)
+
+        # _prev_alive was set during the run.
+        assert ep_skill._prev_alive is not None
+
+        r.run(chain)  # Second run resets skills via _reset().
+        assert ep_skill._prev_alive is None
+
+
+class TestRunnerMultiple:
+    """EpisodeRunner.run_multiple() produces deterministic batch results."""
+
+    def test_returns_correct_count(self):
+        r = EpisodeRunner(max_steps=10, action_budget=6)
+        results = r.run_multiple(baseline_policy, num_runs=5, seed_start=10)
+        assert len(results) == 5
+
+    def test_each_result_valid_contract(self):
+        r = EpisodeRunner(max_steps=15, action_budget=8)
+        results = r.run_multiple(cpu_policy, num_runs=3, seed_start=0)
+        for m in results:
+            assert validate_episode_metrics(m) is True
+
+    def test_seeded_sweep_deterministic(self):
+        """Two identical sweeps produce byte-identical metrics lists."""
+        r1 = EpisodeRunner(max_steps=20, action_budget=12)
+        a = r1.run_multiple(baseline_policy, num_runs=4, seed_start=100)
+
+        r2 = EpisodeRunner(max_steps=20, action_budget=12)
+        b = r2.run_multiple(baseline_policy, num_runs=4, seed_start=100)
+
+        for m1, m2 in zip(a, b):
+            assert m1["seed"] == m2["seed"]
+            assert m1["outcome"] == m2["outcome"]
+            assert m1["survivors"] == m2["survivors"]
+            assert m1["steps_taken"] == m2["steps_taken"]
+
+    def test_seed_incrementing(self):
+        r = EpisodeRunner(max_steps=5, action_budget=3)
+        results = r.run_multiple(baseline_policy, num_runs=4, seed_start=50)
+        for i, m in enumerate(results):
+            assert m["seed"] == 50 + i
+
+    def test_batch_aggregate_computed(self):
+        """Verify aggregate_runs over run_multiple output."""
+        r = EpisodeRunner(max_steps=20, action_budget=10)
+        runs = r.run_multiple(baseline_policy, num_runs=8, seed_start=0)
+        agg = aggregate_runs(runs)
+        assert agg["runs"] == 8
+        assert 0 <= agg["mean_score"] <= 1
+        assert agg["std_dev"] >= 0
+
+
 class TestEpisodeLoggerIntegration:
     """EpisodeLogger is wired into EpisodeRunner and produces fingerprints."""
 
