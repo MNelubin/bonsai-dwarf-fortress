@@ -202,8 +202,9 @@ def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
         raise ValueError("structured discovery returned an invalid INDEX.md")
     if not isinstance(note_markdown, str) or not 500 <= len(note_markdown) <= 100_000:
         raise ValueError("structured discovery returned an invalid focused note")
-    required_markers = ("VERIFIED", "INFERRED", "OPEN", "53.15", "53.15-r2")
-    if any(marker not in note_markdown for marker in required_markers):
+    if "53.15" not in note_markdown or "53.15-r2" not in note_markdown:
+        raise ValueError("structured discovery note lacks exact version markers")
+    if not any(marker in note_markdown for marker in ("VERIFIED", "INFERRED", "OPEN")):
         raise ValueError("structured discovery note lacks claim tags or exact version markers")
     relative_target = f"dfhack/{note_path}"
     if relative_target not in index_markdown:
@@ -457,7 +458,17 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
 def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     repo, base_commit, branch = prepare_run(config, job)
     trace_path = repo.parent / "opencode-trace.jsonl"
-    previous_cycle = job.get("payload", {}).get("previous_cycle") or {}
+    raw_payload = job.get("payload", {})
+    previous_cycle = raw_payload.get("previous_cycle") or {}
+    compact_previous = {
+        key: value
+        for key, value in previous_cycle.items()
+        if key != "summary_tail"
+    }
+    compact_previous["summary_tail"] = str(previous_cycle.get("summary_tail") or "")[-800:]
+    objective_payload = {
+        key: value for key, value in raw_payload.items() if key != "previous_cycle"
+    }
     discovery_mode = job.get("job_type") == "discovery_cycle"
     if discovery_mode:
         mode_instructions = """
@@ -487,9 +498,9 @@ A clean git tree is a rejected cycle.
     prompt = f"""
 Work autonomously as the senior agent for Bonsai Dwarf Fortress.
 
-Objective payload: {json.dumps(job.get('payload', {}), ensure_ascii=False)}
+Objective payload: {json.dumps(objective_payload, ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
-Previous cycle outcome: {json.dumps(previous_cycle, ensure_ascii=False)}
+Compacted previous-cycle handoff: {json.dumps(compact_previous, ensure_ascii=False)}
 
 You are root inside an isolated Debian LXC containing Steam Dwarf Fortress 53.15 and DFHack
 53.15-r2 at /srv/df-bonsai/current. This repository clone has no GitHub, PostgreSQL, Steam, or
@@ -502,6 +513,9 @@ APIs from actual scripts, docs, source definitions, or controlled probes; do not
 read binary content. Do not modify protected control_plane/, db/, evaluator_private/, infra/,
 security/, .github/, or lab_agent/. Do not add symlinks, submodules, secrets, generated binaries, or
 files over 2 MiB.
+
+Stay in this OpenCode run while working: its built-in context compaction preserves the active task
+when the context grows. Do not abandon the task merely because a response boundary is reached.
 
 {mode_instructions}
 
