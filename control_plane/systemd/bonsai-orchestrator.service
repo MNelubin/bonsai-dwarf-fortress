@@ -1,0 +1,22 @@
+[Unit]
+Description=Bonsai durable autonomous orchestrator
+After=network-online.target tailscaled.service bonsai-api.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=bonsai
+Group=bonsai
+WorkingDirectory=/opt/bonsai-control
+EnvironmentFile=/etc/bonsai-control/app.env
+ExecStart=/opt/bonsai-control/venv/bin/bonsai-orchestrator
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/bonsai-control
+
+[Install]
+WantedBy=multi-user.target

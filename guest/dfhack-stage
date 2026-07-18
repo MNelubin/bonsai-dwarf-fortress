@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$EUID" -ne 0 ]]; then
+    echo 'Run this command as root.' >&2
+    exit 1
+fi
+
+requested_tag="${1:-latest}"
+api_base='https://api.github.com/repos/DFHack/dfhack/releases'
+
+if [[ "$requested_tag" == 'latest' ]]; then
+    release_url="${api_base}/latest"
+else
+    if [[ ! "$requested_tag" =~ ^[0-9]+\.[0-9]+-r[0-9]+([a-z0-9.-]+)?$ ]]; then
+        echo "Invalid DFHack release tag: ${requested_tag}" >&2
+        exit 1
+    fi
+    release_url="${api_base}/tags/${requested_tag}"
+fi
+
+release_json="$(curl --fail --silent --show-error --location "$release_url")"
+tag="$(jq -r '.tag_name' <<<"$release_json")"
+asset_name="dfhack-${tag}-Linux-64bit.tar.bz2"
+asset_url="$(jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' <<<"$release_json")"
+
+if [[ -z "$asset_url" || "$asset_url" == 'null' ]]; then
+    echo "Linux release asset not found: ${asset_name}" >&2
+    exit 1
+fi
+
+stage_dir="/srv/df-bonsai/staging/dfhack/${tag}"
+archive_path="${stage_dir}/${asset_name}"
+payload_dir="${stage_dir}/payload"
+
+install -d -m 0750 "$stage_dir"
+
+if [[ ! -s "$archive_path" ]]; then
+    curl --fail --location --retry 3 "$asset_url" --output "${archive_path}.part"
+    mv "${archive_path}.part" "$archive_path"
+fi
+
+sha256sum "$archive_path" | tee "${archive_path}.sha256"
+
+if [[ ! -d "$payload_dir" ]]; then
+    install -d -m 0750 "$payload_dir"
+    tar -xjf "$archive_path" -C "$payload_dir"
+fi
+
+printf 'Staged DFHack release: %s\n' "$tag"
+printf 'Payload directory: %s\n' "$payload_dir"
+find "$payload_dir" -maxdepth 2 -type f \( -name dfhack -o -name dfhack-run \) -print
+

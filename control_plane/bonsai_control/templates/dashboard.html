@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="10">
+  <title>Bonsai Control</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b0f14; --panel:#131a22; --line:#263242; --text:#e7edf5; --muted:#92a0b3; --green:#58d68d; --amber:#f5b041; --red:#ec7063; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; }
+    header { display:flex; justify-content:space-between; align-items:center; padding:20px 28px; border-bottom:1px solid var(--line); }
+    h1,h2 { margin:0; font-weight:600; } h1 { font-size:20px; } h2 { font-size:15px; margin-bottom:12px; }
+    main { padding:22px; display:grid; grid-template-columns:repeat(12,1fr); gap:16px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; overflow:auto; }
+    .status { grid-column:span 12; display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+    .jobs { grid-column:span 8; } .objectives { grid-column:span 4; } .events { grid-column:span 12; max-height:420px; }
+    .metric { border-left:3px solid var(--green); padding-left:10px; } .label { color:var(--muted); font-size:12px; } .value { font-size:16px; }
+    table { width:100%; border-collapse:collapse; } th,td { padding:8px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; } th { color:var(--muted); font-weight:500; }
+    code { color:#9cdcfe; } .mode-running { color:var(--green); } .mode-paused { color:var(--amber); } .mode-emergency_stop { color:var(--red); }
+    @media(max-width:900px){ .jobs,.objectives{grid-column:span 12}.status{grid-template-columns:1fr 1fr} }
+  </style>
+</head>
+<body>
+<header><h1>Bonsai Dwarf Fortress</h1><span class="label">trusted control plane · {{ now }}</span></header>
+<main>
+  <section class="status">
+    <div class="metric"><div class="label">SYSTEM MODE</div><div class="value mode-{{ state.mode }}">{{ state.mode }}</div></div>
+    <div class="metric"><div class="label">AUTONOMY</div><div class="value">{{ state.autonomy_mode }}</div></div>
+    <div class="metric"><div class="label">BASELINE</div><div class="value"><code>{{ state.current_baseline_commit or 'not set' }}</code></div></div>
+    <div class="metric"><div class="label">REFRESH</div><div class="value">10 seconds</div></div>
+  </section>
+  <section class="jobs"><h2>Recent jobs</h2><table><thead><tr><th>state</th><th>type</th><th>priority</th><th>attempt</th><th>created</th></tr></thead><tbody>
+    {% for j in jobs %}<tr><td>{{ j.state }}</td><td><code>{{ j.job_type }}</code></td><td>{{ j.priority }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.created_at }}</td></tr>{% else %}<tr><td colspan="5">No jobs yet</td></tr>{% endfor %}
+  </tbody></table></section>
+  <section class="objectives"><h2>Objectives</h2><table><thead><tr><th>priority</th><th>objective</th><th>status</th></tr></thead><tbody>
+    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td>{{ o.title }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No objectives</td></tr>{% endfor %}
+  </tbody></table></section>
+  <section class="events"><h2>Event ledger</h2><table><thead><tr><th>id</th><th>time</th><th>actor</th><th>event</th><th>aggregate</th></tr></thead><tbody>
+    {% for e in events %}<tr><td>{{ e.id }}</td><td>{{ e.created_at }}</td><td>{{ e.actor_type }}:{{ e.actor_id }}</td><td>{{ e.event_type }}</td><td>{{ e.aggregate_type }}:{{ e.aggregate_id or '-' }}</td></tr>{% else %}<tr><td colspan="5">No events</td></tr>{% endfor %}
+  </tbody></table></section>
+</main>
+</body>
+</html>
+

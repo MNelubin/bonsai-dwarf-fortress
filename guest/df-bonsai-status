@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf 'Host: '
+hostname
+printf 'OS: '
+# shellcheck disable=SC1091
+. /etc/os-release
+printf '%s\n' "$PRETTY_NAME"
+printf 'SteamCMD: '
+runuser -u steam -- env HOME=/srv/steam LANG=en_US.UTF-8 /opt/steamcmd/steamcmd.sh +quit 2>&1 \
+    | grep -m1 'Steam Console Client' || true
+
+echo 'Current release link:'
+if [[ -L /srv/df-bonsai/current ]]; then
+    readlink -f /srv/df-bonsai/current
+else
+    echo '(not activated)'
+fi
+
+echo 'Steam manifests:'
+find /srv/steam /srv/df-bonsai -type f -name 'appmanifest_*.acf' -print 2>/dev/null || true
+
+echo 'Staged components:'
+du -sh /srv/df-bonsai/staging/* 2>/dev/null || echo '(none)'
+
+echo 'Installed releases:'
+find /srv/df-bonsai/releases -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null || true
+
+echo 'Latest upstream DFHack:'
+curl -fsSL https://api.github.com/repos/DFHack/dfhack/releases/latest | jq -r '.tag_name'

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$EUID" -ne 0 ]]; then
+    echo 'Run this command as root.' >&2
+    exit 1
+fi
+
+if [[ ! -t 0 || ! -t 1 ]]; then
+    echo 'An interactive SSH terminal is required for the Steam password and Steam Guard prompts.' >&2
+    exit 1
+fi
+
+steam_account="${1:-}"
+if [[ -z "$steam_account" ]]; then
+    read -r -p 'Steam account name: ' steam_account
+fi
+
+if [[ -z "$steam_account" || "$steam_account" == *[[:space:]]* ]]; then
+    echo 'Steam account name must be non-empty and contain no whitespace.' >&2
+    exit 1
+fi
+
+stage_dir='/srv/df-bonsai/staging/df-steam'
+install -d -o steam -g steam -m 0750 "$stage_dir"
+
+echo 'SteamCMD will now ask for the password and possibly a Steam Guard code.'
+echo 'The password is handled by SteamCMD and is not passed as a command-line argument.'
+echo 'This stages Dwarf Fortress app 975370; it does not activate the staged build.'
+
+runuser -u steam -- env \
+    HOME=/srv/steam \
+    LANG=en_US.UTF-8 \
+    /opt/steamcmd/steamcmd.sh \
+    +@ShutdownOnFailedCommand 1 \
+    +force_install_dir "$stage_dir" \
+    +login "$steam_account" \
+    +app_update 975370 validate \
+    +quit
+
+echo
+echo 'Steam stage completed. Candidate manifests:'
+find /srv/steam /srv/df-bonsai -type f -name 'appmanifest_975370.acf' -print
+echo
+echo 'Staged directory:'
+du -sh "$stage_dir"
+
