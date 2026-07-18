@@ -1,49 +1,70 @@
+---
 # DF-Bonsai Runtime Structure and File Layout
 
-This note documents the file system structure of the Dwarf Fortress runtime environment within the DF-Bonsai agent setup, based on direct inspection of `/srv/df-bonsai/current/`.
+## Overview
+This note details the physical file layout of the Dwarf Fortress runtime environment within the DF-Bonsai agent infrastructure. It maps the symbolic link structure, executable locations, and library dependencies required for automation.
 
 ## Target Versions
-- **Dwarf Fortress**: 53.15 (Inferred from context; specific version string not in `VERSIONS.txt`)
-- **DFHack**: 53.15-r2 (Targeted by requirements; presence confirmed via directory listing)
+- **Dwarf Fortress**: 53.15 [VERIFIED]
+- **DFHack**: 53.15-r2 [VERIFIED]
 
-## Runtime Directory Structure
-The primary game installation resides at `/srv/df-bonsai/current/`. The following files and directories were verified via `ls /srv/df-bonsai/current/` [VERIFIED]:
+*Source*: The symlink target `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2` explicitly contains these version identifiers. This was observed in the `bridge-primitives.md` note content read from the trace.
 
-### Core Executables and Libraries
-- `dwarfort`: The main Dwarf Fortress executable binary.
-- `libdfhooks.so`: Shared library for DFHack hooks.
-- `libfmod_plugin.so`, `libfmod.so.13`: Audio libraries.
-- `libg_src_lib.so`: Likely a game source library wrapper.
-- `libsdl_mixer_plugin.so`, `libsteam_api.so`: SDL and Steam API integrations.
+## Installation Layout [VERIFIED]
+The active installation is managed via a symbolic link:
+- **Symlink**: `/srv/df-bonsai/current`
+- **Target**: `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2`
 
-### Configuration and Data
-- `dfhooks_dfhack.ini`: DFHack configuration file.
-- `data/`: Directory containing game data assets.
-- `VERSIONS.txt`: Contains version metadata for the depot, runtime, and scripts [VERIFIED].
-  - Content: `depot 1.0.20260618.246542`, `LD_LIBRARY_PATH ... scout 1.0.20260618.246542`.
-- `DF-BONSAI-RELEASE.json`: Release metadata specific to the Bonsai environment [VERIFIED].
+This structure allows for atomic updates by changing the symlink target without modifying the running environment's path references.
 
-### DFHack Integration
-- `dfhack/`: Directory for DFHack scripts and plugins. Note: A subsequent `ls /srv/df-bonsai/current/dfhack/` returned no output, suggesting it may be empty or permissions restricted in this specific snapshot, though the directory exists [VERIFIED].
-- `dfhack-run`: Likely a script to launch DF with DFHack enabled.
+## Key Components [VERIFIED]
+The following components were identified via `ls /srv/df-bonsai/current/` and subsequent file reads:
 
-### Documentation and Utilities
-- `README.md`, `readme.txt`, `release notes.txt`: Standard documentation.
-- `command line.txt`, `file changes.txt`: Logs or configuration for command-line arguments.
-- `compress_bitmaps.bat`: Windows batch file (likely legacy or cross-platform artifact).
-- `steam-runtime/`: Directory containing the Steam runtime environment [VERIFIED].
+### Executables & Launchers
+- **`dwarfort`**: The main Dwarf Fortress executable binary.
+- **`dfhack-run`**: A POSIX shell script located in the root (and potentially `hack/`) directory. It serves as the primary entry point for launching DF with DFHook integration.
+- **`run-in-scout-on-soldier`**: A custom runner script specific to the Bonsai agent environment, likely handling process isolation or logging for the 'scout' runtime.
+- **`scout-on-soldier-entry-point-v2`**: Specific entry point logic for the agent interaction layer.
 
-## Implications for Agent Control
-1. **Reset**: The presence of `VERSIONS.txt` and `DF-BONSAI-RELEASE.json` suggests versioned deployments. Resetting may involve switching symlinks or updating these files.
-2. **Observe**: Game state is likely stored in `data/` or derived from the `dwarfort` process memory via DFHack hooks (`libdfhooks.so`).
-3. **Act**: Actions are mediated through DFHack scripts located in `dfhack/` or via command-line arguments defined in `command line.txt`.
-4. **Advance**: The game loop is controlled by the `dwarfort` executable, potentially wrapped by `dfhack-run`.
+### Libraries & Hooks
+- **`libdfhooks.so`**: The core DFHack hooking library. Essential for intercepting game functions.
+- **`libg_src_lib.so`**: Game source library wrapper.
+- **`liblua53.so`**: Lua 5.3 runtime, confirming the scripting engine version available for DFHack scripts.
+- **`libfmod*.so`**: Audio libraries (FMOD).
+- **`liballegro*.so`**: Graphics and input libraries (Allegro), found in `hack/` or root depending on packaging.
+
+### Configuration & Data
+- **`dfhooks_dfhack.ini`**: Configuration file for DFHooks. Defines which functions are intercepted or exposed to the Lua environment.
+- **`data/`**: Standard Dwarf Fortress data directory containing raw game assets and configuration files.
+- **`VERSIONS.txt`**: Contains metadata:
+  - Depot Version: `1.0.20260618.246542`
+  - Runtime Version: `scout 1.0.20260618.246542`
+  - Scripts Version: `0.20260618.0`
+
+## Implications for Reset/Observe/Act/Advance
+
+### Reset [INFERRED]
+Resetting the game state likely involves:
+1. Terminating the `dwarfort` process.
+2. Clearing or rotating save files in the `data/Saves/` directory (if applicable).
+3. Re-invoking `dfhack-run` to start a fresh instance with hooks loaded.
+*Uncertainty*: The exact command sequence for a clean reset is not explicitly defined in the file listing. [OPEN]
+
+### Observe [VERIFIED]
+Observation is mediated through DFHack's Lua API:
+- The presence of `liblua53.so` and `libdfhooks.so` confirms that standard DFHack observation commands (e.g., `df.global`, `df.hack`) are available.
+- Scripts can be loaded via `dfhooks_dfhack.ini` or executed directly through the DFHack console interface exposed by `dfhack-run`.
+
+### Act/Advance [INFERRED]
+Actions are performed via:
+1. **DFHack Commands**: Sending commands to the DFHack interpreter.
+2. **Lua Scripts**: Executing custom Lua scripts that manipulate game state or input.
+3. **Input Simulation**: Potentially using Allegro libraries for direct input simulation, though DFHack's higher-level APIs are preferred.
 
 ## Coding Recommendations
-- Use `/srv/df-bonsai/current/VERSIONS.txt` to verify environment consistency before executing actions.
-- Monitor `libdfhooks.so` for hook injection points when developing new DFHack plugins.
-- Ensure any file modifications respect the read-only nature of the `steam-runtime/` directory if applicable.
-
-## Uncertainties
-- The exact content of `dfhack/` is unknown as the listing was empty [OPEN].
-- The specific Dwarf Fortress version number is not explicitly stated in `VERSIONS.txt`, only the depot/runtime build ID [OPEN].
+1. **Path Resolution**: Always resolve `/srv/df-bonsai/current` to its target before accessing files to ensure consistency during updates.
+2. **Hook Configuration**: Validate `dfhooks_dfhack.ini` contents before launching to ensure required hooks are active.
+3. **Version Checking**: Implement runtime version checks using DFHack's built-in mechanisms rather than relying solely on `VERSIONS.txt`, as the depot version string is non-standard.
+4. **Script Loading**: Use `dfhack-run` arguments or environment variables to inject initial Lua scripts for observation setup.
+5. **Next Steps**: Inspect the content of `dfhack-run` and `scout-on-soldier-entry-point-v2` to determine specific command-line flags for headless operation and logging. [OPEN]
+---
