@@ -38,10 +38,10 @@ def tick() -> None:
                 ("job.requeued" if job["state"] == "queued" else "job.failed", str(job["id"]), json.dumps({"reason": "lease expired"})),
             )
 
-        mode = connection.execute(
-            "SELECT mode FROM bonsai.system_state WHERE singleton = true"
-        ).fetchone()["mode"]
-        if mode != "running":
+        system_state = connection.execute(
+            "SELECT mode, current_baseline_commit FROM bonsai.system_state WHERE singleton = true"
+        ).fetchone()
+        if system_state["mode"] != "running" or not system_state["current_baseline_commit"]:
             return
 
         objective = connection.execute(
@@ -65,8 +65,8 @@ def tick() -> None:
         job = connection.execute(
             """
             INSERT INTO bonsai.jobs
-                (objective_id, job_type, priority, payload, constraints, max_attempts)
-            VALUES (%s, 'research_cycle', %s, %s, %s, 2)
+                (objective_id, job_type, priority, payload, constraints, base_commit, max_attempts)
+            VALUES (%s, 'research_cycle', %s, %s, %s, %s, 2)
             RETURNING id
             """,
             (
@@ -74,6 +74,7 @@ def tick() -> None:
                 objective["priority"],
                 json.dumps({"objective": objective["title"], "description": objective["description"]}),
                 json.dumps(DEFAULT_CONSTRAINTS),
+                system_state["current_baseline_commit"],
             ),
         ).fetchone()
         connection.execute(

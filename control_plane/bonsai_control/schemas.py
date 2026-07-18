@@ -29,9 +29,17 @@ class Heartbeat(BaseModel):
     progress: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkerHeartbeat(BaseModel):
+    status: Literal["idle", "running", "error"]
+    model: str = Field(min_length=1, max_length=200)
+    harness: str = Field(default="opencode", min_length=1, max_length=100)
+    version: str = Field(default="unknown", min_length=1, max_length=100)
+    current_job_id: UUID | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class ObjectiveCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
     priority: int = Field(default=100, ge=-1000, le=1000)
     cycle_interval_seconds: int = Field(default=300, ge=30, le=86_400)
-

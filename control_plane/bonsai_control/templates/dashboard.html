@@ -6,40 +6,81 @@
   <meta http-equiv="refresh" content="10">
   <title>Bonsai Control</title>
   <style>
-    :root { color-scheme: dark; --bg:#0b0f14; --panel:#131a22; --line:#263242; --text:#e7edf5; --muted:#92a0b3; --green:#58d68d; --amber:#f5b041; --red:#ec7063; }
-    * { box-sizing: border-box; }
+    :root { color-scheme:dark; --bg:#090e13; --panel:#111923; --panel2:#0c131c; --line:#273445; --text:#e7edf5; --muted:#91a0b4; --cyan:#72d6ff; --green:#5ee39a; --amber:#f7bd58; --red:#ff776d; }
+    * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; }
-    header { display:flex; justify-content:space-between; align-items:center; padding:20px 28px; border-bottom:1px solid var(--line); }
-    h1,h2 { margin:0; font-weight:600; } h1 { font-size:20px; } h2 { font-size:15px; margin-bottom:12px; }
-    main { padding:22px; display:grid; grid-template-columns:repeat(12,1fr); gap:16px; }
-    section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; overflow:auto; }
-    .status { grid-column:span 12; display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-    .jobs { grid-column:span 8; } .objectives { grid-column:span 4; } .events { grid-column:span 12; max-height:420px; }
-    .metric { border-left:3px solid var(--green); padding-left:10px; } .label { color:var(--muted); font-size:12px; } .value { font-size:16px; }
-    table { width:100%; border-collapse:collapse; } th,td { padding:8px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; } th { color:var(--muted); font-weight:500; }
-    code { color:#9cdcfe; } .mode-running { color:var(--green); } .mode-paused { color:var(--amber); } .mode-emergency_stop { color:var(--red); }
-    @media(max-width:900px){ .jobs,.objectives{grid-column:span 12}.status{grid-template-columns:1fr 1fr} }
+    header { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:19px 24px; border-bottom:1px solid var(--line); position:sticky; top:0; background:rgba(9,14,19,.96); z-index:2; }
+    h1,h2,h3 { margin:0; font-weight:650; } h1 { font-size:20px; } h2 { font-size:15px; margin-bottom:13px; } h3 { font-size:14px; }
+    a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
+    main { padding:20px; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:15px; }
+    section { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:15px; overflow:auto; }
+    .status { grid-column:span 12; display:grid; grid-template-columns:repeat(7,minmax(130px,1fr)); gap:10px; }
+    .workers { grid-column:span 5; } .objectives { grid-column:span 7; } .jobs,.artifacts,.events { grid-column:span 12; }
+    .events { max-height:520px; }
+    .metric { border-left:3px solid var(--green); padding:3px 0 3px 10px; min-width:0; }
+    .label { color:var(--muted); font-size:11px; letter-spacing:.04em; } .value { font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    table { width:100%; border-collapse:collapse; } th,td { padding:8px 9px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; } th { color:var(--muted); font-weight:500; font-size:12px; }
+    code { color:#a4ddff; overflow-wrap:anywhere; } pre { margin:8px 0 0; padding:10px; background:var(--panel2); border:1px solid var(--line); border-radius:7px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:320px; overflow:auto; color:#cbd6e4; }
+    details { min-width:130px; } summary { color:var(--cyan); cursor:pointer; } .detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; margin-top:9px; }
+    .box { background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:9px; min-width:0; }
+    .pill { display:inline-block; padding:2px 7px; border-radius:999px; border:1px solid var(--line); font-size:12px; }
+    .running,.completed,.online { color:var(--green); } .paused,.queued,.candidate { color:var(--amber); } .failed,.error,.offline,.emergency_stop { color:var(--red); }
+    .muted { color:var(--muted); } .nowrap { white-space:nowrap; } .wide { min-width:260px; }
+    @media(max-width:1100px){ .status{grid-template-columns:repeat(3,1fr)} .workers,.objectives{grid-column:span 12} }
+    @media(max-width:700px){ main{padding:10px}.status{grid-template-columns:1fr 1fr}.detail-grid{grid-template-columns:1fr}header{position:static;align-items:flex-start;flex-direction:column} }
   </style>
 </head>
 <body>
-<header><h1>Bonsai Dwarf Fortress</h1><span class="label">trusted control plane · {{ now }}</span></header>
+<header>
+  <div><h1>Bonsai Dwarf Fortress</h1><div class="label">trusted control plane · read-only dashboard</div></div>
+  <div class="nowrap">{% if github_url %}<a href="{{ github_url }}" target="_blank" rel="noreferrer">GitHub repository ↗</a> · {% endif %}<span class="label">{{ now }}</span></div>
+</header>
 <main>
   <section class="status">
-    <div class="metric"><div class="label">SYSTEM MODE</div><div class="value mode-{{ state.mode }}">{{ state.mode }}</div></div>
+    <div class="metric"><div class="label">SYSTEM MODE</div><div class="value {{ state.mode }}">{{ state.mode }}</div></div>
     <div class="metric"><div class="label">AUTONOMY</div><div class="value">{{ state.autonomy_mode }}</div></div>
-    <div class="metric"><div class="label">BASELINE</div><div class="value"><code>{{ state.current_baseline_commit or 'not set' }}</code></div></div>
+    <div class="metric"><div class="label">BASELINE</div><div class="value">{% if state.current_baseline_commit %}{% if github_url %}<a href="{{ github_url }}/commit/{{ state.current_baseline_commit }}" target="_blank">{{ state.current_baseline_commit[:12] }}</a>{% else %}<code>{{ state.current_baseline_commit[:12] }}</code>{% endif %}{% else %}<span class="failed">not set</span>{% endif %}</div></div>
+    <div class="metric"><div class="label">QUEUED / RUNNING</div><div class="value">{{ counts.queued }} / {{ counts.running }}</div></div>
+    <div class="metric"><div class="label">CANDIDATES</div><div class="value candidate">{{ counts.candidates }}</div></div>
+    <div class="metric"><div class="label">FAILED / TOTAL</div><div class="value">{{ counts.failed }} / {{ counts.total }}</div></div>
     <div class="metric"><div class="label">REFRESH</div><div class="value">10 seconds</div></div>
   </section>
-  <section class="jobs"><h2>Recent jobs</h2><table><thead><tr><th>state</th><th>type</th><th>priority</th><th>attempt</th><th>created</th></tr></thead><tbody>
-    {% for j in jobs %}<tr><td>{{ j.state }}</td><td><code>{{ j.job_type }}</code></td><td>{{ j.priority }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td><td>{{ j.created_at }}</td></tr>{% else %}<tr><td colspan="5">No jobs yet</td></tr>{% endfor %}
+
+  <section class="workers"><h2>Workers</h2><table><thead><tr><th>state</th><th>worker</th><th>model / harness</th><th>last seen</th></tr></thead><tbody>
+    {% for w in workers %}<tr><td><span class="pill {{ 'online' if w.online else 'offline' }}">{{ w.status if w.online else 'offline' }}</span></td><td><code>{{ w.worker_id }}</code><br><span class="label">v{{ w.version }}</span></td><td>{{ w.model }}<br><span class="label">{{ w.harness }}{% if w.current_job_id %} · job {{ w.current_job_id|string|truncate(12, True, '') }}{% endif %}</span></td><td class="nowrap">{{ w.last_seen_at }}</td></tr>{% else %}<tr><td colspan="4">No heartbeat received yet</td></tr>{% endfor %}
   </tbody></table></section>
-  <section class="objectives"><h2>Objectives</h2><table><thead><tr><th>priority</th><th>objective</th><th>status</th></tr></thead><tbody>
-    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td>{{ o.title }}</td><td>{{ o.status }}</td></tr>{% else %}<tr><td colspan="3">No objectives</td></tr>{% endfor %}
+
+  <section class="objectives"><h2>Objectives</h2><table><thead><tr><th>priority</th><th>objective</th><th>status</th><th>interval / last job</th></tr></thead><tbody>
+    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td class="wide">{{ o.title }}<br><span class="label">{{ o.description }}</span></td><td><span class="pill {{ o.status }}">{{ o.status }}</span></td><td>{{ o.cycle_interval_seconds }}s<br><span class="label">{{ o.last_job_at or 'never' }}</span></td></tr>{% else %}<tr><td colspan="4">No objectives</td></tr>{% endfor %}
   </tbody></table></section>
-  <section class="events"><h2>Event ledger</h2><table><thead><tr><th>id</th><th>time</th><th>actor</th><th>event</th><th>aggregate</th></tr></thead><tbody>
-    {% for e in events %}<tr><td>{{ e.id }}</td><td>{{ e.created_at }}</td><td>{{ e.actor_type }}:{{ e.actor_id }}</td><td>{{ e.event_type }}</td><td>{{ e.aggregate_type }}:{{ e.aggregate_id or '-' }}</td></tr>{% else %}<tr><td colspan="5">No events</td></tr>{% endfor %}
+
+  <section class="jobs"><h2>Job history</h2><table><thead><tr><th>state</th><th>job / objective</th><th>model / phase</th><th>attempt</th><th>duration</th><th>commits</th><th>created</th><th>evidence</th></tr></thead><tbody>
+    {% for j in jobs %}<tr>
+      <td><span class="pill {{ j.state }}">{{ j.state }}</span></td>
+      <td><code>{{ j.id|string|truncate(12, True, '') }}</code><br><span class="label">{{ j.job_type }} · {{ j.objective_title or 'manual' }}</span></td>
+      <td>{{ j.progress.get('model') or j.result.get('model') or '-' }}<br><span class="label">{{ j.progress.get('phase') or j.result.get('harness') or '-' }}</span></td>
+      <td>{{ j.attempts }}/{{ j.max_attempts }}</td>
+      <td>{% if j.duration_seconds is not none %}{{ '%.0f'|format(j.duration_seconds) }}s{% else %}-{% endif %}</td>
+      <td>{% if j.base_commit %}{% if github_url %}<a href="{{ github_url }}/commit/{{ j.base_commit }}" target="_blank">base {{ j.base_commit[:9] }}</a>{% else %}<code>{{ j.base_commit[:9] }}</code>{% endif %}{% else %}<span class="muted">no base</span>{% endif %}<br>{% if j.candidate_commit %}{% if github_url %}<a href="{{ github_url }}/commit/{{ j.candidate_commit }}" target="_blank">candidate {{ j.candidate_commit[:9] }}</a>{% else %}<code>{{ j.candidate_commit[:9] }}</code>{% endif %}{% endif %}</td>
+      <td class="nowrap">{{ j.created_at }}</td>
+      <td><details><summary>inspect</summary><div class="detail-grid">
+        <div class="box"><div class="label">PAYLOAD</div><pre>{{ j.payload|tojson(indent=2) }}</pre></div>
+        <div class="box"><div class="label">CONSTRAINTS</div><pre>{{ j.constraints|tojson(indent=2) }}</pre></div>
+        <div class="box"><div class="label">PROGRESS</div><pre>{{ j.progress|tojson(indent=2) }}</pre></div>
+        <div class="box"><div class="label">RESULT</div><pre>{{ j.result|tojson(indent=2) }}</pre></div>
+        {% if j.error_tail %}<div class="box"><div class="label">ERROR (LAST 2000 CHARS)</div><pre>{{ j.error_tail }}</pre></div>{% endif %}
+        <div class="box"><div class="label">ARTIFACTS</div>{% for sha in j.artifact_hashes %}<div><a href="/artifacts/{{ sha }}">{{ sha[:16] }}… download</a></div>{% else %}<span class="muted">none</span>{% endfor %}</div>
+      </div></details></td>
+    </tr>{% else %}<tr><td colspan="8">No jobs yet</td></tr>{% endfor %}
+  </tbody></table></section>
+
+  <section class="artifacts"><h2>Artifacts</h2><table><thead><tr><th>created</th><th>sha256</th><th>type</th><th>size</th><th>job</th><th>metadata</th></tr></thead><tbody>
+    {% for a in artifacts %}<tr><td class="nowrap">{{ a.created_at }}</td><td><a href="/artifacts/{{ a.sha256 }}">{{ a.sha256 }}</a></td><td>{{ a.media_type }}</td><td>{{ a.size_bytes }} B</td><td><code>{{ a.producing_job_id or '-' }}</code></td><td><details><summary>json</summary><pre>{{ a.metadata|tojson(indent=2) }}</pre></details></td></tr>{% else %}<tr><td colspan="6">No artifacts</td></tr>{% endfor %}
+  </tbody></table></section>
+
+  <section class="events"><h2>Append-only event ledger</h2><table><thead><tr><th>id</th><th>time</th><th>actor</th><th>event</th><th>aggregate</th><th>payload</th></tr></thead><tbody>
+    {% for e in events %}<tr><td>{{ e.id }}</td><td class="nowrap">{{ e.created_at }}</td><td>{{ e.actor_type }}:{{ e.actor_id }}</td><td><code>{{ e.event_type }}</code></td><td>{{ e.aggregate_type }}:{{ e.aggregate_id or '-' }}</td><td><details><summary>json</summary><pre>{{ e.payload|tojson(indent=2) }}</pre></details></td></tr>{% else %}<tr><td colspan="6">No events</td></tr>{% endfor %}
   </tbody></table></section>
 </main>
 </body>
 </html>
-

@@ -5,19 +5,19 @@ import os
 import secrets
 import tempfile
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from psycopg import Connection
 
 from .auth import require_admin, require_lab
 from .db import close_pool, connection as db_connection, open_pool
-from .schemas import Heartbeat, JobCreate, JobFailure, JobResult, ObjectiveCreate
+from .schemas import Heartbeat, JobCreate, JobFailure, JobResult, ObjectiveCreate, WorkerHeartbeat
 from .settings import get_settings
 
 
@@ -31,7 +31,7 @@ async def lifespan(_: FastAPI):
     close_pool()
 
 
-app = FastAPI(title="Bonsai Control Plane", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Bonsai Control Plane", version="0.2.0", lifespan=lifespan)
 
 
 def _event(
@@ -62,6 +62,14 @@ def _event(
 
 def _lease_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _valid_commit(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
+        raise HTTPException(status_code=422, detail="invalid git commit hash")
+    return value
 
 
 def _verify_lease(connection: Connection, job_id: UUID, token: str, worker_id: str) -> dict[str, Any]:
@@ -223,6 +231,64 @@ def heartbeat(
     return row
 
 
+@app.post("/api/v1/workers/heartbeat")
+def worker_heartbeat(
+    payload: WorkerHeartbeat,
+    worker_id: str = Depends(require_lab),
+) -> dict[str, Any]:
+    with db_connection() as connection, connection.transaction():
+        previous = connection.execute(
+            "SELECT * FROM bonsai.workers WHERE worker_id = %s FOR UPDATE", (worker_id,)
+        ).fetchone()
+        row = connection.execute(
+            """
+            INSERT INTO bonsai.workers
+                (worker_id, status, model, harness, version, current_job_id, details)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (worker_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                model = EXCLUDED.model,
+                harness = EXCLUDED.harness,
+                version = EXCLUDED.version,
+                current_job_id = EXCLUDED.current_job_id,
+                details = EXCLUDED.details,
+                last_seen_at = now(),
+                updated_at = now()
+            RETURNING *
+            """,
+            (
+                worker_id,
+                payload.status,
+                payload.model,
+                payload.harness,
+                payload.version,
+                payload.current_job_id,
+                json.dumps(payload.details),
+            ),
+        ).fetchone()
+        changed = previous is None or any(
+            previous[field] != row[field]
+            for field in ("status", "model", "harness", "version", "current_job_id")
+        )
+        if changed:
+            _event(
+                connection,
+                "worker.status_changed",
+                "lab",
+                worker_id,
+                "worker",
+                worker_id,
+                {
+                    "status": row["status"],
+                    "model": row["model"],
+                    "harness": row["harness"],
+                    "version": row["version"],
+                    "current_job_id": row["current_job_id"],
+                },
+            )
+    return row
+
+
 @app.post("/api/v1/jobs/{job_id}/complete")
 def complete_job(
     job_id: UUID,
@@ -231,17 +297,48 @@ def complete_job(
     worker_id: str = Depends(require_lab),
 ) -> dict[str, Any]:
     with db_connection() as connection, connection.transaction():
-        _verify_lease(connection, job_id, lease_token, worker_id)
+        job = _verify_lease(connection, job_id, lease_token, worker_id)
+        reported_base = _valid_commit(payload.result.get("base_commit"))
+        candidate_commit = _valid_commit(payload.result.get("candidate_commit"))
+        if reported_base and job["base_commit"] and reported_base != job["base_commit"]:
+            raise HTTPException(status_code=409, detail="worker base_commit differs from trusted job baseline")
+        if payload.status == "candidate" and (not candidate_commit or candidate_commit == job["base_commit"]):
+            raise HTTPException(status_code=422, detail="candidate job must report a new candidate_commit")
         row = connection.execute(
             """
             UPDATE bonsai.jobs
             SET state = %s, result = %s, artifact_hashes = %s,
+                base_commit = COALESCE(base_commit, %s), candidate_commit = %s,
                 lease_owner = NULL, lease_token_hash = NULL, lease_expires_at = NULL,
                 completed_at = now(), updated_at = now()
             WHERE id = %s RETURNING *
             """,
-            (payload.status, json.dumps(payload.result), payload.artifact_hashes, job_id),
+            (
+                payload.status,
+                json.dumps(payload.result),
+                payload.artifact_hashes,
+                reported_base,
+                candidate_commit,
+                job_id,
+            ),
         ).fetchone()
+        if payload.status == "candidate":
+            connection.execute(
+                """
+                INSERT INTO bonsai.git_changes
+                    (job_id, base_commit, candidate_commit, branch_name, changed_paths,
+                     promotion_state, evidence)
+                VALUES (%s, %s, %s, %s, %s, 'draft', %s)
+                """,
+                (
+                    job_id,
+                    row["base_commit"],
+                    candidate_commit,
+                    payload.result.get("branch"),
+                    payload.result.get("changed_paths", []),
+                    json.dumps({"artifact_hashes": payload.artifact_hashes}),
+                ),
+            )
         _event(connection, f"job.{payload.status}", "lab", worker_id, "job", str(job_id), payload.result)
     return row
 
@@ -349,6 +446,27 @@ async def upload_artifact(
     return {"sha256": expected_sha256, "size_bytes": size, "stored": True}
 
 
+@app.get("/artifacts/{artifact_sha256}")
+def download_artifact(artifact_sha256: str) -> FileResponse:
+    if len(artifact_sha256) != 64 or any(c not in "0123456789abcdef" for c in artifact_sha256):
+        raise HTTPException(status_code=400, detail="invalid sha256")
+    with db_connection() as connection:
+        artifact = connection.execute(
+            "SELECT * FROM bonsai.artifacts WHERE sha256 = %s", (artifact_sha256,)
+        ).fetchone()
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    artifact_root = Path(get_settings().artifact_dir).resolve()
+    stored_path = Path(artifact["storage_path"]).resolve()
+    if not stored_path.is_relative_to(artifact_root) or not stored_path.is_file():
+        raise HTTPException(status_code=404, detail="artifact file unavailable")
+    return FileResponse(
+        stored_path,
+        media_type=artifact["media_type"],
+        filename=f"{artifact_sha256}.artifact",
+    )
+
+
 @app.get("/api/v1/events/stream")
 async def stream_events(after_id: int = 0) -> StreamingResponse:
     async def generate():
@@ -368,10 +486,20 @@ async def stream_events(after_id: int = 0) -> StreamingResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request) -> HTMLResponse:
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
     with db_connection() as connection:
         state = connection.execute("SELECT * FROM bonsai.system_state WHERE singleton = true").fetchone()
         jobs = connection.execute(
-            "SELECT * FROM bonsai.jobs ORDER BY created_at DESC LIMIT 25"
+            """
+            SELECT j.*, o.title AS objective_title,
+                   CASE WHEN j.started_at IS NOT NULL
+                        THEN EXTRACT(EPOCH FROM (COALESCE(j.completed_at, now()) - j.started_at))
+                   END AS duration_seconds
+            FROM bonsai.jobs j
+            LEFT JOIN bonsai.objectives o ON o.id = j.objective_id
+            ORDER BY j.created_at DESC LIMIT 25
+            """
         ).fetchall()
         objectives = connection.execute(
             "SELECT * FROM bonsai.objectives ORDER BY priority DESC, created_at LIMIT 25"
@@ -379,8 +507,42 @@ def dashboard(request: Request) -> HTMLResponse:
         events = connection.execute(
             "SELECT * FROM bonsai.events ORDER BY id DESC LIMIT 30"
         ).fetchall()
+        workers = connection.execute(
+            "SELECT * FROM bonsai.workers ORDER BY last_seen_at DESC"
+        ).fetchall()
+        artifacts = connection.execute(
+            "SELECT * FROM bonsai.artifacts ORDER BY created_at DESC LIMIT 25"
+        ).fetchall()
+        counts = connection.execute(
+            """
+            SELECT
+                count(*) FILTER (WHERE state = 'queued') AS queued,
+                count(*) FILTER (WHERE state = 'leased') AS running,
+                count(*) FILTER (WHERE state = 'candidate') AS candidates,
+                count(*) FILTER (WHERE state = 'failed') AS failed,
+                count(*) AS total
+            FROM bonsai.jobs
+            """
+        ).fetchone()
+    for job in jobs:
+        job["error_tail"] = (job["error"] or "")[-2_000:]
+    for worker in workers:
+        worker["online"] = worker["last_seen_at"] >= now - timedelta(seconds=90)
+    github_url = settings.github_repo.rstrip("/")
+    if github_url and not github_url.startswith(("http://", "https://")):
+        github_url = f"https://github.com/{github_url}"
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
-        context={"state": state, "jobs": jobs, "objectives": objectives, "events": events, "now": datetime.now(timezone.utc)},
+        context={
+            "state": state,
+            "jobs": jobs,
+            "objectives": objectives,
+            "events": events,
+            "workers": workers,
+            "artifacts": artifacts,
+            "counts": counts,
+            "github_url": github_url,
+            "now": now,
+        },
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import signal
@@ -89,6 +90,29 @@ class Api:
             f"/api/v1/jobs/{job['id']}/heartbeat",
             {"progress": progress},
             {"lease_token": job["lease_token"]},
+        )
+
+    def worker_heartbeat(
+        self,
+        status: str,
+        current_job_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            version = importlib.metadata.version("bonsai-lab-agent")
+        except importlib.metadata.PackageNotFoundError:
+            version = "development"
+        self.request(
+            "POST",
+            "/api/v1/workers/heartbeat",
+            {
+                "status": status,
+                "model": self.config.model,
+                "harness": "opencode",
+                "version": version,
+                "current_job_id": current_job_id,
+                "details": details or {},
+            },
         )
 
     def complete(self, job: dict[str, Any], result: dict[str, Any], artifacts: list[str]) -> None:
@@ -205,6 +229,23 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    requested_base = job.get("base_commit")
+    if not requested_base:
+        raise RuntimeError("job has no trusted base_commit")
+    subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{requested_base}^{{commit}}"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "switch", "--detach", requested_base],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     branch = f"agent/{job['id']}"
     subprocess.run(["git", "-C", str(repo), "switch", "-c", branch], check=True)
@@ -275,6 +316,11 @@ Finish only when the working tree contains a tested, reviewable improvement; exp
                                 "elapsed_seconds": round(elapsed),
                             },
                         )
+                        api.worker_heartbeat(
+                            "running",
+                            str(job["id"]),
+                            {"elapsed_seconds": round(elapsed), "phase": "opencode"},
+                        )
                     except Exception as exc:
                         print(f"heartbeat failed: {exc}", flush=True)
                     last_heartbeat = elapsed
@@ -303,6 +349,14 @@ Finish only when the working tree contains a tested, reviewable improvement; exp
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
     ).strip()
     changed = candidate_commit != base_commit
+    changed_paths = (
+        subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{base_commit}..{candidate_commit}"],
+            text=True,
+        ).splitlines()
+        if changed
+        else []
+    )
     artifacts: list[str] = []
     if changed:
         subprocess.run(
@@ -327,6 +381,7 @@ Finish only when the working tree contains a tested, reviewable improvement; exp
             "candidate_commit": candidate_commit,
             "branch": branch,
             "changed": changed,
+            "changed_paths": changed_paths,
             "candidate_requested": changed,
             "duration_seconds": round(time.monotonic() - started, 2),
         },
@@ -343,16 +398,27 @@ def main() -> None:
     while True:
         job: dict[str, Any] | None = None
         try:
+            api.worker_heartbeat("idle")
             job = api.lease()
             if job is None:
                 time.sleep(config.poll_seconds)
                 continue
             print(f"leased job {job['id']} type={job['job_type']}", flush=True)
+            api.worker_heartbeat("running", str(job["id"]), {"phase": "preparing"})
             result, artifacts = execute_job(config, api, job)
             api.complete(job, result, artifacts)
+            api.worker_heartbeat("idle", details={"last_job_id": str(job["id"])})
             print(f"completed job {job['id']} artifacts={len(artifacts)}", flush=True)
         except Exception as exc:
             print(f"job failed: {exc}", flush=True)
+            try:
+                api.worker_heartbeat(
+                    "error",
+                    str(job["id"]) if job is not None else None,
+                    {"error": repr(exc)[-2000:]},
+                )
+            except Exception as heartbeat_exc:
+                print(f"failed to report worker status: {heartbeat_exc}", flush=True)
             if job is not None:
                 try:
                     api.fail(job, repr(exc))
