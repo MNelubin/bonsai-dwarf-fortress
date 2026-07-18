@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     scheduler_interval_seconds: int = 10
     ollama_url: str = "http://100.96.0.4:11434"
     github_repo: str = ""
+    artifact_dir: str = "/srv/bonsai-control/artifacts"
+    artifact_max_bytes: int = 268_435_456
 
 
 @lru_cache

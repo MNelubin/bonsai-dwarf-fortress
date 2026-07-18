@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
 import json
+import os
 import secrets
+import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -277,6 +279,74 @@ def list_events(after_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
             "SELECT * FROM bonsai.events WHERE id > %s ORDER BY id LIMIT %s",
             (after_id, limit),
         ).fetchall()
+
+
+@app.put("/api/v1/artifacts/{expected_sha256}", status_code=status.HTTP_201_CREATED)
+async def upload_artifact(
+    expected_sha256: str,
+    request: Request,
+    job_id: UUID | None = None,
+    media_type: str = "application/octet-stream",
+    worker_id: str = Depends(require_lab),
+) -> dict[str, Any]:
+    if len(expected_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_sha256):
+        raise HTTPException(status_code=400, detail="invalid sha256")
+    settings = get_settings()
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > settings.artifact_max_bytes:
+        raise HTTPException(status_code=413, detail="artifact too large")
+
+    artifact_root = Path(settings.artifact_dir)
+    target_dir = artifact_root / expected_sha256[:2]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    size = 0
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=target_dir, prefix=".upload-", delete=False) as output:
+            temporary_path = Path(output.name)
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > settings.artifact_max_bytes:
+                    raise HTTPException(status_code=413, detail="artifact too large")
+                digest.update(chunk)
+                output.write(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise HTTPException(status_code=422, detail="sha256 mismatch")
+        target = target_dir / expected_sha256
+        os.replace(temporary_path, target)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+    with db_connection() as connection, connection.transaction():
+        connection.execute(
+            """
+            INSERT INTO bonsai.artifacts
+                (sha256, size_bytes, media_type, storage_path, producing_job_id, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (sha256) DO NOTHING
+            """,
+            (
+                expected_sha256,
+                size,
+                media_type,
+                str(target),
+                job_id,
+                json.dumps({"uploaded_by": worker_id}),
+            ),
+        )
+        _event(
+            connection,
+            "artifact.stored",
+            "lab",
+            worker_id,
+            "artifact",
+            expected_sha256,
+            {"size_bytes": size, "job_id": job_id},
+        )
+    return {"sha256": expected_sha256, "size_bytes": size, "stored": True}
 
 
 @app.get("/api/v1/events/stream")
