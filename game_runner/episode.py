@@ -51,29 +51,63 @@ class EpisodeRunner:
         return True
 
     # ------------------------------------------------------------------
+    def _stub_observe(self):
+        """Internal observation state shared by advance and the loop."""
+        if not hasattr(self, "_obs_state"):
+            self._obs_state = {
+                "version": "1.0",
+                "gametype": None,
+                "cur_year": 0,
+                "cur_season": 0,
+                "cur_tick": 0,
+                "paused": True,
+                "units": [],
+                "buildings": [],
+                "tick": 0,
+                "source": "stub",
+            }
+        return self._obs_state
+
+    # ------------------------------------------------------------------
     def observe(self):
         """Thin wrapper around bridge.observe() — stub for headless use."""
-        return {
-            "version": "1.0",
-            "gametype": None,
-            "cur_year": 0,
-            "cur_season": 0,
-            "cur_tick": 0,
-            "paused": True,
-            "units": [],
-            "buildings": [],
-            "tick": len(self.trace),
-            "source": "stub",
-        }
+        s = self._stub_observe()
+        # Return a copy so the caller can't mutate internal state.
+        import copy
+        result = {**s}
+        result["units"] = list(s["units"])
+        result["buildings"] = list(s["buildings"])
+        return result
 
     # ------------------------------------------------------------------
     def act(self, action):
-        """Dispatch one action via bridge.act() — stub returning ok=False."""
-        return {"ok": False, "message": "stub_no_liveldf"}
+        """Dispatch one action via bridge.act() — stub processing advances."""
+        cmd = action.get("command", "") or action.get("name", "")
+        state = self._stub_observe()
+
+        if cmd == "unpause":
+            state["paused"] = False
+            state["gametype"] = "df.game_type.DWARF_FORTRESS"
+            return {"ok": True, "message": "unpaused"}
+        elif cmd == "advance":
+            args = action.get("args", []) or []
+            tick_amount = int(args[0]) if args else 100
+            self.advance(tick_amount)
+            return {"ok": True, "message": f"advanced {tick_amount} ticks"}
+        elif cmd == "pause":
+            state["paused"] = True
+            return {"ok": True, "message": "paused"}
+        elif cmd == "observe":
+            return {"ok": True, "output": self.observe()}
+        else:
+            return {"ok": False, "message": f"stub_unknown_cmd:{cmd}"}
 
     # ------------------------------------------------------------------
     def advance(self, ticks=100):
         """Advance N game ticks — stub incrementing internal counter."""
+        state = self._stub_observe()
+        state["cur_tick"] += ticks
+        state["tick"] += 1
         self.metrics["final_tick"] = (self.metrics.get("final_tick") or 0) + ticks
         return {"ok": True, "advanced_ticks": ticks}
 
@@ -106,7 +140,7 @@ class EpisodeRunner:
         final_tick = self.metrics.get("final_tick", self.observe()["cur_tick"])
         survivors = len(self.observe().get("units", []))
 
-        return {
+        result = {
             "seed": self.seed,
             "save_id": self.save_id,
             "steps_taken": self.metrics["steps_taken"],
@@ -115,3 +149,53 @@ class EpisodeRunner:
             "actions_used": self.metrics["actions_used"],
             "outcome": outcome,
         }
+        return result
+
+
+def evaluate_multiple_runs(run_metrics_list):
+    """Aggregate metrics across multiple episode runs.
+
+    Parameters:
+        run_metrics_list: list of dicts matching episode output contract.
+
+    Returns a dict with aggregate statistics and worst-run metrics.
+    """
+    n = len(run_metrics_list)
+    if n == 0:
+        return {
+            "runs": 0,
+            "mean_score": 0.0,
+            "median_score": 0.0,
+            "worst_score": 0.0,
+            "best_score": 0.0,
+            "pass_rate": 0.0,
+            "worst_run": None,
+        }
+
+    from player.baseline import evaluate_episode
+
+    scored = []
+    for m in run_metrics_list:
+        score, _ = evaluate_episode(m)
+        scored.append((score, m))
+
+    scores = [s for s, _ in scored]
+    passed = sum(1 for s in scores if s >= 0.8)
+
+    sorted_scores = sorted(scores)
+    median_idx = n // 2
+    median = (sorted_scores[median_idx - 1] + sorted_scores[median_idx]) / 2 if n % 2 == 0 else sorted_scores[median_idx]
+
+    worst_scored = min(scored, key=lambda x: x[0])
+    best_scored = max(scored, key=lambda x: x[0])
+
+    return {
+        "runs": n,
+        "mean_score": sum(scores) / n,
+        "median_score": median,
+        "worst_score": worst_scored[0],
+        "best_score": best_scored[0],
+        "pass_rate": passed / n,
+        "worst_run": worst_scored[1],
+        "best_run": best_scored[1],
+    }

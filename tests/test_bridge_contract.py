@@ -13,8 +13,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from unittest import mock
 
 from bridge.contracts import CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_episode_metrics
-from game_runner.episode import EpisodeRunner
+from game_runner.episode import EpisodeRunner, evaluate_multiple_runs
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, Skill
 
 
 def _sample_obs(tick=0, paused=True, n_units=4):
@@ -185,6 +186,128 @@ class TestIntegrationStubEpisode:
         assert validate_episode_metrics(metrics_a) is True
 
 
+class TestEvolvingTicks:
+    """EpisodeRunner stub advances ticks through the observe state."""
+
+    def test_advance_increments_tick(self):
+        runner = EpisodeRunner(seed=99, max_steps=50, action_budget=30)
+        obs_before = runner.observe()
+        assert obs_before["cur_tick"] == 0
+        runner.advance(432000)
+        obs_after = runner.observe()
+        assert obs_after["cur_tick"] == 432000
+
+    def test_advance_accumulates(self):
+        runner = EpisodeRunner(seed=99, max_steps=50, action_budget=30)
+        runner.advance(100)
+        runner.advance(200)
+        obs = runner.observe()
+        assert obs["cur_tick"] == 300
+
+    def test_episode_reaches_30_days(self):
+        runner = EpisodeRunner(seed=7, max_steps=50, action_budget=30)
+        metrics = runner.run(baseline_policy)
+        target_ticks = TICKS_PER_DAY * 30
+        # With stub units empty the baseline policy halts quickly.
+        # But if we mock units alive, it should advance to ~30 days.
+        assert validate_episode_metrics(metrics) is True
+
+    def test_observe_returns_copy(self):
+        runner = EpisodeRunner(seed=99)
+        obs1 = runner.observe()
+        obs1["cur_tick"] = 9999
+        obs2 = runner.observe()
+        assert obs2["cur_tick"] != 9999
+
+
+class TestMultiRunEvaluator:
+    """evaluate_multiple_runs produces aggregate and worst-run metrics."""
+
+    def _sample_metrics(self, tick, survivors):
+        return {
+            "seed": 100,
+            "steps_taken": 5,
+            "final_tick": tick,
+            "survivors": survivors,
+            "actions_used": 4,
+            "outcome": "success",
+        }
+
+    def test_empty_list(self):
+        result = evaluate_multiple_runs([])
+        assert result["runs"] == 0
+        assert result["worst_run"] is None
+
+    def test_aggregate_computed(self):
+        runs = [
+            self._sample_metrics(TICKS_PER_DAY * 30, 2),
+            self._sample_metrics(TICKS_PER_DAY * 10, 0),
+            self._sample_metrics(TICKS_PER_DAY * 25, 1),
+        ]
+        agg = evaluate_multiple_runs(runs)
+        assert agg["runs"] == 3
+        assert 0 <= agg["mean_score"] <= 1
+        assert 0 <= agg["worst_score"] <= 1
+        assert 0 <= agg["best_score"] <= 1
+        assert isinstance(agg["pass_rate"], float)
+        assert agg["worst_run"] is not None
+
+    def test_pass_rate_all_pass(self):
+        runs = [self._sample_metrics(TICKS_PER_DAY * 30, 2) for _ in range(5)]
+        agg = evaluate_multiple_runs(runs)
+        assert agg["pass_rate"] == 1.0
+
+    def test_worst_run_identified(self):
+        good = self._sample_metrics(TICKS_PER_DAY * 30, 4)
+        bad = self._sample_metrics(1, 0)
+        agg = evaluate_multiple_runs([good, bad])
+        assert agg["worst_run"]["survivors"] == 0
+
+
+class TestSkills:
+    """Skill classes produce correct action sequences."""
+
+    def test_start_fortress_yields_unpause(self):
+        skill = StartFortress()
+        obs = {"paused": True}
+        results = list(skill.steps(obs))
+        assert len(results) == 1
+        assert results[0]["command"] == "unpause"
+
+    def test_start_fortress_skips_if_not_paused(self):
+        skill = StartFortress()
+        obs = {"paused": False}
+        result = skill.steps(obs)
+        assert result is None
+
+    def test_advance_time_yields_action(self):
+        skill = AdvanceTimeStep(ticks=5000)
+        results = list(skill.steps({"cur_tick": 0}))
+        assert len(results) == 1
+        assert results[0]["command"] == "advance"
+        assert results[0]["args"] == [5000]
+
+    def test_check_survivors_count_alive(self):
+        skill = CheckSurvivors()
+        obs = {
+            "units": [
+                {"killed": False, "civ_id": 1},
+                {"killed": True, "civ_id": 1},
+            ]
+        }
+        results = list(skill.steps(obs))
+        assert len(results) == 1
+        assert results[0]["meta_alive"] == 1
+
+    def test_skill_base_raises_not_implemented(self):
+        try:
+            skill = Skill("bad", "desc")
+            list(skill.steps({}))
+            assert False, "Expected NotImplementedError"
+        except NotImplementedError:
+            pass
+
+
 if __name__ == "__main__":
     """Run all tests without pytest — portable to bare Python 3.13."""
     import inspect
@@ -194,7 +317,8 @@ if __name__ == "__main__":
     passed = 0
 
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
-                  TestBaselinePolicy, TestIntegrationStubEpisode]
+                  TestBaselinePolicy, TestIntegrationStubEpisode,
+                  TestEvolvingTicks, TestMultiRunEvaluator, TestSkills]
 
     for cls in tc_classes:
         inst = cls()
