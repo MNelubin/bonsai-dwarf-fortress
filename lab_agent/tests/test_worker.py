@@ -1,7 +1,11 @@
 import subprocess
 from pathlib import Path
 
-from bonsai_lab_agent.worker import discovery_needs_synthesis, working_tree_paths
+from bonsai_lab_agent.worker import (
+    discovery_needs_synthesis,
+    working_tree_paths,
+    write_discovery_bundle,
+)
 
 
 def init_repo(tmp_path: Path) -> Path:
@@ -33,3 +37,22 @@ def test_discovery_repair_is_required_for_changes_outside_knowledge(tmp_path: Pa
     (repo / "knowledge" / "dfhack" / "bridge.md").write_text("# Bridge\n", encoding="utf-8")
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
     assert discovery_needs_synthesis(repo) is True
+
+
+def test_structured_discovery_writes_validated_bundle(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = write_discovery_bundle(
+        repo,
+        {
+            "note_path": "bridge-primitives.md",
+            "index_markdown": "# Index\n\n[Bridge](dfhack/bridge-primitives.md)\n" + "context " * 30,
+            "note_markdown": (
+                "# Bridge primitives\n\n"
+                "VERIFIED — Dwarf Fortress 53.15 with DFHack 53.15-r2.\n\n"
+                "INFERRED — bridge implication.\n\nOPEN — controlled probe remains.\n\n"
+                + "Source and recommendation. " * 30
+            ),
+        },
+    )
+    assert target == "dfhack/bridge-primitives.md"
+    assert discovery_needs_synthesis(repo) is False

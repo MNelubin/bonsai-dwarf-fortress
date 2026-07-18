@@ -4,12 +4,14 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import signal
 import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,7 @@ class Config:
     harness_timeout: int
     opencode_bin: str
     opencode_config: Path
+    ollama_url: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -48,6 +51,7 @@ class Config:
             opencode_config=Path(
                 os.environ.get("BONSAI_OPENCODE_CONFIG", "/etc/bonsai-agent/opencode.json")
             ),
+            ollama_url=os.environ.get("BONSAI_OLLAMA_URL", "http://100.96.0.4:11434").rstrip("/"),
         )
 
 
@@ -183,6 +187,146 @@ def discovery_needs_synthesis(repo: Path) -> bool:
         or not index.is_file()
         or not focused_notes
     )
+
+
+DISCOVERY_NOTE_PATH = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}\.md$")
+
+
+def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
+    note_path = payload.get("note_path")
+    index_markdown = payload.get("index_markdown")
+    note_markdown = payload.get("note_markdown")
+    if not isinstance(note_path, str) or DISCOVERY_NOTE_PATH.fullmatch(note_path) is None:
+        raise ValueError("structured discovery returned an unsafe note_path")
+    if not isinstance(index_markdown, str) or not 200 <= len(index_markdown) <= 50_000:
+        raise ValueError("structured discovery returned an invalid INDEX.md")
+    if not isinstance(note_markdown, str) or not 500 <= len(note_markdown) <= 100_000:
+        raise ValueError("structured discovery returned an invalid focused note")
+    required_markers = ("VERIFIED", "INFERRED", "OPEN", "53.15", "53.15-r2")
+    if any(marker not in note_markdown for marker in required_markers):
+        raise ValueError("structured discovery note lacks claim tags or exact version markers")
+    relative_target = f"dfhack/{note_path}"
+    if relative_target not in index_markdown:
+        raise ValueError("structured discovery index does not link the focused note")
+    knowledge = repo / "knowledge"
+    focused = knowledge / "dfhack"
+    focused.mkdir(parents=True, exist_ok=True)
+    (knowledge / "INDEX.md").write_text(index_markdown.rstrip() + "\n", encoding="utf-8")
+    (focused / note_path).write_text(note_markdown.rstrip() + "\n", encoding="utf-8")
+    return relative_target
+
+
+def synthesize_discovery(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    trace_path: Path,
+    started: float,
+) -> str:
+    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")[-80_000:]
+    index_path = repo / "knowledge" / "INDEX.md"
+    existing_index = (
+        index_path.read_text(encoding="utf-8", errors="replace")[:20_000]
+        if index_path.is_file()
+        else "(none)"
+    )
+    schema = {
+        "type": "object",
+        "properties": {
+            "note_path": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}\\.md$"},
+            "index_markdown": {"type": "string"},
+            "note_markdown": {"type": "string"},
+        },
+        "required": ["note_path", "index_markdown", "note_markdown"],
+    }
+    prompt = f"""
+Convert the bounded research trace below into a durable Dwarf Fortress knowledge bundle. You have
+no tools and must rely only on the trace. Return JSON matching the schema.
+
+Requirements:
+- exact target versions: Dwarf Fortress 53.15 and DFHack 53.15-r2;
+- note_path is a basename such as bridge-primitives.md;
+- index_markdown is a complete knowledge/INDEX.md and links the note as dfhack/<note_path>;
+- note_markdown is a substantive focused note with every claim visibly tagged VERIFIED, INFERRED,
+  or OPEN;
+- cite exact source paths or bounded commands/results present in the trace;
+- explain implications for reset/observe/act/advance and end with concrete coding recommendations;
+- do not claim a probe succeeded unless its result is present; preserve uncertainty as OPEN;
+- never include credentials, tokens, binary data, or invented API names.
+
+Existing INDEX.md:
+---
+{existing_index}
+---
+
+Research trace:
+---
+{trace_text}
+---
+""".strip()
+    request_body = json.dumps(
+        {
+            "model": config.model.removeprefix("ollama/"),
+            "stream": False,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a precise technical archivist. Output only schema-valid JSON.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "format": schema,
+            "options": {"temperature": 0.1, "num_ctx": 65536},
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{config.ollama_url}/api/chat",
+        method="POST",
+        data=request_body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    def fetch() -> bytes:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            return response.read(2 * 1024 * 1024 + 1)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fetch)
+        while True:
+            try:
+                raw = future.result(timeout=25)
+                break
+            except FutureTimeout:
+                elapsed = round(time.monotonic() - started)
+                if elapsed > config.harness_timeout:
+                    raise TimeoutError(
+                        f"structured synthesis exceeded {config.harness_timeout} seconds"
+                    )
+                progress = {
+                    "phase": "discovery_structured_synthesis",
+                    "model": config.model,
+                    "elapsed_seconds": elapsed,
+                }
+                api.heartbeat(job, progress)
+                api.worker_heartbeat("running", str(job["id"]), progress)
+    if len(raw) > 2 * 1024 * 1024:
+        raise RuntimeError("structured discovery response exceeded 2 MiB")
+    response_payload = json.loads(raw)
+    content = response_payload.get("message", {}).get("content")
+    if not isinstance(content, str):
+        raise RuntimeError("Ollama structured discovery response has no message content")
+    note_target = write_discovery_bundle(repo, json.loads(content))
+    elapsed = round(time.monotonic() - started)
+    api.heartbeat(job, {"phase": "discovery_structured_write", "model": config.model, "elapsed_seconds": elapsed})
+    api.worker_heartbeat(
+        "running",
+        str(job["id"]),
+        {"phase": "discovery_structured_write", "elapsed_seconds": elapsed},
+    )
+    with trace_path.open("a", encoding="utf-8") as trace:
+        trace.write(json.dumps({"type": "structured_synthesis", "note": note_target}) + "\n")
+    return note_target
 
 
 def run(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
@@ -425,24 +569,7 @@ Execution discipline is mandatory:
 
     run_harness(prompt, "opencode", append=False)
     if discovery_mode and discovery_needs_synthesis(repo):
-        synthesis_prompt = """
-You are in the mandatory SYNTHESIS PASS for a Bonsai Dwarf Fortress discovery cycle. The preceding
-research session ended without a promotable knowledge tree. Do not do broad research and do not
-write executable product code.
-
-Your only task now is to make the working tree promotable:
-1. Inspect `git status --short` and the existing `knowledge/` tree.
-2. Revert any change outside `knowledge/`.
-3. Create or repair `knowledge/INDEX.md` and at least one substantive note under
-   `knowledge/dfhack/` using only evidence you can verify from the installed DF 53.15 / DFHack
-   53.15-r2 text docs or scripts. Use at most three narrowly bounded evidence calls before writing.
-4. Tag every claim VERIFIED, INFERRED, or OPEN; include source paths/commands, bridge implications,
-   and the next coding recommendation. Every relative Markdown link must resolve to a real file.
-5. Finish only after `git status --short` shows changes exclusively under `knowledge/`.
-
-A prose response or another clean tree is a failed synthesis pass. Write the files now.
-""".strip()
-        run_harness(synthesis_prompt, "discovery_synthesis", append=True)
+        synthesize_discovery(config, api, job, repo, trace_path, started)
 
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
 
