@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -14,47 +14,34 @@ from pathlib import Path
 from typing import Any
 
 
-ACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "action": {"enum": ["inspect", "read", "write", "shell", "finish"]},
-        "path": {"type": "string"},
-        "content": {"type": "string"},
-        "command": {"type": "string"},
-        "timeout": {"type": "integer"},
-        "summary": {"type": "string"},
-        "candidate": {"type": "boolean"},
-    },
-    "required": ["action"],
-}
-
-
 @dataclass(frozen=True)
 class Config:
     control_url: str
     lab_token: str
-    ollama_url: str
     model: str
     baseline_repo: Path
     runs_dir: Path
     outbox_dir: Path
     poll_seconds: int
-    max_steps: int
-    shell_timeout: int
+    harness_timeout: int
+    opencode_bin: str
+    opencode_config: Path
 
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
             control_url=os.environ["BONSAI_CONTROL_URL"].rstrip("/"),
             lab_token=os.environ["BONSAI_LAB_TOKEN"],
-            ollama_url=os.environ.get("BONSAI_OLLAMA_URL", "http://100.96.0.4:11434").rstrip("/"),
-            model=os.environ.get("BONSAI_MODEL", "qwen3:30b"),
+            model=os.environ.get("BONSAI_MODEL", "ollama/qwen3.6:27b-64k"),
             baseline_repo=Path(os.environ.get("BONSAI_BASELINE_REPO", "/srv/bonsai-agent/workspace")),
             runs_dir=Path(os.environ.get("BONSAI_RUNS_DIR", "/srv/bonsai-agent/runs")),
             outbox_dir=Path(os.environ.get("BONSAI_OUTBOX_DIR", "/srv/bonsai-agent/outbox")),
             poll_seconds=int(os.environ.get("BONSAI_POLL_SECONDS", "10")),
-            max_steps=int(os.environ.get("BONSAI_MAX_STEPS", "24")),
-            shell_timeout=int(os.environ.get("BONSAI_SHELL_TIMEOUT", "600")),
+            harness_timeout=int(os.environ.get("BONSAI_HARNESS_TIMEOUT", "3600")),
+            opencode_bin=os.environ.get("BONSAI_OPENCODE_BIN", "/usr/local/bin/opencode"),
+            opencode_config=Path(
+                os.environ.get("BONSAI_OPENCODE_CONFIG", "/etc/bonsai-agent/opencode.json")
+            ),
         )
 
 
@@ -159,46 +146,51 @@ def run(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
     }
 
 
-def safe_path(repo: Path, relative: str) -> Path:
-    target = (repo / relative).resolve()
-    target.relative_to(repo.resolve())
-    return target
-
-
-def inspect(repo: Path) -> dict[str, Any]:
-    return {
-        "git": run("git status --short --branch", repo, 30),
-        "files": run(
-            "find . -maxdepth 3 -type f -not -path './.git/*' -printf '%p\\n' | sort | head -400",
-            repo,
-            30,
-        ),
-        "df_release": "/srv/df-bonsai/current",
-        "dfhack": "/srv/df-bonsai/current/dfhack",
-        "dfhack_run": "/srv/df-bonsai/current/dfhack-run",
+def harness_environment(config: Config) -> dict[str, str]:
+    sensitive_names = {
+        "DATABASE_URL",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "OPENAI_API_KEY",
+        "PGPASSWORD",
+        "PGPASSFILE",
+        "SSH_AUTH_SOCK",
     }
-
-
-def ollama_step(config: Config, messages: list[dict[str, str]]) -> dict[str, Any]:
-    payload = {
-        "model": config.model,
-        "stream": False,
-        "format": ACTION_SCHEMA,
-        "messages": messages,
-        "options": {"temperature": 0.2, "num_ctx": 32768},
+    child_env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("BONSAI_")
+        and key not in sensitive_names
+        and not key.endswith(("_TOKEN", "_PASSWORD", "_SECRET", "_API_KEY"))
     }
-    request = urllib.request.Request(
-        f"{config.ollama_url}/api/chat",
-        method="POST",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+    child_env.update(
+        {
+            "OPENCODE_CONFIG": str(config.opencode_config),
+            "OPENCODE_AUTO_SHARE": "false",
+            "OPENCODE_DISABLE_AUTOUPDATE": "true",
+            "OPENCODE_DISABLE_MODELS_FETCH": "true",
+            "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
     )
-    with urllib.request.urlopen(request, timeout=900) as response:
-        result = json.loads(response.read())
-    content = result.get("message", {}).get("content", "")
-    if not content:
-        raise RuntimeError("Ollama returned an empty action")
-    return json.loads(content)
+    return child_env
+
+
+def stop_process_group(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        process.wait(timeout=10)
 
 
 def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
@@ -223,115 +215,123 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
 
 def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     repo, base_commit, branch = prepare_run(config, job)
-    trace_path = repo.parent / "agent-trace.jsonl"
-    stop = threading.Event()
-    progress: dict[str, Any] = {"phase": "starting", "step": 0, "model": config.model}
+    trace_path = repo.parent / "opencode-trace.jsonl"
+    prompt = f"""
+Work autonomously as the senior coding and research agent for Bonsai Dwarf Fortress.
 
-    def heartbeat_loop() -> None:
-        while not stop.wait(40):
-            try:
-                api.heartbeat(job, progress.copy())
-            except Exception as exc:
-                print(f"heartbeat failed: {exc}", flush=True)
-
-    heartbeat = threading.Thread(target=heartbeat_loop, daemon=True)
-    heartbeat.start()
-    system_prompt = f"""
-You are the autonomous senior coding/research agent for Bonsai Dwarf Fortress.
-You run as root inside the isolated, disposable Debian LXC lab. You may use the whole container,
-the installed Steam Dwarf Fortress 53.15 + DFHack 53.15-r2 at /srv/df-bonsai/current, and the
-credential-free repository clone at {repo}. Ollama is on the separate GPU host.
-
-Objective: {json.dumps(job.get('payload', {}), ensure_ascii=False)}
+Objective payload: {json.dumps(job.get('payload', {}), ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
 
-Long-term target: create a deterministic DFHack bridge (reset/observe/act/advance), reproducible
-headless episodes, curricula and metrics, then distill a very lightweight CPU inference policy.
-Start with the smallest tested improvement that advances the objective. Inspect before editing.
-Do not attempt to access control-plane, PostgreSQL, GitHub, Steam, or lab API credentials and never
-print secrets. The trusted publisher will reject changes to protected paths. Prefer edits under
-bridge/, game_runner/, player/, skills/, curricula/, evaluator_public/, tests/, and docs/.
+You are root inside an isolated Debian LXC containing Steam Dwarf Fortress 53.15 and DFHack
+53.15-r2 at /srv/df-bonsai/current. This repository clone has no GitHub, PostgreSQL, Steam, or
+control-plane credentials. Never search for or print secrets. You may inspect the whole lab, run
+non-interactive shell commands and game probes, and edit this repository.
 
-Never `cat` an unknown or binary file. Use `file`, `head`, `readelf`, `nm`, or `strings` with a small
-output limit. Verify DFHack APIs against installed scripts/docs before writing code; do not invent
-Lua functions. A useful documentation or probe improvement is better than an untested fake bridge.
-
-Return exactly one JSON action per turn. `shell` is a real root shell in the lab and can run tests or
-DFHack; `write` replaces a file under the repo. Never use an interactive command. When the change is
-tested and coherent, use `finish` with a precise summary and candidate=true.
+Long-term target: a deterministic DFHack bridge with reset/observe/act/advance, reproducible
+headless episodes and metrics, curricula, then a tiny CPU inference player. Make the smallest
+coherent improvement that advances the objective. Verify installed DFHack APIs from actual scripts,
+symbols, docs or a controlled probe; do not invent APIs. Never cat binary files. Prefer changes in
+bridge/, game_runner/, player/, skills/, curricula/, evaluator_public/, tests/, and docs/. Run useful
+tests. Do not modify protected control_plane/, db/, evaluator_private/, infra/, security/ or .github/.
+Finish only when the working tree contains a tested, reviewable improvement; explain the evidence.
 """.strip()
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": json.dumps({"initial_observation": inspect(repo)}, default=str)},
-    ]
-    try:
-        summary = "step budget exhausted"
-        candidate_requested = False
-        for step in range(1, config.max_steps + 1):
-            progress.update({"phase": "agent_loop", "step": step})
-            action = ollama_step(config, messages)
-            with trace_path.open("a", encoding="utf-8") as trace:
-                trace.write(json.dumps({"step": step, "action": action}, ensure_ascii=False) + "\n")
-            name = action.get("action")
-            if name == "inspect":
-                observation: Any = inspect(repo)
-            elif name == "read":
-                target = safe_path(repo, action.get("path", ""))
-                observation = {"path": str(target.relative_to(repo)), "content": target.read_text(errors="replace")[:120_000]}
-            elif name == "write":
-                target = safe_path(repo, action.get("path", ""))
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(action.get("content", ""), encoding="utf-8")
-                observation = {"written": str(target.relative_to(repo)), "bytes": target.stat().st_size}
-            elif name == "shell":
-                timeout = min(max(int(action.get("timeout", config.shell_timeout)), 1), config.shell_timeout)
-                observation = run(action.get("command", ""), repo, timeout)
-            elif name == "finish":
-                summary = action.get("summary", "agent finished")
-                candidate_requested = bool(action.get("candidate", True))
-                break
-            else:
-                observation = {"error": f"unsupported action: {name}"}
-            messages.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
-            messages.append({"role": "user", "content": json.dumps({"tool_result": observation}, ensure_ascii=False, default=str)})
 
-        progress.update({"phase": "packaging", "step": progress["step"]})
-        status = run("git status --porcelain", repo, 30)["output"].strip()
-        artifacts: list[str] = []
-        candidate_commit = base_commit
-        if status and candidate_requested:
-            subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
-            subprocess.run(
-                ["git", "-C", str(repo), "commit", "-m", f"agent: {summary[:120]}"],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            candidate_commit = subprocess.check_output(
-                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
-            ).strip()
-            config.outbox_dir.mkdir(parents=True, exist_ok=True)
-            bundle = config.outbox_dir / f"{job['id']}.bundle"
-            subprocess.run(["git", "-C", str(repo), "bundle", "create", str(bundle), branch], check=True)
-            artifacts.append(api.upload(str(job["id"]), bundle, "application/x-git-bundle"))
-        trace_hash = api.upload(str(job["id"]), trace_path, "application/x-ndjson")
-        artifacts.append(trace_hash)
-        return (
-            {
-                "summary": summary,
-                "model": config.model,
-                "base_commit": base_commit,
-                "candidate_commit": candidate_commit,
-                "branch": branch,
-                "changed": bool(status),
-                "candidate_requested": candidate_requested,
-            },
-            artifacts,
+    command = [
+        config.opencode_bin,
+        "run",
+        "--auto",
+        "--format",
+        "json",
+        "--model",
+        config.model,
+        prompt,
+    ]
+    started = time.monotonic()
+    last_heartbeat = 0.0
+    with trace_path.open("w", encoding="utf-8") as trace:
+        process = subprocess.Popen(
+            command,
+            cwd=repo,
+            env=harness_environment(config),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=trace,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
-    finally:
-        stop.set()
-        heartbeat.join(timeout=2)
+        try:
+            while process.poll() is None:
+                elapsed = time.monotonic() - started
+                if elapsed > config.harness_timeout:
+                    raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
+                if elapsed - last_heartbeat >= 35:
+                    try:
+                        api.heartbeat(
+                            job,
+                            {
+                                "phase": "opencode",
+                                "model": config.model,
+                                "elapsed_seconds": round(elapsed),
+                            },
+                        )
+                    except Exception as exc:
+                        print(f"heartbeat failed: {exc}", flush=True)
+                    last_heartbeat = elapsed
+                time.sleep(2)
+            return_code = process.returncode
+        finally:
+            stop_process_group(process)
+
+    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
+    if return_code != 0:
+        raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
+
+    status = run("git status --porcelain", repo, 30)["output"].strip()
+    if status:
+        subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "agent: OpenCode research cycle"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    candidate_commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    changed = candidate_commit != base_commit
+    artifacts: list[str] = []
+    if changed:
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", f"refs/heads/{branch}", candidate_commit],
+            check=True,
+        )
+        config.outbox_dir.mkdir(parents=True, exist_ok=True)
+        bundle = config.outbox_dir / f"{job['id']}.bundle"
+        subprocess.run(
+            ["git", "-C", str(repo), "bundle", "create", str(bundle), f"refs/heads/{branch}"],
+            check=True,
+        )
+        artifacts.append(api.upload(str(job["id"]), bundle, "application/x-git-bundle"))
+    artifacts.append(api.upload(str(job["id"]), trace_path, "application/x-ndjson"))
+    summary = trace_text[-4000:].strip() or "OpenCode completed without textual summary"
+    return (
+        {
+            "summary": summary,
+            "harness": "opencode",
+            "model": config.model,
+            "base_commit": base_commit,
+            "candidate_commit": candidate_commit,
+            "branch": branch,
+            "changed": changed,
+            "candidate_requested": changed,
+            "duration_seconds": round(time.monotonic() - started, 2),
+        },
+        artifacts,
+    )
 
 
 def main() -> None:
