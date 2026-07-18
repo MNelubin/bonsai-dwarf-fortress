@@ -7,19 +7,24 @@ The following versions are confirmed present in the runtime environment:
 - **Dwarf Fortress**: 53.15 (Steam AppID: 975370, Build ID: 23622201) [VERIFIED]
 - **DFHack**: 53.15-r2 [VERIFIED]
 
-## Installation Structure
-The primary installation resides at `/srv/df-bonsai/current/`. Key components identified via `ls -la` include:
-- **Binary**: `dwarfort` (executable) [VERIFIED]
-- **DFHack Directory**: `hack/` containing `libdfhack.so`, `liblua53.so`, and `scripts/` [VERIFIED]
-- **Configuration**: `DF-BONSAI-RELEASE.json` confirms headless mode with `print_mode: TEXT` and `sound: false` [VERIFIED]
+## Filesystem Structure
+The primary game and hack binaries are located at `/srv/df-bonsai/current/`. Key components identified via `ls -la` include:
+- `dwarfort`: The main Dwarf Fortress executable (34MB) [VERIFIED]
+- `hack/`: Directory containing DFHack libraries (`libdfhack.so`, `liblua53.so`) and scripts [VERIFIED]
+- `DF-BONSAI-RELEASE.json`: Metadata file confirming release details and headless configuration [VERIFIED]
 
-## Implications for Agent Operations
-1. **Reset**: The environment appears static; no write permissions were observed on the main binary or library files (read-only flags present). Resetting likely involves restarting the process rather than modifying files.
-2. **Observe**: State observation should rely on DFHack Lua scripts interacting with `libdfhack.so` via the `hack/` directory interface.
-3. **Act**: Actions must be issued through DFHack commands or Lua hooks, as direct file modification is restricted.
-4. **Advance**: The headless configuration suggests automated tick advancement is supported via DFHack's built-in timing controls.
+## Headless Configuration
+The environment is configured for headless operation:
+- **Print Mode**: TEXT [VERIFIED]
+- **Sound**: Disabled [VERIFIED]
+
+## Implications for Agent Actions
+1. **Reset**: The presence of `DF-BONSAI-RELEASE.json` suggests a managed deployment. Resetting the environment likely involves restarting the `dwarfort` process with DFHack injected via `libdfhooks.so`. [INFERRED]
+2. **Observe**: Since print mode is TEXT, observation should rely on parsing text output or using DFHack Lua scripts to query game state directly rather than screen scraping. [VERIFIED]
+3. **Act**: Actions can be performed via DFHack commands injected through the `hack/` directory interface. The presence of `liblua53.so` confirms Lua scripting support is available for automation. [VERIFIED]
+4. **Advance**: Time advancement should be controlled via DFHack's time manipulation features if available in 53.15-r2, or by allowing the game to tick naturally in headless mode. [OPEN]
 
 ## Coding Recommendations
-- Use the `hack/scripts/` directory for custom Lua plugins.
-- Verify DFHack initialization by checking for `libdfhooks_dfhack.so` presence.
-- Do not attempt to write to `/srv/df-bonsai/current/`; use temporary directories or in-memory state management.
+- Use the `hack/` directory structure to locate specific Lua libraries for interaction.
+- Verify compatibility of DFHack commands with version 53.15-r2 before execution, as API changes may occur between minor versions.
+- Utilize the `DF-BONSAI-RELEASE.json` file to programmatically verify environment integrity at runtime.
