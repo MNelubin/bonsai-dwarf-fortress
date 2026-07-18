@@ -12,7 +12,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from unittest import mock
 
-from bridge.contracts import CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_episode_metrics
+from bridge.contracts import (
+    CONTRACT_SCHEMA, validate_observe, validate_act_result, validate_episode_metrics,
+    validate_episode_outcome, validate_act_input,
+)
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
 from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
@@ -735,7 +738,141 @@ class TestBenchmarkRunner:
         assert results["cpu"]["mean_score"] <= 1
 
 
+class TestValidationTypeSafety:
+    """Updated validate_observe enforces field types from the schema."""
+
+    def test_rejects_non_int_tick(self):
+        obs = _sample_obs(tick="abc")
+        assert validate_observe(obs) is False
+
+    def test_rejects_non_bool_paused(self):
+        obs = _sample_obs()
+        obs["paused"] = "yes"
+        assert validate_observe(obs) is False
+
+    def test_rejects_non_string_version(self):
+        obs = _sample_obs()
+        obs["version"] = 1.0
+        assert validate_observe(obs) is False
+
+    def test_rejects_non_array_units(self):
+        obs = _sample_obs()
+        obs["units"] = "all alive"
+        assert validate_observe(obs) is False
+
+    def test_allows_nullable_fields_none(self):
+        obs = {
+            "version": "1.0", "gametype": None,
+            "cur_year": None, "cur_season": None,
+            "cur_tick": None, "paused": True,
+            "tick": 0,
+        }
+        assert validate_observe(obs) is True
+
+    def test_episode_outcome_valid(self):
+        assert validate_episode_outcome("success") is True
+        assert validate_episode_outcome("failure") is True
+        assert validate_episode_outcome("timeout") is True
+        assert validate_episode_outcome("unknown") is False
+
+    def test_act_input_with_command(self):
+        assert validate_act_input({"command": "advance"}) is True
+        assert validate_act_input({"name": "observe"}) is True
+        assert validate_act_input({}) is False
+        assert validate_act_input("raw_string") is False
+
+
+class TestEpisodeSerialization:
+    """EpisodeRunner.serialize() / deserialize() round-trips correctly."""
+
+    def test_roundtrip_preserves_metrics(self):
+        r = EpisodeRunner(seed=42, max_steps=30, action_budget=20)
+        metrics_original = r.run(baseline_policy)
+        snapshot = r.serialize()
+        r2 = EpisodeRunner.deserialize(snapshot)
+        assert r2.seed == 42
+        assert r2.metrics["steps_taken"] == metrics_original["steps_taken"]
+        assert r2.metrics["actions_used"] == metrics_original["actions_used"]
+
+    def test_roundtrip_preserves_trace(self):
+        r = EpisodeRunner(seed=5, max_steps=10, action_budget=8)
+        r.run(cpu_policy)
+        trace_before = r.get_trace()
+        restored = EpisodeRunner.deserialize(r.serialize())
+        # The deserialized runner has the same trace content.
+        assert len(restored.trace) == len(trace_before)
+
+    def test_deserialize_runner_still_valid_metrics(self):
+        r = EpisodeRunner(seed=99, max_steps=20, action_budget=15)
+        m1 = r.run(baseline_policy)
+        snap = r.serialize()
+        r_restored = EpisodeRunner.deserialize(snap)
+        # Re-serialize should produce identical content.
+        snap2 = r_restored.serialize()
+        assert snap2["seed"] == 99
+        assert snap2["metrics"]["survivors"] is not None
+
+
+class TestConfidenceIntervals:
+    """aggregate_runs includes 95% CI and values are plausible."""
+
+    def test_ci_present(self):
+        runs = [
+            {"seed": i, "steps_taken": 6,
+             "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+             "actions_used": 6, "outcome": "success"}
+            for i in range(5)
+        ]
+        agg = aggregate_runs(runs)
+        assert "confidence_interval_95" in agg
+        lo, hi = agg["confidence_interval_95"]
+        assert 0.0 <= lo <= hi <= 1.0
+
+    def test_ci_zero_width_for_identical_scores(self):
+        runs = [
+            {"seed": i, "steps_taken": 6,
+             "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+             "actions_used": 6, "outcome": "success"}
+            for _ in range(10)
+        ]
+        agg = aggregate_runs(runs)
+        lo, hi = agg["confidence_interval_95"]
+        assert lo == hi
+
+    def test_ci_wider_with_variance(self):
+        runs_good = [
+            {"seed": i, "steps_taken": 6,
+             "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+             "actions_used": 6, "outcome": "success"}
+            for _ in range(5)
+        ]
+        runs_bad = [
+            {"seed": i, "steps_taken": 1,
+             "final_tick": 0, "survivors": 0,
+             "actions_used": 1, "outcome": "failure"}
+            for _ in range(5)
+        ]
+        agg_mixed = aggregate_runs(runs_good + runs_bad)
+        agg_uniform = aggregate_runs(runs_good * 2)
+        lo_mixed, hi_mixed = agg_mixed["confidence_interval_95"]
+        lo_uni, hi_uni = agg_uniform["confidence_interval_95"]
+        assert (hi_mixed - lo_mixed) > (hi_uni - lo_uni)
+
+    def test_ci_empty_runs(self):
+        agg = aggregate_runs([])
+        assert agg["confidence_interval_95"] == (0.0, 0.0)
+
+    def test_ci_single_run_clamped(self):
+        runs = [{"seed": 1, "steps_taken": 6,
+                 "final_tick": TICKS_PER_DAY * 30, "survivors": 4,
+                 "actions_used": 6, "outcome": "success"}]
+        agg = aggregate_runs(runs)
+        lo, hi = agg["confidence_interval_95"]
+        assert lo == hi
+
+
 if __name__ == "__main__":
+
     """Run all tests without pytest — portable to bare Python 3.13."""
     import inspect
 

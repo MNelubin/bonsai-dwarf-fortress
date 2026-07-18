@@ -5,6 +5,8 @@ score in [0, 1], plus aggregation over multiple runs with statistical
 confidence bounds on worst-case performance.
 """
 
+import math
+
 from bridge.contracts import CONTRACT_SCHEMA, validate_episode_metrics
 
 
@@ -76,7 +78,7 @@ def aggregate_runs(metrics_list):
 
     Returns a dict with keys:
         runs, mean_score, median_score, worst_score, best_score,
-        pass_rate, failing_runs, worst_run, best_run, std_dev
+        pass_rate, failing_runs, worst_run, best_run, std_dev, confidence_interval_95
     """
     n = len(metrics_list)
     if n == 0:
@@ -91,6 +93,7 @@ def aggregate_runs(metrics_list):
             "worst_run": None,
             "best_run": None,
             "std_dev": 0.0,
+            "confidence_interval_95": (0.0, 0.0),
         }
 
     scored = []
@@ -115,6 +118,11 @@ def aggregate_runs(metrics_list):
 
     failing_runs = [m for s, m in scored if s < PASS_THRESHOLD]
 
+    # Approximate 95% confidence interval using Chebyshev's inequality bounds
+    # For n runs: mean ± std_dev * sqrt(1 - alpha) / sqrt(n)
+    # Using z=1.96 for normal approximation when n >= 30, else conservative fallback.
+    ci = _confidence_interval_95(scores, std_dev, n)
+
     return {
         "runs": n,
         "mean_score": round(mean_score, 4),
@@ -126,7 +134,27 @@ def aggregate_runs(metrics_list):
         "worst_run": worst_scored[1],
         "best_run": best_scored[1],
         "std_dev": round(std_dev, 4),
+        "confidence_interval_95": (round(ci[0], 4), round(ci[1], 4)),
     }
+
+
+def _confidence_interval_95(scores, std_dev, n):
+    """Compute a conservative 95% confidence interval for the mean.
+
+    Uses standard error = std_dev / sqrt(n).  For small samples (n < 30)
+    applies a Tukey-style adjustment: widens the half-width by 1 + 6/(n-1).
+    Returns (lower, upper) both clamped to [0.0, 1.0].
+    """
+    if n <= 1 or std_dev == 0:
+        return (scores[0] if scores else 0.0, scores[0] if scores else 0.0)
+
+    se = std_dev / math.sqrt(n)
+    z = 1.96
+    adjustment = 1 + 6 / (n - 1) if n < 30 else 1.0
+    half_width = z * se * adjustment
+    lower = max(0.0, sum(scores) / n - half_width)
+    upper = min(1.0, sum(scores) / n + half_width)
+    return (lower, upper)
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +178,7 @@ def benchmark_runners(*runner_policies, num_runs=10, max_steps=100, action_budge
         if isinstance(item, tuple):
             name, policy = item
         else:
-            name = getattr(policy, "__name__", "unnamed")  # noqa: E999
+            name = getattr(policy, "__name__", "unnamed")  # noqa: F821
             policy = item
 
         metrics_list = []

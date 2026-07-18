@@ -199,6 +199,46 @@ class EpisodeRunner:
         return json.dumps(payload, indent=2)
 
     # ------------------------------------------------------------------
+    def serialize(self):
+        """Return a JSON-serializable dict of the complete episode state.
+
+        Includes runner configuration so that `deserialize()` can
+        reconstruct an identical EpisodeRunner for replay or comparison.
+        """
+        return {
+            "seed": self.seed,
+            "save_id": self.save_id,
+            "max_steps": self.max_steps,
+            "action_budget": self.action_budget,
+            "num_citizens": self.num_citizens,
+            "metrics": copy.deepcopy(self.metrics),
+            "trace": copy.deepcopy(self.trace),
+        }
+
+    @classmethod
+    def deserialize(cls, state_dict):
+        """Reconstruct an EpisodeRunner from a serialized snapshot.
+
+        Returns the runner with metrics and trace restored to the saved
+        point so that `run()` can continue from the checkpoint.
+        """
+        runner = cls(
+            save_id=state_dict["save_id"],
+            max_steps=state_dict["max_steps"],
+            action_budget=state_dict["action_budget"],
+            seed=state_dict["seed"],
+            num_citizens=state_dict.get("num_citizens", 4),
+        )
+        runner.metrics = copy.deepcopy(state_dict["metrics"])
+        runner.trace = copy.deepcopy(state_dict["trace"])
+        runner.units, runner.death_ticks = _simulate_citizens(
+            state_dict["seed"], state_dict.get("num_citizens", 4)
+        )
+        runner._obs_state = _default_observation()
+        runner._obs_state["units"] = [dict(u) for u in runner.units]
+        return runner
+
+    # ------------------------------------------------------------------
     def run(self, action_policy):
         """Execute the full episode loop.
 
