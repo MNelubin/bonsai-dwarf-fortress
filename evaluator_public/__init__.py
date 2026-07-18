@@ -198,6 +198,75 @@ def benchmark_runners(*runner_policies, num_runs=10, max_steps=100, action_budge
 
 benchmark_runner = benchmark_runners
 
+
+# ---------------------------------------------------------------------------
+# Inference latency benchmarks (Milestone 6)
+# ---------------------------------------------------------------------------
+import time as _time
+
+
+def measure_policy_latency(policy_callable, observation, n_warmup=5, n_bench=100):
+    """Measure per-step inference latency for a policy function.
+
+    Parameters:
+        policy_callable: a policy(observation) -> action | None
+        observation: sample observation dict used as input.
+        n_warmup: warm-up calls (not measured).
+        n_bench: benchmarked calls; time is averaged over these.
+
+    Returns:
+        mean_seconds (float): average inference time per step in seconds.
+    """
+    for _ in range(n_warmup):
+        policy_callable(observation)
+
+    start = _time.perf_counter()
+    for _ in range(n_bench):
+        policy_callable(observation)
+    duration = _time.perf_counter() - start
+
+    return duration / n_bench
+
+
+def benchmark_inference_latency(*policies, sample_obs=None, n_warmup=5, n_bench=100):
+    """Benchmark inference latency for multiple policies.
+
+    Parameters:
+        *policies: tuples of (name, callable) or bare callables.
+        sample_obs: observation dict; if None a minimal stub is created.
+        n_warmup, n_bench: passed to measure_policy_latency.
+
+    Returns:
+        dict mapping policy name -> mean inference seconds per step.
+    """
+    if sample_obs is None:
+        sample_obs = {
+            "version": "1.0",
+            "gametype": "df.game_type.DWARF_FORTRESS",
+            "cur_year": 1, "cur_season": 1,
+            "cur_tick": 86400 * 5,
+            "paused": False,
+            "units": [
+                {"id": i, "race": 0, "civ_id": 1, "killed": False, "pos": [0, 0, 0]}
+                for i in range(4)
+            ],
+            "buildings": [],
+            "tick": 10,
+        }
+
+    results = {}
+    for item in policies:
+        if isinstance(item, tuple):
+            name, policy = item
+        else:
+            name = getattr(item, "__name__", "unnamed")
+            policy = item
+        latency = measure_policy_latency(policy, sample_obs, n_warmup, n_bench)
+        results[name] = round(latency, 9)
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Verification helpers
 # ---------------------------------------------------------------------------

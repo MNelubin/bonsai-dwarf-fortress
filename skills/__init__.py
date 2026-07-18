@@ -139,3 +139,41 @@ class ResourceMonitor(Skill):
             "meta_alive": alive,
             "meta_survival_rate": (alive / total) if total else 0.0,
         }]
+
+
+class EmergencyPause(Skill):
+    """Reactive safety brake: pause the game when rapid citizen deaths detected.
+
+    Tracks previous alive count internally. If more than `max_deaths` citizens
+    die between observations, emit a pause action to stop further progression.
+    Returns None (no-op) if conditions are safe."""
+
+    def __init__(self, max_deaths=2):
+        super().__init__(
+            name="emergency_pause",
+            description=f"Pause if >{max_deaths} citizens die between observations.",
+        )
+        self.max_deaths = max_deaths
+        self._prev_alive = None
+
+    def _count_alive(self, units):
+        return sum(
+            1 for u in units
+            if not u.get("killed", False) and u.get("civ_id") is not None
+        )
+
+    def steps(self, observation):
+        units = observation.get("units", [])
+        alive = self._count_alive(units)
+
+        if self._prev_alive is not None:
+            deaths = self._prev_alive - alive
+            if deaths > self.max_deaths:
+                return [{"command": "pause", "meta_death_spike": deaths}]
+
+        self._prev_alive = alive
+        return None
+
+    def reset(self):
+        """Clear internal state for a fresh episode."""
+        self._prev_alive = None

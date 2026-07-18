@@ -8,7 +8,7 @@ from player.baseline import baseline_policy
 from player.cpu_policy import cpu_policy
 from player.skill_chain import make_skill_chain
 from player.baseline import TICKS_PER_DAY
-from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, SurvivalGuard, GradualAdvance, EmergencyPause
 
 
 # ---------------------------------------------------------------------------
