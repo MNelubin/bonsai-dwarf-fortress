@@ -6,6 +6,15 @@ Each entry specifies the policy, runner parameters, and success criteria.
 
 from player.baseline import baseline_policy
 from player.cpu_policy import cpu_policy
+from player.skill_chain import make_skill_chain
+from skills import StartFortress, AdvanceTimeStep, CheckSurvivors
+
+
+# ---------------------------------------------------------------------------
+# Skill-chain policies (Objective C)
+# ---------------------------------------------------------------------------
+
+_survive_7_chain = make_skill_chain(StartFortress(), AdvanceTimeStep())
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +35,15 @@ CURRICULUM_LEVELS = [
         "name": "survive_7_days",
         "description": "Fortress survives one week.",
         "policy": baseline_policy,
+        "max_steps": 50,
+        "action_budget": 30,
+        "target_days": 7,
+        "min_survivors": 1,
+    },
+    {
+        "name": "survive_7_days_skill_chain",
+        "description": "Skill-chain: unpause → advance × N until 7 days.",
+        "policy": _survive_7_chain,
         "max_steps": 50,
         "action_budget": 30,
         "target_days": 7,

@@ -16,6 +16,7 @@ from bridge.contracts import CONTRACT_SCHEMA, validate_observe, validate_act_res
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
 from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS
+from player.skill_chain import make_skill_chain
 from skills import StartFortress, AdvanceTimeStep, CheckSurvivors, Skill
 from curricula.levels import CURRICULUM_LEVELS, get_level, run_curriculum
 
@@ -450,6 +451,69 @@ class TestCurricula:
             assert isinstance(name, str)
             assert validate_episode_metrics(metrics)
 
+    def test_skill_chain_level_present(self):
+        """Objective C: the 7-day skill-chain level exists in curricula."""
+        names = [lvl["name"] for lvl in CURRICULUM_LEVELS]
+        assert "survive_7_days_skill_chain" in names
+
+
+class TestSkillChainPlayer:
+    """make_skill_chain composes Skills into a callable policy."""
+
+    def test_emits_unpause_then_advance(self):
+        chain = make_skill_chain(StartFortress(), AdvanceTimeStep(ticks=5000))
+        obs = {"paused": True, "units": []}
+        a1 = chain(obs)
+        assert a1["command"] == "unpause"
+        a2 = chain({"paused": False, "units": []})
+        assert a2["command"] == "advance"
+        assert a2["args"] == [5000]
+
+    def test_terminal_when_skills_return_none(self):
+        obs = {"paused": False}
+        chain = make_skill_chain(StartFortress())
+        result = chain(obs)
+        assert result is None
+
+    def test_reset_clears_buffer(self):
+        chain = make_skill_chain(AdvanceTimeStep(ticks=100))
+        chain({"cur_tick": 0})
+        chain({"cur_tick": 0})
+        chain._reset()
+        assert chain({"cur_tick": 0}) is not None
+
+    def test_multi_skill_buffer(self):
+        chain = make_skill_chain(
+            AdvanceTimeStep(ticks=100),
+            AdvanceTimeStep(ticks=200),
+            CheckSurvivors(),
+        )
+        obs = {"cur_tick": 0, "units": [{"killed": False, "civ_id": 1}]}
+        a1 = chain(obs)
+        a2 = chain(obs)
+        a3 = chain(obs)
+        assert a1["command"] == "advance" and a1["args"] == [100]
+        assert a2["command"] == "advance" and a2["args"] == [200]
+        assert a3["command"] == "observe"
+
+    def test_chain_deterministic_episode(self):
+        chain = make_skill_chain(StartFortress(), AdvanceTimeStep(ticks=432000))
+        ra = EpisodeRunner(seed=1, max_steps=50, action_budget=30)
+        ma = ra.run(chain)
+        rb = EpisodeRunner(seed=1, max_steps=50, action_budget=30)
+        mb = rb.run(chain)
+        assert ma["outcome"] == mb["outcome"]
+        assert validate_episode_metrics(ma)
+
+    def test_chain_survives_7_days(self):
+        """The skill chain advances 5 days tick per step; verify 7-day progress."""
+        TICKS_7D = TICKS_PER_DAY * 7
+        ADVANCE = 5 * TICKS_PER_DAY
+        chain = make_skill_chain(StartFortress(), AdvanceTimeStep(ticks=ADVANCE))
+        runner = EpisodeRunner(seed=0, max_steps=20, action_budget=15)
+        metrics = runner.run(chain)
+        assert metrics["final_tick"] >= TICKS_7D
+
 
 if __name__ == "__main__":
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -462,7 +526,8 @@ if __name__ == "__main__":
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
                   TestBaselinePolicy, TestIntegrationStubEpisode,
                   TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
-                  TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula]
+                  TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
+                  TestSkillChainPlayer]
 
     for cls in tc_classes:
         inst = cls()

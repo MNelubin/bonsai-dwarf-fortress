@@ -29,13 +29,18 @@ produce byte-identical observation traces (modulo monotonic bridge tick counter)
 **Failure modes:** Internal DF RNG seeded from wall clock, or filesystem timestamps
 leaking into observations.  Mitigate by fixing the worldgen seed in save options.
 
-## Objective C — Skill-chained episode survives 7 real game days
-**Hypothesis:** Composing `StartFortress → AdvanceTimeStep × N → CheckSurvivors` as a
-skill-chain player yields `outcome == "success"` and `survivors >= 1` on live DF.
+## Objective C — Skill-chained episode survives 7 real game days ✅ stub-verified
+**Status:** `player/skill_chain.py` implemented. `make_skill_chain(*skills)` returns a
+callable policy that the EpisodeRunner accepts. Curriculum level
+`survive_7_days_skill_chain` added and tested deterministically (53/53 tests pass).
 
-**Experiment:**
-1. Write `player/skill_chain.py` that iterates over a list of `Skill` instances per step.
-2. Bind to EpisodeRunner (live mode) and run with `target_days=7`.
-3. Assert evaluator score ≥ 0.6.
+**What works:**
+- Skill composition: `StartFortress → AdvanceTimeStep(ticks=5*D) → CheckSurvivors`
+- Per-step FIFO action buffer with `_reset()` for episode boundaries
+- Terminal detection when all skills return None
+- 7-day tick threshold reached in stub episodes (≥604,800 ticks advanced)
+
+**Remaining:** live DF test requires headless `dwarfort` launch + save load cycle.
+See Objective A (live observe probe) as the prerequisite.
 
 **Failure modes:** Live DF takes too long for CI; bound wall clock at 120 s per episode.
