@@ -152,16 +152,100 @@ function bridge.advance(ticks)
     return { ok = false, message = "advance timeout" }
 end
 
---- Minimal world summary for the episode log.
-function bridge.world_summary()
-    local summary = {}
+--- Tile / map grid mechanic observation.
+-- Verified APIs (from hack/lua/dfhack.lua, tile-material.lua, plugin source):
+--   dfhack.maps.getTileSize()    -> x, y, z tile counts (returns df.global.world.map.*_count)
+--   dfhack.maps.getSize()        -> block counts
+--   dfhack.maps.isValidTilePos(x,y,z) -> boolean
+--   dfhack.maps.getTileType({x=x,y=y,z=z}) -> integer tile type or nil
+--   df.tiletype.attrs[typ].material  -> tiletype_material enum (SOIL, STONE, etc.)
+--   df.tiletype.iswalkable(typ)      -> boolean walkability flag
+-- Returns a compact snapshot of map dimensions and sampled tiles at z=0.
+function bridge.tile_map()
+    local result = {
+        has_map = false,
+        width  = 0,
+        height = 0,
+        depth  = 0,
+        block_width  = 0,
+        block_height = 0,
+        block_depth  = 0,
+        tiles = {},
+    }
+
     if not df.global or not df.global.world then
-        return summary
+        return result
     end
-    summary.year   = df.global.cur_year
-    summary.season = df.global.cur_season
-    summary.tick   = df.global.cur_year_tick
-    return summary
+
+    -- Guard: do nothing when the map is nil (pre-game or no active world).
+    local map = df.global.world.map
+    if not map then
+        return result
+    end
+
+    result.has_map = true
+
+    -- Map dimensions in tile units.
+    result.width  = map.x_count or 0
+    result.height = map.y_count or 0
+    result.depth  = map.z_count or 0
+
+    -- Map dimensions in block units (each block = 16x16x16 tiles).
+    result.block_width  = map.x_count_block or 0
+    result.block_height = map.y_count_block or 0
+    result.block_depth  = map.z_count_block or 0
+
+    -- Sample a bounded set of tiles along the bottom z-layer (z=0) for compact output.
+    if dfhack.maps then
+        local limit = math.min(result.width * result.height, 256)
+        local sampled = 0
+        for zx = 0, result.width - 1 do
+            if sampled >= limit then break end
+            for zy = 0, result.height - 1 do
+                if sampled >= limit then break end
+
+                local pos = {x = zx, y = zy, z = 0}
+                if not dfhack.maps.isValidTilePos(pos) then
+                    goto continue_loop
+                end
+
+                local tt = dfhack.maps.getTileType(pos)
+                if tt and type(tt) == "number" then
+                    -- Classify material class.
+                    local mat = "unknown"
+                    pcall(function()
+                        local attr_mt = df.tiletype.attrs[tt].material
+                        -- Walk the tiletype_material enum to get a human label.
+                        for k, v in pairs(df.tiletype_material) do
+                            if type(v) == "number" and v  == attr_mt then
+                                mat = k
+                                break
+                            end
+                        end
+                    end)
+
+                    local walkable = false
+                    pcall(function()
+                        walkable = df.tiletype.iswalkable(tt) or false
+                    end)
+
+                    table.insert(result.tiles, {
+                        x        = zx,
+                        y        = zy,
+                        z        = 0,
+                        type     = tt,
+                        material = mat,
+                        walkable = walkable,
+                    })
+                    sampled = sampled + 1
+                end
+
+                ::continue_loop::
+            end
+        end
+    end
+
+    return result
 end
 
 return bridge

@@ -1605,6 +1605,142 @@ class TestEmergencyPauseCurriculum:
         assert validate_episode_metrics(metrics)
 
 
+class TestTileMapLuaContract:
+    """Static contract tests for bridge.tile_map() in core.lua.
+
+    Validates the Lua source directly — no live DFHack required.
+    Ensures the tile_map function exists, returns the correct shape,
+    and that world_summary has been fully removed.
+    """
+
+    @staticmethod
+    def _core_lua_path():
+        return os.path.join(os.path.dirname(__file__), "..", "bridge", "core.lua")
+
+    @staticmethod
+    def _load_core():
+        with open(TestTileMapLuaContract._core_lua_path()) as f:
+            return f.read()
+
+    def test_tile_map_function_defined(self):
+        src = self._load_core()
+        assert "function bridge.tile_map()" in src, (
+            "bridge.tile_map() function not defined in core.lua"
+        )
+
+    def test_world_summary_removed(self):
+        src = self._load_core()
+        assert "world_summary" not in src, (
+            "world_summary should be fully removed from core.lua"
+        )
+
+    def test_tile_map_returns_has_map_false_default(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "has_map" in func_body
+        assert "has_map = false" in func_body, (
+            "tile_map must initialize has_map to false as the default guard"
+        )
+
+    def test_tile_map_returns_dimension_fields(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        for field in ["width", "height", "depth", "block_width", "block_height", "block_depth"]:
+            assert f"result.{field}" in func_body, (
+                f"tile_map result must set {field} from map dimensions"
+            )
+
+    def test_tile_map_returns_tiles_array(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "tiles = {}" in func_body, (
+            "tile_map must initialize tiles as an empty table"
+        )
+
+    def test_tile_map_guards_no_global(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "df.global" in func_body, (
+            "tile_map must guard on absence of df.global"
+        )
+
+    def test_tile_map_guards_no_map(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "df.global.world.map" in func_body or "map = df.global.world.map" in func_body, (
+            "tile_map must guard on absence of the map object"
+        )
+
+    def test_tile_map_samples_tiles(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "dfhack.maps" in func_body, (
+            "tile_map must use dfhack.maps for tile sampling"
+        )
+        assert "getTileType" in func_body, (
+            "tile_map must call getTileType to read tile data"
+        )
+
+    def test_tile_map_tile_entries_have_required_fields(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        for field in ["x", "y", "z", "type", "material", "walkable"]:
+            assert field in func_body, (
+                f"tile_map tile entries must include field '{field}'"
+            )
+
+    def test_tile_map_uses_limit_bound(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "256" in func_body or "limit" in func_body, (
+            "tile_map must bound tile sampling to prevent oversized output"
+        )
+
+    def test_tile_map_uses_isvalidtilepos(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "isValidTilePos" in func_body, (
+            "tile_map must validate tile positions before sampling"
+        )
+
+    def test_tile_map_uses_pcall_for_safety(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "pcall" in func_body, (
+            "tile_map must use pcall for material and walkability lookups"
+        )
+
+    def test_tile_map_uses_goto_continue_loop(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "::continue_loop::" in func_body, (
+            "tile_map must use goto to skip invalid tile positions"
+        )
+
+    def test_tile_map_material_classification(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "tiletype.attrs" in func_body, (
+            "tile_map must read tiletype attributes for material class"
+        )
+        assert "tiletype_material" in func_body, (
+            "tile_map must walk the tiletype_material enum"
+        )
+
+    def test_tile_map_walkability_check(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.tile_map()")[1].split("\nreturn bridge")[0]
+        assert "iswalkable" in func_body, (
+            "tile_map must check tile walkability"
+        )
+
+    def test_bridge_return_still_present(self):
+        src = self._load_core()
+        assert src.strip().endswith("return bridge"), (
+            "core.lua must end with 'return bridge'"
+        )
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -1626,7 +1762,8 @@ if __name__ == "__main__":
                    TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
                    TestMultiSeedStress, TestCurriculumGradualAndMonitor,
                    TestEpisodeLoggerIntegration, TestInferenceLatency,
-                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum]
+                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                   TestTileMapLuaContract]
 
     for cls in tc_classes:
         inst = cls()
