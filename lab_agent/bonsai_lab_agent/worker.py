@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -27,6 +27,7 @@ class Config:
     baseline_remote: str
     runs_dir: Path
     outbox_dir: Path
+    wip_dir: Path
     poll_seconds: int
     harness_timeout: int
     opencode_bin: str
@@ -51,6 +52,7 @@ class Config:
             ),
             runs_dir=Path(os.environ.get("BONSAI_RUNS_DIR", "/srv/bonsai-agent/runs")),
             outbox_dir=Path(os.environ.get("BONSAI_OUTBOX_DIR", "/srv/bonsai-agent/outbox")),
+            wip_dir=Path(os.environ.get("BONSAI_WIP_DIR", "/srv/bonsai-agent/wip")),
             poll_seconds=int(os.environ.get("BONSAI_POLL_SECONDS", "10")),
             harness_timeout=int(os.environ.get("BONSAI_HARNESS_TIMEOUT", "3600")),
             opencode_bin=os.environ.get("BONSAI_OPENCODE_BIN", "/usr/local/bin/opencode"),
@@ -186,6 +188,304 @@ def working_tree_paths(repo: Path) -> set[str]:
 def serializable_working_tree_paths(repo: Path) -> list[str]:
     """Return stable JSON-safe paths for prompts and API payloads."""
     return sorted(working_tree_paths(repo))
+
+
+WIP_AUTO_PATHS = (
+    "knowledge/",
+    "bridge/",
+    "game_runner/",
+    "player/",
+    "skills/",
+    "curricula/",
+    "evaluator_public/",
+    "tests/",
+    "docs/",
+)
+WIP_PROTECTED_PATHS = (
+    ".github/",
+    "control_plane/",
+    "db/",
+    "evaluator_private/",
+    "infra/",
+    "security/",
+    "lab_agent/",
+)
+WIP_MAX_PATCH_BYTES = 32 * 1024 * 1024
+OBJECTIVE_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _safe_wip_path(path: str, job_type: str) -> bool:
+    if not path or "\\" in path or "\x00" in path:
+        return False
+    normalized = PurePosixPath(path)
+    if normalized.is_absolute() or normalized.as_posix() != path:
+        return False
+    if any(part in {"", ".", ".."} for part in normalized.parts):
+        return False
+    if path.startswith(WIP_PROTECTED_PATHS) or not path.startswith(WIP_AUTO_PATHS):
+        return False
+    if job_type == "discovery_cycle":
+        return path.startswith("knowledge/")
+    return not path.startswith("knowledge/")
+
+
+def _wip_files(config: Config, job: dict[str, Any]) -> tuple[Path, Path] | None:
+    objective_id = str(job.get("objective_id") or "")
+    if OBJECTIVE_ID.fullmatch(objective_id) is None:
+        return None
+    return config.wip_dir / f"{objective_id}.patch", config.wip_dir / f"{objective_id}.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _trace_event(trace_path: Path | None, payload: dict[str, Any]) -> None:
+    if trace_path is None:
+        return
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    with trace_path.open("a", encoding="utf-8") as trace:
+        trace.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def persist_cross_job_wip(
+    config: Config,
+    job: dict[str, Any],
+    repo: Path,
+    base_commit: str,
+    phase: str,
+    reason: str,
+    trace_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Persist a safe objective-scoped patch so a later job can resume it."""
+    targets = _wip_files(config, job)
+    if targets is None or not (repo / ".git").is_dir():
+        return None
+    patch_path, metadata_path = targets
+    changed_paths = sorted(working_tree_paths(repo))
+    safe_paths = [path for path in changed_paths if _safe_wip_path(path, str(job["job_type"]))]
+    skipped_paths = [path for path in changed_paths if path not in safe_paths]
+    if not safe_paths:
+        return None
+
+    untracked = set(
+        subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
+            text=True,
+        ).splitlines()
+    )
+    intent_paths = [path for path in safe_paths if path in untracked]
+    if intent_paths:
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "--intent-to-add", "--", *intent_paths],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    try:
+        patch = subprocess.check_output(
+            [
+                "git", "-C", str(repo), "diff", "--binary", "--full-index", "HEAD", "--",
+                *safe_paths,
+            ]
+        )
+    finally:
+        if intent_paths:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "--mixed", "HEAD", "--", *intent_paths],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+    if not patch:
+        return None
+    if len(patch) > WIP_MAX_PATCH_BYTES:
+        raise RuntimeError(f"cross-job WIP patch exceeds {WIP_MAX_PATCH_BYTES} bytes")
+
+    previous: dict[str, Any] = {}
+    if metadata_path.is_file():
+        try:
+            previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            previous = {}
+    digest = hashlib.sha256(patch).hexdigest()
+    metadata = {
+        "schema_version": 1,
+        "objective_id": str(job["objective_id"]),
+        "source_job_id": str(job["id"]),
+        "source_base_commit": base_commit,
+        "job_type": str(job["job_type"]),
+        "changed_paths": safe_paths,
+        "skipped_paths": skipped_paths,
+        "phase": phase,
+        "reason": reason[-2000:],
+        "patch_sha256": digest,
+        "patch_bytes": len(patch),
+        "replay_count": int(previous.get("replay_count") or 0),
+        "updated_at_unix": time.time(),
+    }
+    config.wip_dir.mkdir(parents=True, exist_ok=True)
+    temporary_patch = patch_path.with_name(f".{patch_path.name}.{os.getpid()}.tmp")
+    temporary_patch.write_bytes(patch)
+    os.replace(temporary_patch, patch_path)
+    _write_json_atomic(metadata_path, metadata)
+    event = {
+        "type": "cross_job_wip_stored",
+        "objective_id": metadata["objective_id"],
+        "source_job_id": metadata["source_job_id"],
+        "changed_paths": safe_paths,
+        "skipped_paths": skipped_paths,
+        "patch_sha256": digest,
+        "patch_bytes": len(patch),
+        "phase": phase,
+        "reason": reason[-500:],
+    }
+    _trace_event(trace_path, event)
+    return event
+
+
+def restore_cross_job_wip(
+    config: Config,
+    job: dict[str, Any],
+    repo: Path,
+    trace_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Restore the latest safe WIP for this objective onto a fresh trusted baseline."""
+    targets = _wip_files(config, job)
+    if targets is None:
+        return None
+    patch_path, metadata_path = targets
+    if not patch_path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"status": "invalid_metadata", "error": repr(exc)[-500:]}
+    patch = patch_path.read_bytes()
+    if hashlib.sha256(patch).hexdigest() != metadata.get("patch_sha256"):
+        return {"status": "digest_mismatch", "source_job_id": metadata.get("source_job_id")}
+    changed_paths = metadata.get("changed_paths") or []
+    if not isinstance(changed_paths, list) or not all(
+        isinstance(path, str) and _safe_wip_path(path, str(metadata.get("job_type") or ""))
+        for path in changed_paths
+    ):
+        return {"status": "unsafe_metadata", "source_job_id": metadata.get("source_job_id")}
+
+    reverse = subprocess.run(
+        ["git", "-C", str(repo), "apply", "--reverse", "--check", str(patch_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if reverse.returncode == 0:
+        patch_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        event = {
+            "type": "cross_job_wip_cleared",
+            "status": "already_in_baseline",
+            "source_job_id": metadata.get("source_job_id"),
+            "changed_paths": changed_paths,
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    if metadata.get("job_type") != job.get("job_type"):
+        event = {
+            "type": "cross_job_wip_deferred",
+            "status": "job_type_mismatch",
+            "stored_job_type": metadata.get("job_type"),
+            "current_job_type": job.get("job_type"),
+            "source_job_id": metadata.get("source_job_id"),
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    check = subprocess.run(
+        ["git", "-C", str(repo), "apply", "--check", str(patch_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if check.returncode == 0:
+        applied = subprocess.run(
+            ["git", "-C", str(repo), "apply", str(patch_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    else:
+        applied = subprocess.run(
+            ["git", "-C", str(repo), "apply", "--3way", str(patch_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    if applied.returncode != 0:
+        # prepare_run creates a disposable clean clone, so returning it to HEAD is safe.
+        subprocess.run(
+            ["git", "-C", str(repo), "reset", "--hard", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "clean", "-fd"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        event = {
+            "type": "cross_job_wip_conflict",
+            "status": "apply_failed",
+            "source_job_id": metadata.get("source_job_id"),
+            "changed_paths": changed_paths,
+            "error": applied.stdout[-2000:],
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    subprocess.run(
+        ["git", "-C", str(repo), "reset", "--mixed", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    metadata["replay_count"] = int(metadata.get("replay_count") or 0) + 1
+    metadata["last_restored_job_id"] = str(job["id"])
+    metadata["last_restored_at_unix"] = time.time()
+    _write_json_atomic(metadata_path, metadata)
+    event = {
+        "type": "cross_job_wip_restored",
+        "status": "restored",
+        "source_job_id": metadata.get("source_job_id"),
+        "source_base_commit": metadata.get("source_base_commit"),
+        "changed_paths": sorted(working_tree_paths(repo)),
+        "patch_sha256": metadata.get("patch_sha256"),
+        "replay_count": metadata["replay_count"],
+    }
+    _trace_event(trace_path, event)
+    return event
 
 
 def discovery_needs_synthesis(repo: Path) -> bool:
@@ -906,6 +1206,7 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
 def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     repo, base_commit, branch = prepare_run(config, job)
     trace_path = repo.parent / "opencode-trace.jsonl"
+    cross_job_handoff = restore_cross_job_wip(config, job, repo, trace_path)
     raw_payload = job.get("payload", {})
     previous_cycle = raw_payload.get("previous_cycle") or {}
     compact_previous = {
@@ -961,6 +1262,7 @@ Work autonomously as the senior agent for Bonsai Dwarf Fortress.
 Objective payload: {json.dumps(objective_payload, ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
 Bounded previous-cycle handoff: {json.dumps(compact_previous, ensure_ascii=False)}
+Cross-job working-tree handoff: {json.dumps(cross_job_handoff, ensure_ascii=False)}
 
 You are root inside an isolated Debian LXC containing Steam Dwarf Fortress 53.15 and DFHack
 53.15-r2 at /srv/df-bonsai/current. This repository clone has no GitHub, PostgreSQL, Steam, or
@@ -976,6 +1278,8 @@ files over 2 MiB.
 
 Keep durable progress in the working tree and todo state. If the context grows too large, the harness
 will stop this OpenCode process and continue from that durable state in a fresh bounded phase.
+If the cross-job handoff status is `restored`, begin with `git diff --stat` and finish or repair that
+existing candidate before starting unrelated work. Do not discard a restored diff merely to start over.
 
 {mode_instructions}
 
@@ -992,6 +1296,15 @@ Execution discipline is mandatory:
     last_heartbeat = 0.0
     requested_wall_time = int((job.get("constraints") or {}).get("wall_time_seconds", config.harness_timeout))
     job_wall_time = min(config.harness_timeout, max(300, requested_wall_time))
+    def save_checkpoint(phase: str, reason: str) -> dict[str, Any]:
+        checkpoint = store_external_checkpoint(
+            repo, trace_path, phase, reason, previous_error
+        )
+        checkpoint["cross_job_wip"] = persist_cross_job_wip(
+            config, job, repo, base_commit, phase, reason, trace_path
+        )
+        return checkpoint
+
     def run_harness(
         harness_prompt: str,
         phase: str,
@@ -1114,14 +1427,12 @@ Execution discipline is mandatory:
     last_reason = run_harness(
         prompt,
         "opencode",
-        append=False,
+        append=trace_path.exists(),
         max_tool_uses=discovery_tool_budget if discovery_mode else config.coding_tool_budget,
     )
 
     if not trace_has_live_game_probe(trace_path):
-        checkpoint = store_external_checkpoint(
-            repo, trace_path, last_phase, last_reason, previous_error
-        )
+        checkpoint = save_checkpoint(last_phase, last_reason)
         probe_recovery_prompt = f"""
 You are a fresh bounded RUNTIME-PROBE phase for Bonsai Dwarf Fortress. Do not restart broad repository
 research. The deterministic checkpoint below is the complete handoff from the previous process.
@@ -1165,9 +1476,7 @@ tree only when it directly supports executable implementation. Do not commit.
         or not working_tree_paths(repo)
     ):
         for continuation_index in range(config.max_continuations):
-            checkpoint = store_external_checkpoint(
-                repo, trace_path, last_phase, last_reason, previous_error
-            )
+            checkpoint = save_checkpoint(last_phase, last_reason)
             continuation_phase = f"implementation_continuation_{continuation_index + 1}"
             continuation_prompt = f"""
 You are a fresh IMPLEMENTATION continuation for Bonsai Dwarf Fortress. The previous process has been
@@ -1207,9 +1516,7 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
         for repair_index in range(repair_attempts):
             if has_public_test_change(repo) and validation["ok"]:
                 break
-            checkpoint = store_external_checkpoint(
-                repo, trace_path, last_phase, "validation_failed", previous_error
-            )
+            checkpoint = save_checkpoint(last_phase, "validation_failed")
             validation_output = json.dumps(validation, ensure_ascii=False)[-24000:]
             repair_prompt = f"""
 You are a fresh TEST-AND-REPAIR phase. Do not research or redesign. Repair the existing candidate using
@@ -1249,6 +1556,7 @@ tests. Do not make unrelated changes and do not commit.
         if not validation["ok"]:
             missing.append("fresh harness-owned validation")
         if missing:
+            save_checkpoint(last_phase, "terminal_validation_failed")
             raise RuntimeError(
                 "coding candidate is incomplete after external compaction: missing "
                 + ", ".join(missing)
@@ -1258,6 +1566,9 @@ tests. Do not make unrelated changes and do not commit.
 
     status = run("git status --porcelain", repo, 30)["output"].strip()
     if status:
+        persist_cross_job_wip(
+            config, job, repo, base_commit, last_phase, "candidate_ready", trace_path
+        )
         subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1349,6 +1660,7 @@ def main() -> None:
     config = Config.from_env()
     config.runs_dir.mkdir(parents=True, exist_ok=True)
     config.outbox_dir.mkdir(parents=True, exist_ok=True)
+    config.wip_dir.mkdir(parents=True, exist_ok=True)
     api = Api(config)
     print(f"Bonsai lab agent started with {config.model}", flush=True)
     while True:
@@ -1367,6 +1679,26 @@ def main() -> None:
             print(f"completed job {job['id']} artifacts={len(artifacts)}", flush=True)
         except Exception as exc:
             print(f"job failed: {exc}", flush=True)
+            if job is not None and OBJECTIVE_ID.fullmatch(str(job.get("objective_id") or "")):
+                run_repositories = sorted(
+                    config.runs_dir.glob(f"{job['id']}-*/repo"),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                if run_repositories:
+                    try:
+                        failed_repo = run_repositories[0]
+                        persist_cross_job_wip(
+                            config,
+                            job,
+                            failed_repo,
+                            str(job.get("base_commit") or ""),
+                            "worker_exception",
+                            repr(exc),
+                            failed_repo.parent / "opencode-trace.jsonl",
+                        )
+                    except Exception as wip_exc:
+                        print(f"failed to persist cross-job WIP: {wip_exc}", flush=True)
             try:
                 api.worker_heartbeat(
                     "error",

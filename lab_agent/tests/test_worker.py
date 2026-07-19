@@ -7,6 +7,8 @@ from bonsai_lab_agent.worker import (
     discovery_needs_synthesis,
     compact_phase_checkpoint,
     harness_environment,
+    persist_cross_job_wip,
+    restore_cross_job_wip,
     trace_ended_with_degenerate_stop,
     trace_has_live_game_probe,
     trace_latest_input_tokens,
@@ -237,3 +239,100 @@ def test_harness_owned_validation_detects_edits_after_old_test_output(tmp_path: 
     broken.write_text("VALUE = 1\n", encoding="utf-8")
     passed = validate_coding_candidate(repo)
     assert passed["ok"] is True
+
+
+class WipConfigStub:
+    def __init__(self, root: Path):
+        self.wip_dir = root / "wip"
+
+
+def wip_job(job_type: str = "coding_cycle") -> dict:
+    return {
+        "id": "5917fed3-3f4c-434a-a886-2ba756422bf6",
+        "objective_id": "baca4249-75a2-4aec-8bcc-9d4a008cd1fa",
+        "job_type": job_type,
+    }
+
+
+def clean_repo(repo: Path) -> None:
+    subprocess.run(["git", "-C", str(repo), "reset", "--hard", "HEAD"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "clean", "-fd"], check=True, capture_output=True)
+
+
+def test_cross_job_wip_restores_tracked_and_untracked_progress(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    config = WipConfigStub(tmp_path)
+    job = wip_job()
+    (repo / "bridge").mkdir()
+    (repo / "bridge" / "probe.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_probe.py").write_text("def test_value():\n    assert True\n", encoding="utf-8")
+    trace = tmp_path / "store-trace.jsonl"
+
+    stored = persist_cross_job_wip(config, job, repo, "baseline", "repair", "gate failed", trace)
+    assert stored is not None
+    assert stored["changed_paths"] == ["bridge/probe.py", "tests/test_probe.py"]
+    clean_repo(repo)
+
+    restore_trace = tmp_path / "restore-trace.jsonl"
+    restored = restore_cross_job_wip(config, {**job, "id": "82dbd080-1d14-4421-bfb1-7ef3f7d50a97"}, repo, restore_trace)
+    assert restored is not None
+    assert restored["status"] == "restored"
+    assert restored["replay_count"] == 1
+    assert (repo / "bridge" / "probe.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert working_tree_paths(repo) == {"bridge/probe.py", "tests/test_probe.py"}
+    assert "cross_job_wip_restored" in restore_trace.read_text(encoding="utf-8")
+
+
+def test_cross_job_wip_clears_after_patch_is_in_baseline(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    config = WipConfigStub(tmp_path)
+    job = wip_job()
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_done.py").write_text("def test_done():\n    assert True\n", encoding="utf-8")
+    persist_cross_job_wip(config, job, repo, "baseline", "candidate", "ready")
+    subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "promoted"], check=True, capture_output=True)
+
+    cleared = restore_cross_job_wip(config, {**job, "id": "82dbd080-1d14-4421-bfb1-7ef3f7d50a97"}, repo)
+    assert cleared is not None
+    assert cleared["status"] == "already_in_baseline"
+    assert not config.wip_dir.joinpath(f"{job['objective_id']}.patch").exists()
+    assert not config.wip_dir.joinpath(f"{job['objective_id']}.json").exists()
+
+
+def test_cross_job_wip_never_restores_protected_paths(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    config = WipConfigStub(tmp_path)
+    job = wip_job()
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_safe.py").write_text("def test_safe():\n    assert True\n", encoding="utf-8")
+    (repo / "control_plane").mkdir()
+    (repo / "control_plane" / "unsafe.py").write_text("SECRET = True\n", encoding="utf-8")
+
+    stored = persist_cross_job_wip(config, job, repo, "baseline", "repair", "failed")
+    assert stored is not None
+    assert stored["changed_paths"] == ["tests/test_safe.py"]
+    assert stored["skipped_paths"] == ["control_plane/unsafe.py"]
+    clean_repo(repo)
+
+    restored = restore_cross_job_wip(config, {**job, "id": "82dbd080-1d14-4421-bfb1-7ef3f7d50a97"}, repo)
+    assert restored is not None and restored["status"] == "restored"
+    assert (repo / "tests" / "test_safe.py").is_file()
+    assert not (repo / "control_plane" / "unsafe.py").exists()
+
+
+def test_cross_job_wip_defers_across_job_modes(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    config = WipConfigStub(tmp_path)
+    coding = wip_job("coding_cycle")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_pending.py").write_text("def test_pending():\n    assert True\n", encoding="utf-8")
+    persist_cross_job_wip(config, coding, repo, "baseline", "repair", "failed")
+    clean_repo(repo)
+
+    discovery = {**coding, "id": "82dbd080-1d14-4421-bfb1-7ef3f7d50a97", "job_type": "discovery_cycle"}
+    deferred = restore_cross_job_wip(config, discovery, repo)
+    assert deferred is not None
+    assert deferred["status"] == "job_type_mismatch"
+    assert working_tree_paths(repo) == set()
