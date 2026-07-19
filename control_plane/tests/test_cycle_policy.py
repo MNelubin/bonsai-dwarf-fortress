@@ -21,8 +21,14 @@ def test_fresh_discovery_is_followed_by_coding():
     assert decide(last_job_type="discovery_cycle").job_type == "coding_cycle"
 
 
-def test_empty_coding_returns_to_discovery():
-    assert decide(last_job_state="rejected", last_job_changed=False).job_type == "discovery_cycle"
+def test_empty_coding_retries_with_failure_handoff():
+    decision = decide(last_job_state="rejected", last_job_changed=False)
+    assert decision.job_type == "coding_cycle"
+    assert "retry" in decision.reason
+
+
+def test_maintenance_cancelled_coding_is_retried():
+    assert decide(last_job_state="cancelled", last_job_changed=None).job_type == "coding_cycle"
 
 
 def test_three_promoted_code_cycles_trigger_refresh():

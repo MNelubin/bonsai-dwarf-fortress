@@ -21,10 +21,10 @@ def choose_cycle(
         return CycleDecision("discovery_cycle", "knowledge library has no promoted discovery yet")
     if last_job_type == "discovery_cycle" and last_job_state == "completed":
         return CycleDecision("coding_cycle", "fresh promoted knowledge is ready for implementation")
+    if promoted_coding_since_discovery >= 3:
+        return CycleDecision("discovery_cycle", "periodic knowledge refresh after three promoted code cycles")
     if last_job_type in {"coding_cycle", "research_cycle"} and (
         last_job_state in {"rejected", "failed", "cancelled"} or last_job_changed is False
     ):
-        return CycleDecision("discovery_cycle", "previous coding cycle produced no promotable change")
-    if promoted_coding_since_discovery >= 3:
-        return CycleDecision("discovery_cycle", "periodic knowledge refresh after three promoted code cycles")
+        return CycleDecision("coding_cycle", "retry the unfinished coding objective with its failure handoff")
     return CycleDecision("coding_cycle", "knowledge is current and coding can advance the objective")
