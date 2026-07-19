@@ -172,6 +172,11 @@ def working_tree_paths(repo: Path) -> set[str]:
     return paths
 
 
+def serializable_working_tree_paths(repo: Path) -> list[str]:
+    """Return stable JSON-safe paths for prompts and API payloads."""
+    return sorted(working_tree_paths(repo))
+
+
 def discovery_needs_synthesis(repo: Path) -> bool:
     changed_paths = working_tree_paths(repo)
     index = repo / "knowledge" / "INDEX.md"
@@ -945,7 +950,7 @@ preserve the exact blocker as evidence so the cycle can still produce a focused 
         synthesize_discovery(config, api, job, repo, trace_path, started)
 
     if not discovery_mode and trace_ended_with_degenerate_stop(trace_path):
-        changed = working_tree_paths(repo)
+        changed = serializable_working_tree_paths(repo)
         diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
         recovery_prompt = f"""
 Continue the interrupted Bonsai Dwarf Fortress CODING job from the existing working tree.
@@ -965,7 +970,7 @@ Finish only after `git status --short` shows both implementation and test eviden
     if not discovery_mode and working_tree_paths(repo) and (
         not has_public_test_change(repo) or not trace_has_successful_test(trace_path)
     ):
-        changed = working_tree_paths(repo)
+        changed = serializable_working_tree_paths(repo)
         diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
         missing = []
         if not has_public_test_change(repo):

@@ -8,6 +8,7 @@ from bonsai_lab_agent.worker import (
     trace_has_live_game_probe,
     trace_latest_input_tokens,
     trace_phase_tool_use_count,
+    serializable_working_tree_paths,
     working_tree_paths,
     write_discovery_bundle,
 )
@@ -127,3 +128,14 @@ def test_context_and_degenerate_stop_classifiers(tmp_path: Path):
     )
     assert trace_latest_input_tokens(trace) == 71000
     assert trace_ended_with_degenerate_stop(trace) is True
+
+
+def test_recovery_prompt_paths_are_stable_and_json_serializable(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    (repo / "README.md").write_text("changed\n", encoding="utf-8")
+    (repo / "new_test.py").write_text("pass\n", encoding="utf-8")
+
+    changed = serializable_working_tree_paths(repo)
+
+    assert changed == ["README.md", "new_test.py"]
+    assert json.loads(json.dumps(changed)) == changed
