@@ -918,7 +918,8 @@ documentation. Your next tool call must use `timeout` with the installed runtime
 the exact command, exit status, stdout/stderr, and concrete observed game fields, IDs, coordinates, ticks,
 enums, or state transition. Then turn that evidence into executable code plus a public test in coding mode,
 or a new mechanic-specific evidence note in discovery mode. A version listing or `file` command is not a
-probe. Do not finish until this requirement is satisfied or an exact reproducible runtime blocker is shown.
+probe. Use the remaining bounded calls to satisfy this requirement. If runtime execution remains blocked,
+preserve the exact blocker as evidence so the cycle can still produce a focused note or tested code.
 """.strip()
         run_harness(
             probe_recovery_prompt,
@@ -928,9 +929,17 @@ probe. Do not finish until this requirement is satisfied or an exact reproducibl
         )
 
     if not trace_has_live_game_probe(trace_path):
-        raise RuntimeError(
-            "agent completed without a bounded live Dwarf Fortress runtime probe"
-        )
+        with trace_path.open("a", encoding="utf-8") as trace:
+            trace.write(
+                json.dumps(
+                    {
+                        "type": "harness_warning",
+                        "warning": "live_game_probe_not_observed",
+                        "policy": "soft_after_bounded_recovery",
+                    }
+                )
+                + "\n"
+            )
 
     if discovery_mode and discovery_needs_synthesis(repo):
         synthesize_discovery(config, api, job, repo, trace_path, started)
