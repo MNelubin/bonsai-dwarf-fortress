@@ -39,6 +39,9 @@ function bridge.observe()
     -- Delegated to bridge.building_list() below.
     local buildings = bridge.building_list()
 
+    -- Job queue snapshot (delegated to bridge.job_list()).
+    local jobs = bridge.job_list()
+
     return {
         version    = "1.0",
         gametype   = gametype,
@@ -48,6 +51,7 @@ function bridge.observe()
         paused     = df.global.pause_state,
         units      = units,
         buildings  = buildings,
+        jobs       = jobs,
         tick       = bridge.tickcount(),
     }
 end

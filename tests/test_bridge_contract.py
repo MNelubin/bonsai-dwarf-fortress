@@ -4,6 +4,7 @@ These tests exercise the Python-side stubs (no live DF required) and
 validate that all data shapes match bridge/contracts.json.
 """
 
+import contextlib
 import json
 import os
 import sys
@@ -1015,10 +1016,8 @@ class TestDiskCheckpoint:
 
     @staticmethod
     def _cleanup(f):
-        try:
+        with contextlib.suppress(FileNotFoundError):
             os.remove(f)
-        except FileNotFoundError:
-            pass
 
     def test_save_and_load_file(self):
         f = self._tmp_file()
@@ -1049,17 +1048,15 @@ class TestDiskCheckpoint:
         finally:
             for f in os.listdir(d):
                 self._cleanup(os.path.join(d, f))
-            try:
+            with contextlib.suppress(OSError):
                 os.rmdir(d)
-            except OSError:
-                pass
 
     def test_roundtrip_preserves_trace_determinism(self):
         f = self._tmp_file()
         try:
             r = EpisodeRunner(seed=42, max_steps=20, action_budget=15)
             m1_before = r.run(baseline_policy)
-            trace_a = r.get_trace()
+            _trace_a = r.get_trace()
 
             written = r.save_checkpoint(f)
             r2 = EpisodeRunner.load_checkpoint(written)

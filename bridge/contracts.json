@@ -16,6 +16,7 @@
           "paused":     { "type": "boolean" },
           "units":      { "type": "array" },
           "buildings":  { "type": "array" },
+          "jobs":       { "type": "array", "description": "active/queued job records" },
           "tick":       { "type": "integer", "description": "monotonic bridge tick counter" }
         }
       }
