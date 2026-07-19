@@ -5,6 +5,7 @@ from pathlib import Path
 from bonsai_lab_agent.worker import (
     discovery_needs_synthesis,
     compact_phase_checkpoint,
+    harness_environment,
     trace_ended_with_degenerate_stop,
     trace_has_live_game_probe,
     trace_latest_input_tokens,
@@ -155,6 +156,21 @@ def test_four_token_stop_is_treated_as_degenerate(tmp_path: Path):
         [{"type": "step_finish", "part": {"reason": "stop", "tokens": {"output": 4}}}],
     )
     assert trace_ended_with_degenerate_stop(trace) is True
+
+
+def test_implementation_only_environment_removes_research_tools(monkeypatch, tmp_path: Path):
+    class ConfigStub:
+        opencode_config = tmp_path / "opencode.json"
+
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"permission":{"task":"allow"}}')
+    general = harness_environment(ConfigStub())
+    restricted = harness_environment(ConfigStub(), implementation_only=True)
+
+    assert general["OPENCODE_CONFIG_CONTENT"] == '{"permission":{"task":"allow"}}'
+    permissions = json.loads(restricted["OPENCODE_CONFIG_CONTENT"])["permission"]
+    assert permissions["task"] == "deny"
+    assert permissions["webfetch"] == "deny"
+    assert permissions["websearch"] == "deny"
 
 
 def test_recovery_prompt_paths_are_stable_and_json_serializable(tmp_path: Path):

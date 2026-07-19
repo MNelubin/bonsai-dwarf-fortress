@@ -782,7 +782,7 @@ def run(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
     }
 
 
-def harness_environment(config: Config) -> dict[str, str]:
+def harness_environment(config: Config, *, implementation_only: bool = False) -> dict[str, str]:
     sensitive_names = {
         "DATABASE_URL",
         "GITHUB_TOKEN",
@@ -809,6 +809,22 @@ def harness_environment(config: Config) -> dict[str, str]:
             "GIT_TERMINAL_PROMPT": "0",
         }
     )
+    if implementation_only:
+        # Inline config has higher precedence than the global/project config.  A denied
+        # task permission removes the Task tool from the model's tool description, so a
+        # bounded repair phase cannot spend its entire fresh budget on another research
+        # subagent.  Editing, bounded reads, shell commands, and tests remain available.
+        child_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+            {
+                "permission": {
+                    "task": "deny",
+                    "webfetch": "deny",
+                    "websearch": "deny",
+                    "skill": "deny",
+                    "question": "deny",
+                }
+            }
+        )
     return child_env
 
 
@@ -978,6 +994,7 @@ Execution discipline is mandatory:
         append: bool,
         max_tool_uses: int | None = None,
         phase_timeout: int | None = None,
+        implementation_only: bool = False,
     ) -> str:
         nonlocal last_heartbeat
         budget_exhausted = False
@@ -996,12 +1013,23 @@ Execution discipline is mandatory:
         ]
         with trace_path.open("a" if append else "w", encoding="utf-8") as trace:
             if append:
-                trace.write(json.dumps({"type": "harness_phase", "phase": phase}) + "\n")
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "harness_phase",
+                            "phase": phase,
+                            "tool_profile": (
+                                "implementation_only" if implementation_only else "general"
+                            ),
+                        }
+                    )
+                    + "\n"
+                )
                 trace.flush()
             process = subprocess.Popen(
                 command,
                 cwd=repo,
-                env=harness_environment(config),
+                env=harness_environment(config, implementation_only=implementation_only),
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -1108,6 +1136,7 @@ tree only when it directly supports executable implementation. Do not commit.
             append=True,
             max_tool_uses=8,
             phase_timeout=min(240, config.phase_timeout),
+            implementation_only=True,
         )
 
     if not trace_has_live_game_probe(trace_path):
@@ -1156,6 +1185,7 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
                 continuation_phase,
                 append=True,
                 max_tool_uses=config.coding_tool_budget,
+                implementation_only=True,
             )
             if (
                 working_tree_paths(repo)
@@ -1191,6 +1221,7 @@ tests. Do not make unrelated changes and do not commit.
                 last_phase,
                 append=True,
                 max_tool_uses=config.coding_tool_budget,
+                implementation_only=True,
             )
             validation = validate_coding_candidate(repo)
             with trace_path.open("a", encoding="utf-8") as trace:
