@@ -91,7 +91,8 @@ def tick() -> None:
                 "state": previous["state"],
                 "model": (previous["result"] or {}).get("model"),
                 "changed": (previous["result"] or {}).get("changed"),
-                "summary_tail": (summary or previous["error"] or "")[-2_000:],
+                "error": previous["error"],
+                "summary_tail": (summary or "")[-2_000:],
             }
 
         last_discovery_at = connection.execute(

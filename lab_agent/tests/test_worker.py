@@ -4,11 +4,14 @@ from pathlib import Path
 
 from bonsai_lab_agent.worker import (
     discovery_needs_synthesis,
+    compact_phase_checkpoint,
     trace_ended_with_degenerate_stop,
     trace_has_live_game_probe,
     trace_latest_input_tokens,
+    trace_phase_latest_input_tokens,
     trace_phase_tool_use_count,
     serializable_working_tree_paths,
+    validate_coding_candidate,
     working_tree_paths,
     write_discovery_bundle,
 )
@@ -130,6 +133,30 @@ def test_context_and_degenerate_stop_classifiers(tmp_path: Path):
     assert trace_ended_with_degenerate_stop(trace) is True
 
 
+def test_context_rollover_is_scoped_to_fresh_phase(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    write_trace(
+        trace,
+        [
+            {"type": "step_finish", "part": {"tokens": {"input": 73000}}},
+            {"type": "harness_phase", "phase": "implementation_continuation_1"},
+            {"type": "step_finish", "part": {"tokens": {"input": 9000}}},
+        ],
+    )
+    assert trace_latest_input_tokens(trace) == 9000
+    assert trace_phase_latest_input_tokens(trace, "opencode") == 73000
+    assert trace_phase_latest_input_tokens(trace, "implementation_continuation_1") == 9000
+
+
+def test_four_token_stop_is_treated_as_degenerate(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    write_trace(
+        trace,
+        [{"type": "step_finish", "part": {"reason": "stop", "tokens": {"output": 4}}}],
+    )
+    assert trace_ended_with_degenerate_stop(trace) is True
+
+
 def test_recovery_prompt_paths_are_stable_and_json_serializable(tmp_path: Path):
     repo = init_repo(tmp_path)
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
@@ -139,3 +166,50 @@ def test_recovery_prompt_paths_are_stable_and_json_serializable(tmp_path: Path):
 
     assert changed == ["README.md", "new_test.py"]
     assert json.loads(json.dumps(changed)) == changed
+
+
+def test_external_checkpoint_compacts_evidence_and_diff(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    (repo / "bridge.py").write_text("VALUE = 1\n", encoding="utf-8")
+    trace = tmp_path / "trace.jsonl"
+    write_trace(
+        trace,
+        [
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "bash",
+                    "state": {
+                        "input": {"command": "timeout 5 dfhack-run status"},
+                        "output": "Could not connect",
+                    },
+                },
+            },
+            {"type": "step_finish", "part": {"tokens": {"input": 55000}}},
+        ],
+    )
+
+    checkpoint = compact_phase_checkpoint(repo, trace, "opencode", "context_rollover", "gate failed")
+
+    assert checkpoint["changed_paths"] == ["bridge.py"]
+    assert checkpoint["stop_reason"] == "context_rollover"
+    assert checkpoint["previous_gate_error"] == "gate failed"
+    assert checkpoint["latest_phase_input_tokens"] == 55000
+    assert checkpoint["recent_evidence"][-1]["output"] == "Could not connect"
+
+
+def test_harness_owned_validation_detects_edits_after_old_test_output(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    tests = repo / "tests"
+    tests.mkdir()
+    (tests / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    broken = repo / "bridge.py"
+    broken.write_text("if True:\n", encoding="utf-8")
+
+    failed = validate_coding_candidate(repo)
+    assert failed["ok"] is False
+    assert any(command["name"] == "py_compile" and command["exit_code"] != 0 for command in failed["commands"])
+
+    broken.write_text("VALUE = 1\n", encoding="utf-8")
+    passed = validate_coding_candidate(repo)
+    assert passed["ok"] is True

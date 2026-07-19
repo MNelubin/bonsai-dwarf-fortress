@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -32,6 +33,9 @@ class Config:
     opencode_config: Path
     ollama_url: str
     context_rollover_tokens: int
+    phase_timeout: int
+    coding_tool_budget: int
+    max_continuations: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -54,8 +58,11 @@ class Config:
             ),
             ollama_url=os.environ.get("BONSAI_OLLAMA_URL", "http://100.96.0.4:11434").rstrip("/"),
             context_rollover_tokens=int(
-                os.environ.get("BONSAI_CONTEXT_ROLLOVER_TOKENS", "70000")
+                os.environ.get("BONSAI_CONTEXT_ROLLOVER_TOKENS", "55000")
             ),
+            phase_timeout=int(os.environ.get("BONSAI_PHASE_TIMEOUT", "420")),
+            coding_tool_budget=int(os.environ.get("BONSAI_CODING_TOOL_BUDGET", "24")),
+            max_continuations=int(os.environ.get("BONSAI_MAX_CONTINUATIONS", "1")),
         )
 
 
@@ -199,7 +206,7 @@ def discovery_needs_synthesis(repo: Path) -> bool:
 
 
 def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
-    """Detect an OpenCode turn that produced only an immediate stop token."""
+    """Detect an OpenCode turn that produced only an immediate tiny stop response."""
     if not trace_path.is_file():
         return False
     last_finish: dict[str, Any] | None = None
@@ -218,7 +225,7 @@ def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
     return (
         part.get("reason") == "stop"
         and isinstance(output_tokens, int)
-        and output_tokens <= 1
+        and output_tokens <= 4
     )
 
 
@@ -285,6 +292,178 @@ def trace_latest_input_tokens(trace_path: Path) -> int:
         if isinstance(input_tokens, int):
             latest = input_tokens
     return latest
+
+
+def trace_phase_latest_input_tokens(trace_path: Path, phase: str) -> int:
+    """Return the latest input size from only the requested fresh process phase."""
+    if not trace_path.is_file():
+        return 0
+    current_phase = "opencode"
+    latest = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "harness_phase":
+            current_phase = str(event.get("phase") or "")
+            continue
+        if event.get("type") != "step_finish" or current_phase != phase:
+            continue
+        tokens = ((event.get("part") or {}).get("tokens") or {})
+        input_tokens = tokens.get("input")
+        if isinstance(input_tokens, int):
+            latest = input_tokens
+    return latest
+
+
+def compact_phase_checkpoint(
+    repo: Path,
+    trace_path: Path,
+    phase: str,
+    reason: str,
+    previous_error: str = "",
+) -> dict[str, Any]:
+    """Build a deterministic, tool-free handoff for a fresh OpenCode process."""
+    current_phase = "opencode"
+    phase_events: list[dict[str, Any]] = []
+    if trace_path.is_file():
+        for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "harness_phase":
+                current_phase = str(event.get("phase") or "")
+                continue
+            if current_phase == phase:
+                phase_events.append(event)
+
+    evidence: list[dict[str, str]] = []
+    todo: Any = None
+    for event in phase_events:
+        if event.get("type") != "tool_use":
+            continue
+        part = event.get("part") or {}
+        state = part.get("state") or {}
+        tool_input = state.get("input") or {}
+        if part.get("tool") == "todowrite":
+            todo = tool_input.get("todos")
+        output = str((state.get("metadata") or {}).get("output") or state.get("output") or "")
+        evidence.append(
+            {
+                "tool": str(part.get("tool") or ""),
+                "input": json.dumps(tool_input, ensure_ascii=False)[:1200],
+                "output": output[-1600:],
+            }
+        )
+
+    changed = serializable_working_tree_paths(repo)
+    diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
+    diff_excerpt = run("git diff --unified=2 --no-ext-diff", repo, 30)["output"][:14000]
+    return {
+        "from_phase": phase,
+        "stop_reason": reason,
+        "previous_gate_error": previous_error[-4000:],
+        "changed_paths": changed,
+        "diff_stat": diff_stat,
+        "diff_excerpt": diff_excerpt,
+        "todo": todo,
+        "recent_evidence": evidence[-8:],
+        "live_probe_observed": trace_has_live_game_probe(trace_path),
+        "latest_phase_input_tokens": trace_phase_latest_input_tokens(trace_path, phase),
+    }
+
+
+def store_external_checkpoint(
+    repo: Path,
+    trace_path: Path,
+    phase: str,
+    reason: str,
+    previous_error: str = "",
+) -> dict[str, Any]:
+    checkpoint = compact_phase_checkpoint(repo, trace_path, phase, reason, previous_error)
+    checkpoint_path = repo.parent / f"checkpoint-{phase}.json"
+    checkpoint_path.write_text(
+        json.dumps(checkpoint, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with trace_path.open("a", encoding="utf-8") as trace:
+        trace.write(
+            json.dumps(
+                {
+                    "type": "external_checkpoint",
+                    "phase": phase,
+                    "path": checkpoint_path.name,
+                    "changed_paths": checkpoint["changed_paths"],
+                    "stop_reason": reason,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+    return checkpoint
+
+
+def validate_coding_candidate(repo: Path) -> dict[str, Any]:
+    """Run harness-owned checks after the model's final edit, so evidence cannot be stale."""
+    commands: list[dict[str, Any]] = []
+
+    diff_check = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--check"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    commands.append(
+        {"name": "git_diff_check", "exit_code": diff_check.returncode, "output": diff_check.stdout[-8000:]}
+    )
+
+    changed_python = [
+        str(repo / path)
+        for path in serializable_working_tree_paths(repo)
+        if path.endswith(".py") and (repo / path).is_file()
+    ]
+    if changed_python:
+        compile_check = subprocess.run(
+            [sys.executable, "-m", "py_compile", *changed_python],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+        )
+        commands.append(
+            {"name": "py_compile", "exit_code": compile_check.returncode, "output": compile_check.stdout[-12000:]}
+        )
+
+    targets = [name for name in ("tests", "evaluator_public") if (repo / name).is_dir()]
+    if targets:
+        public_tests = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", *targets],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=300,
+        )
+        commands.append(
+            {"name": "public_pytest", "exit_code": public_tests.returncode, "output": public_tests.stdout[-20000:]}
+        )
+    else:
+        commands.append({"name": "public_pytest", "exit_code": 2, "output": "no public test directory"})
+
+    return {
+        "ok": all(command["exit_code"] == 0 for command in commands),
+        "commands": commands,
+    }
 
 
 def trace_has_test_execution(trace_path: Path) -> bool:
@@ -715,6 +894,7 @@ def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str
         if key != "summary_tail"
     }
     compact_previous["summary_tail"] = str(previous_cycle.get("summary_tail") or "")[-800:]
+    previous_error = str(previous_cycle.get("error") or "")
     objective_payload = {
         key: value for key, value in raw_payload.items() if key != "previous_cycle"
     }
@@ -790,15 +970,20 @@ Execution discipline is mandatory:
 
     started = time.monotonic()
     last_heartbeat = 0.0
+    requested_wall_time = int((job.get("constraints") or {}).get("wall_time_seconds", config.harness_timeout))
+    job_wall_time = min(config.harness_timeout, max(300, requested_wall_time))
     def run_harness(
         harness_prompt: str,
         phase: str,
         append: bool,
         max_tool_uses: int | None = None,
-    ) -> None:
+        phase_timeout: int | None = None,
+    ) -> str:
         nonlocal last_heartbeat
         budget_exhausted = False
         controlled_stop_reason: str | None = None
+        phase_started = time.monotonic()
+        effective_phase_timeout = phase_timeout or config.phase_timeout
         command = [
             config.opencode_bin,
             "run",
@@ -827,35 +1012,20 @@ Execution discipline is mandatory:
             try:
                 while process.poll() is None:
                     elapsed = time.monotonic() - started
-                    if elapsed > config.harness_timeout:
-                        if (
-                            not discovery_mode
-                            and working_tree_paths(repo)
-                            and trace_has_live_game_probe(trace_path)
-                            and trace_has_successful_test(trace_path)
-                        ):
-                            budget_exhausted = True
-                            controlled_stop_reason = "timeout_with_verified_candidate"
-                            stop_process_group(process)
-                            break
-                        raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
-                    if not discovery_mode and trace_path.exists():
-                        tool_uses = trace_path.read_text(
-                            encoding="utf-8", errors="replace"
-                        ).count('"type":"tool_use"')
-                        if (
-                            tool_uses >= 48
-                            and working_tree_paths(repo)
-                            and trace_has_live_game_probe(trace_path)
-                            and trace_has_successful_test(trace_path)
-                        ):
-                            budget_exhausted = True
-                            controlled_stop_reason = "verified_candidate_ready"
-                            stop_process_group(process)
-                            break
+                    phase_elapsed = time.monotonic() - phase_started
+                    if elapsed > job_wall_time:
+                        budget_exhausted = True
+                        controlled_stop_reason = "job_timeout"
+                        stop_process_group(process)
+                        break
+                    if phase_elapsed > effective_phase_timeout:
+                        budget_exhausted = True
+                        controlled_stop_reason = "phase_timeout"
+                        stop_process_group(process)
+                        break
                     if (
                         config.context_rollover_tokens > 0
-                        and trace_latest_input_tokens(trace_path)
+                        and trace_phase_latest_input_tokens(trace_path, phase)
                         >= config.context_rollover_tokens
                     ):
                         budget_exhausted = True
@@ -866,6 +1036,7 @@ Execution discipline is mandatory:
                         tool_uses = trace_phase_tool_use_count(trace_path, phase)
                         if tool_uses >= max_tool_uses:
                             budget_exhausted = True
+                            controlled_stop_reason = "tool_budget"
                             stop_process_group(process)
                             break
                     if elapsed - last_heartbeat >= 35:
@@ -897,40 +1068,46 @@ Execution discipline is mandatory:
                     )
                     + "\n"
                 )
-            return
+            return controlled_stop_reason or "tool_budget"
         if return_code != 0:
             trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
             raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
+        return "completed"
 
     discovery_tool_budget = min(
         24,
         max(8, int((job.get("constraints") or {}).get("discovery_tool_budget", 16))),
     )
-    run_harness(
+    last_phase = "opencode"
+    last_reason = run_harness(
         prompt,
         "opencode",
         append=False,
-        max_tool_uses=discovery_tool_budget if discovery_mode else None,
+        max_tool_uses=discovery_tool_budget if discovery_mode else config.coding_tool_budget,
     )
 
     if not trace_has_live_game_probe(trace_path):
+        checkpoint = store_external_checkpoint(
+            repo, trace_path, last_phase, last_reason, previous_error
+        )
         probe_recovery_prompt = f"""
-{prompt}
+You are a fresh bounded RUNTIME-PROBE phase for Bonsai Dwarf Fortress. Do not restart broad repository
+research. The deterministic checkpoint below is the complete handoff from the previous process.
 
-MANDATORY RUNTIME RECOVERY: the preceding run did not execute a live-game probe. Stop reading repository
-documentation. Your next tool call must use `timeout` with the installed runtime under
-`/srv/df-bonsai/current` (for example dfhack-run/dwarfort or the repository's real DFHack probe). Record
-the exact command, exit status, stdout/stderr, and concrete observed game fields, IDs, coordinates, ticks,
-enums, or state transition. Then turn that evidence into executable code plus a public test in coding mode,
-or a new mechanic-specific evidence note in discovery mode. A version listing or `file` command is not a
-probe. Use the remaining bounded calls to satisfy this requirement. If runtime execution remains blocked,
-preserve the exact blocker as evidence so the cycle can still produce a focused note or tested code.
+Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
+
+Your first tool call must use `timeout` with an installed runtime entry point under /srv/df-bonsai/current
+(dfhack-run, dwarfort, or the repository's real bridge probe). Preserve the exact command, exit status,
+stdout/stderr, and any concrete fields or blocker. In coding mode, leave useful evidence in the working
+tree only when it directly supports executable implementation. Do not commit.
 """.strip()
-        run_harness(
+        last_phase = "live_game_probe_recovery"
+        last_reason = run_harness(
             probe_recovery_prompt,
-            "live_game_probe_recovery",
+            last_phase,
             append=True,
-            max_tool_uses=8 if discovery_mode else None,
+            max_tool_uses=8,
+            phase_timeout=min(240, config.phase_timeout),
         )
 
     if not trace_has_live_game_probe(trace_path):
@@ -949,60 +1126,85 @@ preserve the exact blocker as evidence so the cycle can still produce a focused 
     if discovery_mode and discovery_needs_synthesis(repo):
         synthesize_discovery(config, api, job, repo, trace_path, started)
 
-    if not discovery_mode and trace_ended_with_degenerate_stop(trace_path):
-        changed = serializable_working_tree_paths(repo)
-        diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
-        recovery_prompt = f"""
-Continue the interrupted Bonsai Dwarf Fortress CODING job from the existing working tree.
-The prior model turn returned an empty one-token stop immediately after a tool result. Do not restart
-research and do not reread large files. Preserve and finish the current implementation.
-
-Current changed paths: {json.dumps(changed)}
-Current diff stat:
-{diff_stat or "(clean tree)"}
-
-Inspect the narrow diff, complete any unfinished edit, add or update a deterministic public test under
-tests/ or evaluator_public/, and run the relevant tests without a pipe that can hide their exit code.
-Finish only after `git status --short` shows both implementation and test evidence. Do not commit.
-""".strip()
-        run_harness(recovery_prompt, "empty_stop_recovery", append=True, max_tool_uses=24)
-
-    if not discovery_mode and working_tree_paths(repo) and (
-        not has_public_test_change(repo) or not trace_has_successful_test(trace_path)
+    if not discovery_mode and (
+        last_reason != "completed"
+        or trace_ended_with_degenerate_stop(trace_path)
+        or not working_tree_paths(repo)
     ):
-        changed = serializable_working_tree_paths(repo)
-        diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
-        missing = []
-        if not has_public_test_change(repo):
-            missing.append("no changed public test/evaluation file")
-        if not trace_has_successful_test(trace_path):
-            missing.append("no trustworthy successful test output")
-        test_recovery_prompt = f"""
-You are the TEST-AND-FINISH agent for an interrupted Bonsai Dwarf Fortress coding candidate.
-Do not perform broad research and do not replace the implementation. Review the existing narrow diff,
-write the missing deterministic public regression test, run it, fix only failures caused by this candidate,
-and leave all verified changes in the working tree. Never use `pytest | tail` or another pipeline that can
-mask a failing exit code. Do not commit.
+        for continuation_index in range(config.max_continuations):
+            checkpoint = store_external_checkpoint(
+                repo, trace_path, last_phase, last_reason, previous_error
+            )
+            continuation_phase = f"implementation_continuation_{continuation_index + 1}"
+            continuation_prompt = f"""
+You are a fresh IMPLEMENTATION continuation for Bonsai Dwarf Fortress. The previous process has been
+externally compacted. Treat the JSON checkpoint below as its complete handoff; do not reread broad
+documentation or restart research.
 
-Missing gate evidence: {", ".join(missing)}
-Changed paths: {json.dumps(changed)}
-Diff stat:
-{diff_stat}
+Objective: {json.dumps(objective_payload, ensure_ascii=False)}
+Previous promotion error: {previous_error or "none"}
+Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
 
-Before finishing, run `git status --short` and ensure tests/ or evaluator_public/ is changed and the test
-output explicitly reports passed tests with no failures or errors.
+Continue from the existing working tree. If it is clean, implement the smallest executable improvement
+supported by the recorded evidence now. If it contains a partial diff, finish that diff instead of replacing
+it. Modify executable code and a deterministic public test. Run focused verification, check git status, and
+leave changes uncommitted. You have a fresh tool budget; spend it on edits and validation, not rediscovery.
 """.strip()
-        run_harness(test_recovery_prompt, "test_recovery", append=True, max_tool_uses=32)
+            last_phase = continuation_phase
+            last_reason = run_harness(
+                continuation_prompt,
+                continuation_phase,
+                append=True,
+                max_tool_uses=config.coding_tool_budget,
+            )
+            if (
+                working_tree_paths(repo)
+                and last_reason == "completed"
+                and not trace_ended_with_degenerate_stop(trace_path)
+            ):
+                break
 
     if not discovery_mode and working_tree_paths(repo):
+        validation = validate_coding_candidate(repo)
+        with trace_path.open("a", encoding="utf-8") as trace:
+            trace.write(json.dumps({"type": "harness_validation", **validation}) + "\n")
+
+        if not has_public_test_change(repo) or not validation["ok"]:
+            checkpoint = store_external_checkpoint(
+                repo, trace_path, last_phase, "validation_failed", previous_error
+            )
+            validation_output = json.dumps(validation, ensure_ascii=False)[-24000:]
+            repair_prompt = f"""
+You are a fresh TEST-AND-REPAIR phase. Do not research or redesign. Repair the existing candidate using
+the exact harness-owned validation result and compact checkpoint below.
+
+Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
+Validation: {validation_output}
+Public test changed: {has_public_test_change(repo)}
+
+Fix syntax or test failures, add/update a deterministic public test if missing, and rerun the relevant
+tests. Do not make unrelated changes and do not commit.
+""".strip()
+            last_phase = "validation_repair"
+            last_reason = run_harness(
+                repair_prompt,
+                last_phase,
+                append=True,
+                max_tool_uses=config.coding_tool_budget,
+            )
+            validation = validate_coding_candidate(repo)
+            with trace_path.open("a", encoding="utf-8") as trace:
+                trace.write(json.dumps({"type": "harness_validation", **validation}) + "\n")
+
         missing = []
         if not has_public_test_change(repo):
             missing.append("public test/evaluation change")
-        if not trace_has_successful_test(trace_path):
-            missing.append("successful public test execution")
+        if not validation["ok"]:
+            missing.append("fresh harness-owned validation")
         if missing:
             raise RuntimeError(
-                "coding candidate is incomplete after test recovery: missing " + ", ".join(missing)
+                "coding candidate is incomplete after external compaction: missing "
+                + ", ".join(missing)
             )
 
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
@@ -1072,6 +1274,9 @@ output explicitly reports passed tests with no failures or errors.
             check=True,
         )
         artifacts.append(api.upload(str(job["id"]), bundle, "application/x-git-bundle"))
+    checkpoint_files = sorted(repo.parent.glob("checkpoint-*.json"))
+    for checkpoint_file in checkpoint_files:
+        artifacts.append(api.upload(str(job["id"]), checkpoint_file, "application/json"))
     artifacts.append(api.upload(str(job["id"]), trace_path, "application/x-ndjson"))
     summary = trace_text[-4000:].strip() or "OpenCode completed without textual summary"
     return (
@@ -1086,6 +1291,7 @@ output explicitly reports passed tests with no failures or errors.
             "changed": changed,
             "changed_paths": changed_paths,
             "candidate_requested": changed,
+            "external_checkpoints": [path.name for path in checkpoint_files],
             "duration_seconds": round(time.monotonic() - started, 2),
         },
         artifacts,
