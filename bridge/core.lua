@@ -36,13 +36,8 @@ function bridge.observe()
         end
     end
 
-    local buildings = {}
-    if df.global.world and df.global.world.buildings then
-        local count = #df.global.world.buildings.all or 0
-        for i = 1, math.min(count, 200) do
-            table.insert(buildings, { idx = i })
-        end
-    end
+    -- Delegated to bridge.building_list() below.
+    local buildings = bridge.building_list()
 
     return {
         version    = "1.0",
@@ -396,6 +391,84 @@ function bridge.job_list()
     end
 
     return result
+end
+
+--- Building list observation.
+-- Verified fields from DFHack scripts (extra-gamelog.lua, siegemanager.lua, advfort.lua):
+--   building.id                      — unique numeric identifier
+--   building.type                    — df.building_type enum integer
+--   building.subtype                 — subtype enum (workshop_kind, furnace_type, etc.)
+--   building.custom_type             — custom blueprint ID or -1
+--   building.centerx / centery / centerz  — center tile coordinates
+--   building.flags.exists            — true when construction finished
+--   dfhack.buildings.isComplete(bld) — boolean: fully built?
+--   bld:getType(), :getSubtype()     — accessor methods
+--   bld:getBuildStage(), :getMaxBuildStage() — integer build progress 0..N
+function bridge.building_list()
+    local buildings = {}
+    if not df.global.world or not df.global.world.buildings then
+        return buildings
+    end
+
+    local all_buildings = df.global.world.buildings.all or {}
+    local count = #all_buildings
+    for i = 1, math.min(count, 200) do
+        local bld = all_buildings[i - 1]
+        if not bld then goto continue end
+
+        local btype = "unknown"
+        local subtype = nil
+        pcall(function()
+            btype = tostring(df.building_type[bld:getType()]) or "unknown"
+        end)
+        pcall(function()
+            subtype = bld:getSubtype()
+        end)
+
+        local cx, cy, cz = 0, 0, 0
+        if bld.centerx then
+            cx = bld.centerx or 0
+            cy = bld.centery or 0
+            cz = bld.centerz or 0
+        end
+
+        local built = false
+        if bld.flags then
+            pcall(function()
+                built = bld.flags.exists or false
+            end)
+        end
+
+        local build_stage = -1
+        local max_stage = -1
+        pcall(function()
+            build_stage = bld:getBuildStage()
+        end)
+        pcall(function()
+            max_stage = bld:getMaxBuildStage()
+        end)
+
+        local custom_id = -1
+        pcall(function()
+            custom_id = bld.custom_type or -1
+        end)
+
+        table.insert(buildings, {
+            idx         = i,
+            id          = bld.id or nil,
+            type        = btype,
+            subtype     = subtype,
+            custom_id   = custom_id,
+            center      = {x = cx, y = cy, z = cz},
+            built       = built,
+            build_stage = build_stage,
+            max_stage   = max_stage,
+        })
+
+        ::continue::
+    end
+
+    return buildings
 end
 
 return bridge

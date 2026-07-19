@@ -29,6 +29,9 @@ from bridge.probe import (
     JOB_STATE_QUEUED, JOB_STATE_ACTIVE, JOB_STATE_SUSPENDED, JOB_STATE_CANCELLED,
     job_state, job_category, count_jobs_by_state, count_jobs_by_category,
     active_worker_ids, suspicious_jobs,
+    KNOWN_BUILDING_TYPES, BUILDING_SCHEMA_KEYS,
+    is_complete_building, unfinished_buildings, building_type_label,
+    buildings_at_z, building_count_by_type,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -1933,6 +1936,86 @@ class TestUnitNeedsContract:
         assert need_severity(extreme) == 5.0
 
 
+class TestBuildingObservation:
+    """Deterministic tests for building observation helpers in bridge/probe.py."""
+
+    def test_known_building_types_list(self):
+        assert isinstance(KNOWN_BUILDING_TYPES, list)
+        assert len(KNOWN_BUILDING_TYPES) >= 10
+
+    def test_building_schema_keys_complete(self):
+        expected = {"idx", "id", "type", "subtype", "custom_id", "center",
+                    "built", "build_stage", "max_stage"}
+        assert set(BUILDING_SCHEMA_KEYS) == expected
+
+    def _sample_bld(self, btype="Workshop", built=True, stage=3, maxstg=5,
+                    cx=10, cy=20, cz=5):
+        return {
+            "idx": 1, "id": 1001, "type": f"df.building_type.{btype}",
+            "subtype": 2, "custom_id": -1,
+            "center": {"x": cx, "y": cy, "z": cz},
+            "built": built, "build_stage": stage, "max_stage": maxstg,
+        }
+
+    def test_is_complete_building_true(self):
+        b = self._sample_bld()
+        assert is_complete_building(b) is True
+
+    def test_is_complete_building_not_built(self):
+        b = self._sample_bld(built=False)
+        assert is_complete_building(b) is False
+
+    def test_is_complete_building_negative_stage(self):
+        b = self._sample_bld(stage=-1)
+        assert is_complete_building(b) is False
+
+    def test_is_complete_building_empty_dict(self):
+        assert is_complete_building({}) is False
+
+    def test_unfinished_buildings_filters(self):
+        complete = self._sample_bld()
+        incomplete = self._sample_bld(built=False, stage=1, maxstg=5)
+        result = unfinished_buildings([complete, incomplete])
+        assert len(result) == 1
+        assert result[0] is incomplete
+
+    def test_unfinished_buildings_empty_input(self):
+        assert unfinished_buildings([]) == []
+
+    def test_building_type_label_with_prefix(self):
+        b = self._sample_bld("Furnace")
+        assert building_type_label(b) == "Furnace"
+
+    def test_building_type_label_unknown(self):
+        assert building_type_label({"type": "unknown"}) == "unknown"
+
+    def test_building_type_label_missing_key(self):
+        assert building_type_label({}) == "unknown"
+
+    def test_buildings_at_z(self):
+        level5 = self._sample_bld(cz=5)
+        level3 = self._sample_bld(cz=3)
+        level5_explicit = self._sample_bld(cx=0, cy=0, cz=5)
+        result = buildings_at_z([level5, level3, level5_explicit], z=5)
+        assert len(result) == 2
+
+    def test_buildings_at_z_none_match(self):
+        assert buildings_at_z([], z=99) == []
+
+    def test_building_count_by_type(self):
+        bldgs = [
+            self._sample_bld("Workshop"),
+            self._sample_bld("Furnace"),
+            self._sample_bld("Workshop"),
+        ]
+        counts = building_count_by_type(bldgs)
+        assert counts["Workshop"] == 2
+        assert counts["Furnace"] == 1
+
+    def test_building_count_by_type_empty(self):
+        assert building_count_by_type([]) == {}
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -1957,7 +2040,7 @@ if __name__ == "__main__":
                   TestEpisodeLoggerIntegration, TestInferenceLatency,
                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
                   TestProfessionLabor, TestTileMapLuaContract,
-                  TestUnitNeedsContract]
+                  TestUnitNeedsContract, TestBuildingObservation]
 
     for cls in tc_classes:
         inst = cls()

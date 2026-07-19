@@ -443,3 +443,51 @@ def suspicious_jobs(jobs):
         if j.get("suspended") and j.get("n_items", 0) > 0 and j.get("worker_id") is None:
             stuck.append(j)
     return stuck
+
+
+# --- Building observation helpers (verified via bridge/core.lua building_list()) ---
+
+KNOWN_BUILDING_TYPES = [
+    "Workshop", "Furnace", "Apparatus", "Storage", "RoadPaved", "RoadDirt",
+    "FarmPlot", "Widget", "Trap", "PressurePlate", "Hatch", "Door",
+    "UprightBars", "Stairs", "Ramp", "MadeFloor", "Fence", "WallProjectiles",
+    "WebWall", "Tree", "Bookcase", "DisplayFurniture", "OfferingPlace",
+]
+
+BUILDING_SCHEMA_KEYS = [
+    "idx", "id", "type", "subtype", "custom_id", "center",
+    "built", "build_stage", "max_stage",
+]
+
+
+def is_complete_building(bld):
+    """Return True if a building record indicates construction is finished."""
+    return bool(bld.get("built")) and bld.get("build_stage", -1) >= 0
+
+
+def unfinished_buildings(buildings):
+    """Return buildings that are not yet fully constructed."""
+    return [b for b in buildings if not is_complete_building(b)]
+
+
+def building_type_label(bld):
+    """Return the human-readable type label string, or 'unknown'."""
+    t = bld.get("type", "unknown")
+    if not t:
+        return "unknown"
+    # Strip df.building_type. prefix if present in enum name
+    return t.split(".")[-1] if isinstance(t, str) else "unknown"
+
+
+def buildings_at_z(buildings, z):
+    """Filter buildings to a specific z-level."""
+    return [b for b in buildings if (b.get("center") or {}).get("z", 0) == z]
+
+
+def building_count_by_type(buildings):
+    """Return a dict mapping type label → count of buildings."""
+    counts: dict[str, int] = {}
+    for b in buildings:
+        label = building_type_label(b)
+        counts[label] = counts.get(label, 0) + 1
+    return counts
