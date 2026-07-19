@@ -164,8 +164,7 @@ PROFESSION_LABOR_MAP = {
                        "DETAIL", "CONSTRUCTION", "HAUL_STONE", "HAUL_WOOD",
                        "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
                        "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
-                       "HAUL_TRADE", "HAUL_WATER", "CLEAN", "PULL_LEVER"],
-    "Miner":         ["MINE", "DETAIL", "RECOVER_WOUNDED", "ALCHEMIST"],
+                        "HAUL_TRADE", "HAUL_WATER", "CLEAN", "PULL_LEVER"],
     "Laborer":       ["HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY",
                        "HAUL_FOOD", "HAUL_REFUSE", "HAUL_FURNITURE",
                        "HAUL_ANIMALS", "HANDLE_VEHICLES", "HAUL_TRADE",
@@ -321,12 +320,12 @@ def is_in_dire_need(needs_dict):
 
 
 def need_severity(needs_dict):
-    """Return an integer severity score from 0-6.
+    """Return a float severity score from 0-6.
 
     Each dire threshold exceeded adds 1 point; physical distress flags
     (pain, nausea, dizziness, suffocation) add 0.5 each when non-zero.
     """
-    score = 0
+    score: float = 0.0
     if needs_dict.get("hunger_timer", 0) > HUNGER_DIRE_THRESHOLD:
         score += 1
     if needs_dict.get("thirst_timer", 0) > THIRST_DIRE_THRESHOLD:
@@ -416,7 +415,7 @@ def count_jobs_by_state(jobs):
 
 def count_jobs_by_category(jobs):
     """Return a dict mapping category string → count."""
-    cats = {}
+    cats: dict[str, int] = {}
     for j in jobs:
         c = job_category(j.get("type", ""))
         cats[c] = cats.get(c, 0) + 1

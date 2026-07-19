@@ -10,25 +10,17 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from unittest import mock
-
 from bridge.contracts import (
-    CONTRACT_SCHEMA, EpisodeLogger,
+    CONTRACT_SCHEMA,
     validate_observe, validate_act_result, validate_advance_result,
     validate_episode_metrics, validate_episode_outcome, validate_act_input,
 )
 from bridge.probe import (
-    classify_material, TILE_MATERIAL_ENUM_MAP, is_liquid_tile,
-    is_floor_tile, classify_tile_label,
-    TICKS_PER_DAY as PROBE_TICKS_PER_DAY,
-    SEASON_NAMES, probe_time, season_name, total_ticks, days_elapsed,
+    probe_time, season_name, total_ticks, days_elapsed,
     PROFESSION_LABOR_MAP, KNOWN_LABORS, labor_to_professions,
     get_profession_labors, classify_labor_category, can_perform_labor,
     HUNGER_DIRE_THRESHOLD, THIRST_DIRE_THRESHOLD, SLEEPINESS_DIRE_THRESHOLD,
     COUNTERS_1_FIELDS, COUNTERS_2_FIELDS, is_in_dire_need, need_severity,
-    JOB_STATE_QUEUED, JOB_STATE_ACTIVE, JOB_STATE_SUSPENDED, JOB_STATE_CANCELLED,
-    job_state, job_category, count_jobs_by_state, count_jobs_by_category,
-    active_worker_ids, suspicious_jobs,
     KNOWN_BUILDING_TYPES, BUILDING_SCHEMA_KEYS,
     is_complete_building, unfinished_buildings, building_type_label,
     buildings_at_z, building_count_by_type,
@@ -135,13 +127,15 @@ class TestEpisodeRunner:
         assert runner.trace == []
 
     def test_steps_bounded_by_max(self):
-        always_act = lambda obs: {"command": "advance", "args": [100]}
+        def always_act(obs):
+            return {"command": "advance", "args": [100]}
         runner = EpisodeRunner(max_steps=5, action_budget=20)
         m = runner.run(always_act)
         assert m["steps_taken"] <= 5
 
     def test_actions_bounded_by_budget(self):
-        always_act = lambda obs: {"command": "advance", "args": [100]}
+        def always_act(obs):
+            return {"command": "advance", "args": [100]}
         runner = EpisodeRunner(max_steps=200, action_budget=3)
         m = runner.run(always_act)
         assert m["actions_used"] <= 3
@@ -231,7 +225,7 @@ class TestEvolvingTicks:
     def test_episode_reaches_30_days(self):
         runner = EpisodeRunner(seed=7, max_steps=50, action_budget=30)
         metrics = runner.run(baseline_policy)
-        target_ticks = TICKS_PER_DAY * 30
+        _target_ticks = TICKS_PER_DAY * 30
         # With stub units empty the baseline policy halts quickly.
         # But if we mock units alive, it should advance to ~30 days.
         assert validate_episode_metrics(metrics) is True
@@ -327,7 +321,7 @@ class TestSkills:
         try:
             skill = Skill("bad", "desc")
             list(skill.steps({}))
-            assert False, "Expected NotImplementedError"
+            raise AssertionError("Expected NotImplementedError")
         except NotImplementedError:
             pass
 
@@ -387,7 +381,7 @@ class TestCPUPolicy:
     """CPU inference policy is deterministic and mirrors baseline behavior."""
 
     def test_unpause_when_paused(self):
-        obs = {"paused": True, "gametype": None, "cur_tick": 0, "units": []}
+        obs: dict = {"paused": True, "gametype": None, "cur_tick": 0, "units": []}
         action = cpu_policy(obs)
         assert action["command"] == "unpause"
 
@@ -522,7 +516,7 @@ class TestCurricula:
     def test_get_level_out_of_range(self):
         try:
             get_level(99)
-            assert False, "Expected IndexError"
+            raise AssertionError("Expected IndexError")
         except IndexError:
             pass
 
@@ -534,7 +528,7 @@ class TestCurricula:
             )
         results = run_curriculum(factory, evaluate_multiple_runs)
         assert len(results) == len(CURRICULUM_LEVELS)
-        for name, metrics, passed in results:
+        for name, metrics, _passed in results:
             assert isinstance(name, str)
             assert validate_episode_metrics(metrics)
 
@@ -913,7 +907,7 @@ class TestEpisodeSerialization:
 
     def test_deserialize_runner_still_valid_metrics(self):
         r = EpisodeRunner(seed=99, max_steps=20, action_budget=15)
-        m1 = r.run(baseline_policy)
+        r.run(baseline_policy)
         snap = r.serialize()
         r_restored = EpisodeRunner.deserialize(snap)
         # Re-serialize should produce identical content.
@@ -1412,7 +1406,7 @@ class TestInferenceLatency:
 
     def test_cpu_faster_than_or_equal_baseline(self):
         """CPU policy should not be meaningfully slower than baseline."""
-        from evaluator_public import measure_policy_latency, benchmark_inference_latency
+        from evaluator_public import measure_policy_latency
         obs = {"paused": False, "cur_tick": 5000, "units": [
             {"killed": False, "civ_id": i} for i in range(4)
         ]}
@@ -1431,45 +1425,39 @@ class TimeProbeHelper:
     """
 
     def test_total_ticks_year_zero(self):
-        from bridge.probe import total_ticks, TICKS_PER_SEASON
         t = total_ticks(0, 0, 100)
         assert t == 100
 
     def test_total_ticks_after_first_season(self):
-        from bridge.probe import total_ticks, TICKS_PER_SEASON
         # year=0, season=1, tick=0 → 1 * TICKS_PER_SEASON
-        from bridge.probe import SEASONS_PER_YEAR
         t = total_ticks(0, 1, 0)
         assert t == 1 * 86400 * 361
 
     def test_total_ticks_nonzero_year(self):
-        from bridge.probe import total_ticks
         # year=1, season=0, tick=0 is two full years worth of seasons.
         t = total_ticks(1, 0, 0)
         expected = (1 * 4 + 0) * 361 * 86400
         assert t == expected
 
     def test_total_ticks_with_partial_tick(self):
-        from bridge.probe import total_ticks
         # year=0, season=2 (autumn), 5 days in → base + 5*86400
         t = total_ticks(0, 2, 5 * 86400)
         expected = 2 * 361 * 86400 + 5 * 86400
         assert t == expected
 
     def test_total_ticks_null_fields(self):
-        from bridge.probe import total_ticks
         assert total_ticks(None, 0, 0) == 0
         assert total_ticks(0, None, 0) == 0
         assert total_ticks(0, 0, None) == 0
 
     def test_days_elapsed_integer(self):
-        from bridge.probe import days_elapsed, TICKS_PER_DAY
+        from bridge.probe import TICKS_PER_DAY
         # 10 full days in current season → 10.
         d = days_elapsed(0, 0, 10 * TICKS_PER_DAY)
         assert d == 10
 
     def test_days_elapsed_30_day_survival(self):
-        from bridge.probe import days_elapsed, TICKS_PER_DAY
+        from bridge.probe import TICKS_PER_DAY
         # Start at end of season 0, advance to day 30 in season 1.
         total = (1 * 361 + 30) * TICKS_PER_DAY
         d = days_elapsed(0, 1, _ := 30 * TICKS_PER_DAY)
@@ -1477,24 +1465,21 @@ class TimeProbeHelper:
         assert d == (0 * 4 + 1) * 361 // 1 + 30
 
     def test_days_elapsed_zero(self):
-        from bridge.probe import days_elapsed
         assert days_elapsed(0, 0, 0) == 0
 
     def test_season_name_mapping(self):
-        from bridge.probe import season_name
         assert season_name(0) == "SPRING"
         assert season_name(1) == "SUMMER"
         assert season_name(2) == "AUTUMN"
         assert season_name(3) == "WINTER"
 
     def test_season_name_wrap(self):
-        from bridge.probe import season_name, SEASONS_PER_YEAR
+        from bridge.probe import SEASONS_PER_YEAR
         # Index modulo wraps.
         assert season_name(SEASONS_PER_YEAR) == "SPRING"
         assert season_name(SEASONS_PER_YEAR + 1) == "SUMMER"
 
     def test_season_name_none(self):
-        from bridge.probe import season_name
         assert season_name(None) is None
 
     def test_constants_match_contracts(self):
@@ -1505,7 +1490,7 @@ class TimeProbeHelper:
 
     def test_lua_time_snapshot_is_string(self):
         """The Lua expression builder returns valid code."""
-        from bridge.probe import _lua_time_snapshot, probe_time
+        from bridge.probe import _lua_time_snapshot
         code = _lua_time_snapshot()
         # Must reference df.global and the known calendar fields.
         assert "df.global" in code
@@ -1516,7 +1501,6 @@ class TimeProbeHelper:
 
     def test_probe_time_returns_none_no_server(self):
         """probe_time returns None when no DFHack process is listening."""
-        from bridge.probe import probe_time
         result = probe_time(timeout=2)
         # With no server, runner returns empty or error → None.
         assert result is None
@@ -1640,7 +1624,7 @@ class TestProfessionLabor:
         assert len(KNOWN_LABORS) >= 15
 
     def test_known_labors_sorted(self):
-        assert KNOWN_LABORS == sorted(KNOWN_LABORS)
+        assert sorted(KNOWN_LABORS) == KNOWN_LABORS
 
     def test_cook_belongs_to_chef(self):
         profs = labor_to_professions("COOK")
@@ -2019,8 +2003,6 @@ class TestBuildingObservation:
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
-    import inspect
-
     failures = []
     total = 0
     passed = 0
