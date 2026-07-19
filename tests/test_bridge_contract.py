@@ -24,6 +24,8 @@ from bridge.probe import (
     KNOWN_BUILDING_TYPES, BUILDING_SCHEMA_KEYS,
     is_complete_building, unfinished_buildings, building_type_label,
     buildings_at_z, building_count_by_type,
+    alive_units, dead_units, unit_population, units_by_civ_id,
+    units_at_z, unit_positions, nearby_units,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -2000,6 +2002,95 @@ class TestBuildingObservation:
         assert building_count_by_type([]) == {}
 
 
+class TestUnitPopulation:
+
+    def _units(self):
+        return [
+            {"id": 1, "killed": False, "civ_id": 1, "pos": [10, 20, 3]},
+            {"id": 2, "killed": True, "civ_id": 1, "pos": [11, 20, 3]},
+            {"id": 3, "killed": False, "civ_id": 2, "pos": [50, 60, 7]},
+            {"id": 4, "killed": False, "civ_id": None, "pos": [12, 22, 5]},
+        ]
+
+    def test_alive_units(self):
+        units = self._units()
+        alive = alive_units(units)
+        assert len(alive) == 3
+        assert all(not u["killed"] for u in alive)
+
+    def test_dead_units(self):
+        units = self._units()
+        dead = dead_units(units)
+        assert len(dead) == 1
+        assert all(u["killed"] for u in dead)
+
+    def test_unit_population(self):
+        units = self._units()
+        pop = unit_population(units)
+        assert pop["total"] == 4
+        assert pop["alive"] == 3
+        assert pop["dead"] == 1
+
+    def test_units_by_civ_id(self):
+        units = self._units()
+        groups = units_by_civ_id(units)
+        assert "1" in groups
+        assert "2" in groups
+        assert "none" in groups
+        assert len(groups["1"]) == 2
+        assert len(groups["2"]) == 1
+        assert len(groups["none"]) == 1
+
+    def test_units_at_z_list_pos(self):
+        units = self._units()
+        z3 = units_at_z(units, 3)
+        assert len(z3) == 2
+        z7 = units_at_z(units, 7)
+        assert len(z7) == 1
+
+    def test_units_at_z_dict_pos(self):
+        units = [
+            {"id": 1, "pos": {"x": 0, "y": 0, "z": 4}},
+            {"id": 2, "pos": {"x": 1, "y": 1, "z": 5}},
+        ]
+        assert len(units_at_z(units, 4)) == 1
+        assert len(units_at_z(units, 5)) == 1
+        assert len(units_at_z(units, 99)) == 0
+
+    def test_unit_positions(self):
+        units = self._units()
+        positions = unit_positions(units)
+        assert positions[0] == (10, 20, 3)
+        assert positions[2] == (50, 60, 7)
+        assert len(positions) == 4
+
+    def test_unit_positions_missing(self):
+        units = [{"id": 1}]
+        positions = unit_positions(units)
+        assert positions == [(0, 0, 0)]
+
+    def test_nearby_units(self):
+        units = self._units()
+        nearby = nearby_units(units, 10, 20, 5)
+        ids = {u["id"] for u in nearby}
+        assert 1 in ids
+        assert 2 in ids
+        assert 4 in ids
+        assert 3 not in ids
+
+    def test_nearby_manhattan_boundary(self):
+        units = [
+            {"id": 1, "pos": [0, 3, 0]},
+            {"id": 2, "pos": [3, 0, 0]},
+            {"id": 3, "pos": [0, 4, 0]},
+        ]
+        exact = nearby_units(units, 0, 0, 3)
+        ids = {u["id"] for u in exact}
+        assert 1 in ids
+        assert 2 in ids
+        assert 3 not in ids
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -2022,7 +2113,8 @@ if __name__ == "__main__":
                   TestEpisodeLoggerIntegration, TestInferenceLatency,
                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
                   TestProfessionLabor, TestTileMapLuaContract,
-                  TestUnitNeedsContract, TestBuildingObservation]
+                  TestUnitNeedsContract, TestBuildingObservation,
+                  TestUnitPopulation]
 
     for cls in tc_classes:
         inst = cls()

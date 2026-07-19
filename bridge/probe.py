@@ -490,3 +490,90 @@ def building_count_by_type(buildings):
         label = building_type_label(b)
         counts[label] = counts.get(label, 0) + 1
     return counts
+
+
+# ===========================================================================
+# Unit position / population mechanics — DF 53.15 verified via
+# hack/scripts/internal/gm-unit/editor_counters.lua and bridge/core.lua observe()
+# which emits unit.pos as [x, y, z] and unit.civ_id per unit record.
+# ===========================================================================
+
+
+def alive_units(units):
+    """Return only living units from the observation list."""
+    return [u for u in units if not u.get("killed", False)]
+
+
+def dead_units(units):
+    """Return only killed units from the observation list."""
+    return [u for u in units if u.get("killed", False)]
+
+
+def unit_population(units):
+    """Return total, alive, dead counts for a unit list."""
+    total = len(units)
+    alive_count = sum(1 for u in units if not u.get("killed", False))
+    return {
+        "total": total,
+        "alive": alive_count,
+        "dead": total - alive_count,
+    }
+
+
+def units_by_civ_id(units):
+    """Group unit records by civilization ID.
+
+    Returns dict[int | None, list[dict]]."""
+    groups: dict[str, list] = {}
+    for u in units:
+        raw = u.get("civ_id")
+        cid = str(raw) if raw is not None else "none"
+        groups[cid] = groups.get(cid, [])
+        groups[cid].append(u)
+    return groups
+
+
+def units_at_z(units, z):
+    """Filter units whose position z-coordinate matches *z*."""
+    result = []
+    for u in units:
+        pos = u.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            if pos[2] == z:
+                result.append(u)
+        elif isinstance(pos, dict) and pos.get("z", None) == z:
+            result.append(u)
+    return result
+
+
+def unit_positions(units):
+    """Return list of (x, y, z) tuples for all units.
+
+    Missing position data defaults to (0, 0, 0)."""
+    positions = []
+    for u in units:
+        pos = u.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+            positions.append((int(pos[0]), int(pos[1]), int(pos[2])))
+        elif isinstance(pos, dict):
+            positions.append(
+                (int(pos.get("x", 0)), int(pos.get("y", 0)), int(pos.get("z", 0)))
+            )
+        else:
+            positions.append((0, 0, 0))
+    return positions
+
+
+def nearby_units(units, anchor_x, anchor_y, radius):
+    """Return units within *radius* tiles (Manhattan distance, x-y only).
+
+    Compares against the given anchor coordinates at any z-level."""
+    result = []
+    for u in units:
+        pos = u.get("pos")
+        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+            continue
+        dist = abs(int(pos[0]) - anchor_x) + abs(int(pos[1]) - anchor_y)
+        if dist <= radius:
+            result.append(u)
+    return result
