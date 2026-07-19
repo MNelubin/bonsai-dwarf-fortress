@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from bonsai_lab_agent.worker import (
+    Config,
     discovery_needs_synthesis,
     compact_phase_checkpoint,
     harness_environment,
@@ -171,6 +172,13 @@ def test_implementation_only_environment_removes_research_tools(monkeypatch, tmp
     assert permissions["task"] == "deny"
     assert permissions["webfetch"] == "deny"
     assert permissions["websearch"] == "deny"
+
+
+def test_validation_repair_defaults_to_two_fresh_attempts(monkeypatch):
+    monkeypatch.setenv("BONSAI_CONTROL_URL", "http://control")
+    monkeypatch.setenv("BONSAI_LAB_TOKEN", "test-token")
+    monkeypatch.delenv("BONSAI_VALIDATION_REPAIR_ATTEMPTS", raising=False)
+    assert Config.from_env().validation_repair_attempts == 2
 
 
 def test_recovery_prompt_paths_are_stable_and_json_serializable(tmp_path: Path):

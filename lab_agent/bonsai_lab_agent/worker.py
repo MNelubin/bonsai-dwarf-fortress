@@ -36,6 +36,7 @@ class Config:
     phase_timeout: int
     coding_tool_budget: int
     max_continuations: int
+    validation_repair_attempts: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -63,6 +64,9 @@ class Config:
             phase_timeout=int(os.environ.get("BONSAI_PHASE_TIMEOUT", "420")),
             coding_tool_budget=int(os.environ.get("BONSAI_CODING_TOOL_BUDGET", "24")),
             max_continuations=int(os.environ.get("BONSAI_MAX_CONTINUATIONS", "1")),
+            validation_repair_attempts=int(
+                os.environ.get("BONSAI_VALIDATION_REPAIR_ATTEMPTS", "2")
+            ),
         )
 
 
@@ -1199,7 +1203,10 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
         with trace_path.open("a", encoding="utf-8") as trace:
             trace.write(json.dumps({"type": "harness_validation", **validation}) + "\n")
 
-        if not has_public_test_change(repo) or not validation["ok"]:
+        repair_attempts = min(3, max(1, config.validation_repair_attempts))
+        for repair_index in range(repair_attempts):
+            if has_public_test_change(repo) and validation["ok"]:
+                break
             checkpoint = store_external_checkpoint(
                 repo, trace_path, last_phase, "validation_failed", previous_error
             )
@@ -1215,7 +1222,7 @@ Public test changed: {has_public_test_change(repo)}
 Fix syntax or test failures, add/update a deterministic public test if missing, and rerun the relevant
 tests. Do not make unrelated changes and do not commit.
 """.strip()
-            last_phase = "validation_repair"
+            last_phase = f"validation_repair_{repair_index + 1}"
             last_reason = run_harness(
                 repair_prompt,
                 last_phase,
@@ -1225,7 +1232,16 @@ tests. Do not make unrelated changes and do not commit.
             )
             validation = validate_coding_candidate(repo)
             with trace_path.open("a", encoding="utf-8") as trace:
-                trace.write(json.dumps({"type": "harness_validation", **validation}) + "\n")
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "harness_validation",
+                            "repair_attempt": repair_index + 1,
+                            **validation,
+                        }
+                    )
+                    + "\n"
+                )
 
         missing = []
         if not has_public_test_change(repo):
