@@ -168,8 +168,9 @@ class EmergencyPause(Skill):
         alive = self._count_alive(units)
 
         if self._needs_baseline:
-            # First call after reset: defer baseline so _prev_alive stays None.
+            # First call after reset: capture initial alive count for comparison.
             self._needs_baseline = False
+            self._prev_alive = alive
             return None
 
         if self._prev_alive is not None:

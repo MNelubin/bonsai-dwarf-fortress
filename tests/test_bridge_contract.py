@@ -1250,8 +1250,8 @@ class TestSkillChainReset:
         chain._reset()
         a2 = chain(warm2)
 
-        # Internal _prev_alive must be None after reset.
-        assert skill._prev_alive is None
+        # After reset, baseline captures alive count for comparison.
+        assert skill._prev_alive == 4
 
     def test_reset_called_twice_clears_state(self):
         """Two back-to-back runs reset EmergencyPause between Episodes."""
@@ -1518,6 +1518,11 @@ class TimeProbeHelper:
         # With no server, runner returns empty or error → None.
         assert result is None
 
+
+
+class TestEmergencyPauseSkill:
+    """Deterministic tests for EmergencyPause skill."""
+
     def test_no_pause_safe(self):
         skill = EmergencyPause(max_deaths=2)
         obs = {"units": [
@@ -1570,10 +1575,10 @@ class TimeProbeHelper:
             {"killed": False, "civ_id": i} for i in range(4)
         ]}
         result = skill.steps(live_obs)
-        # First call defers — no action emitted and _prev_alive not set.
+        # First call captures baseline alive count for subsequent comparisons.
         assert result is None
         assert skill._needs_baseline is False
-        assert skill._prev_alive is None
+        assert skill._prev_alive == 4
 
     def test_needs_baseline_after_reset_defers_again(self):
         """reset() restores _needs_baseline so the pattern is re-entrant."""
@@ -1942,16 +1947,17 @@ if __name__ == "__main__":
                   TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
                   TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
                   TestSkillChainPlayer, TestPublicEvaluator,
-                   TestTraceDeterminism, TestRunnerEnhancements,
-                   TestCitizenSimulation, TestBenchmarkRunner,
-                   TestValidationTypeSafety, TestEpisodeSerialization,
-                   TestConfidenceIntervals, TestAdvanceValidation,
-                   TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
-                   TestMultiSeedStress, TestCurriculumGradualAndMonitor,
-                   TestEpisodeLoggerIntegration, TestInferenceLatency,
-                    TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                    TestProfessionLabor, TestTileMapLuaContract,
-                    TestUnitNeedsContract]
+                  TestTraceDeterminism, TestRunnerEnhancements,
+                  TestCitizenSimulation, TestBenchmarkRunner,
+                  TestValidationTypeSafety, TestEpisodeSerialization,
+                  TestConfidenceIntervals, TestAdvanceValidation,
+                  TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                  TestMultiSeedStress, TestCurriculumGradualAndMonitor,
+                  TestSkillChainReset, TestRunnerMultiple,
+                  TestEpisodeLoggerIntegration, TestInferenceLatency,
+                  TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                  TestProfessionLabor, TestTileMapLuaContract,
+                  TestUnitNeedsContract]
 
     for cls in tc_classes:
         inst = cls()
