@@ -1,4 +1,5 @@
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -9,4 +10,7 @@
 - [DF-Bonsai Release Metadata and Versioning](dfhack/df-bonsai-release-metadata.md)
 - [DF-Bonsai Runtime Structure and File Layout](dfhack/df-bonsai-runtime-structure.md)
 - [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)
+- [Job System Structures and State](dfhack/mechanics-jobs.md)
+---
+
 ---
