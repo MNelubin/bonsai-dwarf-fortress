@@ -9,17 +9,41 @@
       },
       "models": {
         "qwen3.6:27b-64k": {
-          "name": "Qwen3.6 27B 64K"
+          "name": "Qwen3.6 27B 64K",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
         },
         "qwen3-coder:30b-32k": {
-          "name": "Qwen3 Coder 30B 32K"
+          "name": "Qwen3 Coder 30B 32K",
+          "limit": {
+            "context": 32768,
+            "output": 8192
+          }
         },
         "qwen3-coder:30b-64k": {
-          "name": "Qwen3 Coder 30B 64K"
+          "name": "Qwen3 Coder 30B 64K",
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          }
+        },
+        "qwen3.6:27b-96k": {
+          "name": "Qwen3.6 27B 96K",
+          "limit": {
+            "context": 98304,
+            "output": 8192
+          }
         }
       }
     }
   },
-  "model": "ollama/qwen3.6:27b-64k",
-  "permission": "allow"
+  "model": "ollama/qwen3.6:27b-96k",
+  "permission": "allow",
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 24000
+  }
 }

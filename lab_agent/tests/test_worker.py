@@ -1,8 +1,13 @@
+import json
 import subprocess
 from pathlib import Path
 
 from bonsai_lab_agent.worker import (
     discovery_needs_synthesis,
+    trace_ended_with_degenerate_stop,
+    trace_has_live_game_probe,
+    trace_latest_input_tokens,
+    trace_phase_tool_use_count,
     working_tree_paths,
     write_discovery_bundle,
 )
@@ -56,3 +61,64 @@ def test_structured_discovery_writes_validated_bundle(tmp_path: Path):
     )
     assert target == "dfhack/bridge-primitives.md"
     assert discovery_needs_synthesis(repo) is False
+
+
+def write_trace(path: Path, events: list[dict]) -> None:
+    path.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_phase_tool_budget_does_not_count_prior_phase(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    events = [{"type": "tool_use"} for _ in range(16)]
+    events.append({"type": "harness_phase", "phase": "live_game_probe_recovery"})
+    events.extend({"type": "tool_use"} for _ in range(3))
+    write_trace(trace, events)
+    assert trace_phase_tool_use_count(trace, "opencode") == 16
+    assert trace_phase_tool_use_count(trace, "live_game_probe_recovery") == 3
+
+
+def test_live_probe_accepts_bounded_dfhack_and_bridge_commands(tmp_path: Path):
+    for command in (
+        "timeout 20 /srv/df-bonsai/current/hack/dfhack-run status",
+        "timeout 20 python3 bridge/probe.py --observe",
+    ):
+        trace = tmp_path / "trace.jsonl"
+        write_trace(
+            trace,
+            [{
+                "type": "tool_use",
+                "part": {
+                    "tool": "bash",
+                    "state": {"input": {"command": command}},
+                },
+            }],
+        )
+        assert trace_has_live_game_probe(trace) is True
+
+
+def test_context_and_degenerate_stop_classifiers(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    write_trace(
+        trace,
+        [
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "tool-calls",
+                    "tokens": {"input": 69000, "output": 100},
+                },
+            },
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "stop",
+                    "tokens": {"input": 71000, "output": 1},
+                },
+            },
+        ],
+    )
+    assert trace_latest_input_tokens(trace) == 71000
+    assert trace_ended_with_degenerate_stop(trace) is True

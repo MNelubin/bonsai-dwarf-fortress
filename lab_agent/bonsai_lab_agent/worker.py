@@ -31,13 +31,14 @@ class Config:
     opencode_bin: str
     opencode_config: Path
     ollama_url: str
+    context_rollover_tokens: int
 
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
             control_url=os.environ["BONSAI_CONTROL_URL"].rstrip("/"),
             lab_token=os.environ["BONSAI_LAB_TOKEN"],
-            model=os.environ.get("BONSAI_MODEL", "ollama/qwen3.6:27b-64k"),
+            model=os.environ.get("BONSAI_MODEL", "ollama/qwen3.6:27b-96k"),
             baseline_repo=Path(os.environ.get("BONSAI_BASELINE_REPO", "/srv/bonsai-agent/workspace")),
             baseline_remote=os.environ.get(
                 "BONSAI_BASELINE_REMOTE",
@@ -52,6 +53,9 @@ class Config:
                 os.environ.get("BONSAI_OPENCODE_CONFIG", "/etc/bonsai-agent/opencode.json")
             ),
             ollama_url=os.environ.get("BONSAI_OLLAMA_URL", "http://100.96.0.4:11434").rstrip("/"),
+            context_rollover_tokens=int(
+                os.environ.get("BONSAI_CONTEXT_ROLLOVER_TOKENS", "70000")
+            ),
         )
 
 
@@ -189,6 +193,242 @@ def discovery_needs_synthesis(repo: Path) -> bool:
     )
 
 
+def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
+    """Detect an OpenCode turn that produced only an immediate stop token."""
+    if not trace_path.is_file():
+        return False
+    last_finish: dict[str, Any] | None = None
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "step_finish":
+            last_finish = event
+    if last_finish is None:
+        return False
+    part = last_finish.get("part") or {}
+    tokens = part.get("tokens") or {}
+    output_tokens = tokens.get("output")
+    return (
+        part.get("reason") == "stop"
+        and isinstance(output_tokens, int)
+        and output_tokens <= 1
+    )
+
+
+def trace_has_live_game_probe(trace_path: Path) -> bool:
+    """Require an actual bounded interaction with the installed DF runtime."""
+    if not trace_path.is_file():
+        return False
+    execution_markers = (
+        "dfhack-run",
+        "dwarfort",
+        "dwarf_fortress",
+        "probe_dfhack",
+        "bridge/probe.py",
+    )
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "tool_use":
+            continue
+        part = event.get("part") or {}
+        if part.get("tool") != "bash":
+            continue
+        tool_input = ((part.get("state") or {}).get("input") or {})
+        command = " ".join(str(value) for value in tool_input.values()).lower()
+        if "timeout " in command and any(marker in command for marker in execution_markers):
+            return True
+    return False
+
+
+def trace_phase_tool_use_count(trace_path: Path, phase: str) -> int:
+    """Count tools only within one harness phase, not across an appended trace."""
+    if not trace_path.is_file():
+        return 0
+    current_phase = "opencode"
+    count = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "harness_phase":
+            current_phase = str(event.get("phase") or "")
+        elif event.get("type") == "tool_use" and current_phase == phase:
+            count += 1
+    return count
+
+
+def trace_latest_input_tokens(trace_path: Path) -> int:
+    """Return the most recent OpenCode step input size for context rollover."""
+    if not trace_path.is_file():
+        return 0
+    latest = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "step_finish":
+            continue
+        tokens = ((event.get("part") or {}).get("tokens") or {})
+        input_tokens = tokens.get("input")
+        if isinstance(input_tokens, int):
+            latest = input_tokens
+    return latest
+
+
+def trace_has_test_execution(trace_path: Path) -> bool:
+    """Detect an actual public test command, not merely reading a test file."""
+    if not trace_path.is_file():
+        return False
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "tool_use":
+            continue
+        part = event.get("part") or {}
+        if part.get("tool") != "bash":
+            continue
+        tool_input = ((part.get("state") or {}).get("input") or {})
+        command = " ".join(str(value) for value in tool_input.values()).lower()
+        if any(marker in command for marker in ("pytest", "unittest", "test_bridge_contract.py")):
+            return True
+    return False
+
+
+def trace_has_successful_test(trace_path: Path) -> bool:
+    """Require positive test-run evidence; shell pipelines can mask a failing exit code."""
+    if not trace_path.is_file():
+        return False
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "tool_use":
+            continue
+        part = event.get("part") or {}
+        state = part.get("state") or {}
+        if part.get("tool") != "bash" or state.get("status") != "completed":
+            continue
+        tool_input = state.get("input") or {}
+        command = " ".join(str(value) for value in tool_input.values()).lower()
+        if not any(marker in command for marker in ("pytest", "unittest", "test_bridge_contract.py")):
+            continue
+        output = str((state.get("metadata") or {}).get("output") or state.get("output") or "")
+        lowered = output.lower()
+        if " passed" in lowered and not any(
+            marker in lowered for marker in (" failed", " error", "traceback", "no module named")
+        ):
+            return True
+    return False
+
+
+def has_public_test_change(repo: Path) -> bool:
+    """Coding candidates must carry reviewable public test/evaluation evidence."""
+    return any(
+        path == "tests"
+        or path.startswith("tests/")
+        or path == "evaluator_public"
+        or path.startswith("evaluator_public/")
+        for path in working_tree_paths(repo)
+    )
+
+
+def normalize_commit_description(payload: dict[str, Any], job_type: str) -> tuple[str, str]:
+    """Validate model-authored commit prose and provide deterministic fallbacks."""
+    raw_title = str(payload.get("title") or "").replace("\r", " ").replace("\n", " ")
+    title = " ".join(raw_title.split()).strip(" .")[:72]
+    if not title:
+        title = f"Advance {job_type.replace('_', ' ')}"
+    raw_body = str(payload.get("body") or "").replace("\r\n", "\n").strip()
+    body_lines = [
+        line for line in raw_body.splitlines()
+        if not line.lower().startswith(("bonsai-job-type:", "bonsai-job-id:"))
+    ]
+    body = "\n".join(body_lines).strip()[:1200]
+    if not body:
+        body = "Describe and verify the repository changes produced by the autonomous job."
+    return title, body
+
+
+def generate_commit_description(config: Config, job: dict[str, Any], repo: Path) -> tuple[str, str]:
+    """Call Ollama without tools after the coding agent has finished its work."""
+    diff_stat = subprocess.check_output(
+        ["git", "-C", str(repo), "diff", "--cached", "--stat"], text=True
+    )[-6000:]
+    name_status = subprocess.check_output(
+        ["git", "-C", str(repo), "diff", "--cached", "--name-status"], text=True
+    )[-4000:]
+    diff_excerpt = subprocess.check_output(
+        ["git", "-C", str(repo), "diff", "--cached", "--unified=1", "--no-ext-diff"],
+        text=True,
+        errors="replace",
+    )[:18000]
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+        },
+        "required": ["title", "body"],
+    }
+    objective = str((job.get("payload") or {}).get("objective") or "")[:2000]
+    prompt = f"""
+Write a clear Git commit title and body for the completed repository change below.
+The title must be imperative, specific, at most 72 characters, and must not contain a job type or ID.
+The body must explain what changed and why in 2-5 concise sentences. Do not invent tests or behavior not
+visible in the diff. Return only schema-valid JSON. This is a tool-free postprocessing task.
+
+Objective: {objective}
+Job type: {job['job_type']}
+
+Changed files:
+{name_status}
+
+Diff stat:
+{diff_stat}
+
+Diff excerpt:
+{diff_excerpt}
+""".strip()
+    request_body = json.dumps(
+        {
+            "model": config.model.removeprefix("ollama/"),
+            "stream": False,
+            "think": False,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You write precise Git commit messages from supplied diffs.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "format": schema,
+            "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 512},
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{config.ollama_url}/api/chat",
+        method="POST",
+        data=request_body,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        response_payload = json.loads(response.read(256 * 1024 + 1))
+    content = response_payload.get("message", {}).get("content")
+    if not isinstance(content, str):
+        raise RuntimeError("commit description response has no message content")
+    return normalize_commit_description(json.loads(content), str(job["job_type"]))
+
+
 DISCOVERY_NOTE_PATH = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}\.md$")
 
 
@@ -247,11 +487,13 @@ no tools and must rely only on the trace. Return JSON matching the schema.
 
 Requirements:
 - exact target versions: Dwarf Fortress 53.15 and DFHack 53.15-r2;
-- note_path is a basename such as bridge-primitives.md;
+- note_path is a new mechanic-focused basename such as mechanics-units.md or probe-time-advance.md;
 - index_markdown is a complete knowledge/INDEX.md and links the note as dfhack/<note_path>;
 - note_markdown is a substantive focused note with every claim visibly tagged VERIFIED, INFERRED,
   or OPEN;
 - cite exact source paths or bounded commands/results present in the trace;
+- prioritize observed game fields, values, IDs, enums, coordinates, ticks, or state transitions;
+- do not produce another generic environment/runtime-structure summary;
 - explain implications for reset/observe/act/advance and end with concrete coding recommendations;
 - do not claim a probe succeeded unless its result is present; preserve uncertainty as OPEN;
 - never include credentials, tokens, binary data, or invented API names.
@@ -473,13 +715,23 @@ def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str
     if discovery_mode:
         mode_instructions = """
 You are in DISCOVERY MODE. Do not implement or modify executable product code. Your only writable
-tree is knowledge/. Build a durable, versioned knowledge library for later coding agents.
+tree is knowledge/. This is a LIVE GAME ARCHAEOLOGY cycle, not a documentation review.
 
-Within at most 8 discovery calls, create or update knowledge/INDEX.md and at least one focused note
-under knowledge/dfhack/. Continue updating notes while you investigate instead of saving all writing
-for the end. Each claim must be tagged VERIFIED, INFERRED, or OPEN; include the exact DF/DFHack
-version, source path or bounded probe command, result, implications for reset/observe/act/advance,
-and the next concrete coding recommendation. Deduplicate existing notes and link them from INDEX.md.
+Choose one concrete, previously unmapped mechanic: calendar/time, pause and advancement, units and
+their professions/needs/positions, tiles and materials, items, buildings, jobs, raws/enums, world/save
+data, or another observable subsystem. Spend at most two calls reading existing knowledge. Your first
+three investigative calls must target actual files or processes under /srv/df-bonsai/current or the
+live DF runtime, not this repository.
+
+Run at least one bounded executable probe with `timeout` against a real DF/DFHack entry point, script,
+raw, save, or runtime API. Capture exact stdout/stderr/exit status and extract actual field names,
+enum values, IDs, coordinates, ticks, or state transitions. If a game launch is blocked, the failed
+command and its precise blocker are evidence, but `ls`, `file`, or rereading VERSIONS.txt alone are not.
+
+Create a new mechanic-focused note under knowledge/dfhack/ (prefer mechanics-<topic>.md or
+probe-<topic>.md) and link it from INDEX.md. Do not rewrite generic environment/runtime-structure notes
+unless a new executed probe directly falsifies them. Each claim must be tagged VERIFIED, INFERRED, or
+OPEN and cite the exact command/result. End with one smallest executable coding task and its test.
 Do not touch bridge/, game_runner/, player/, tests/, docs/, control_plane/, lab_agent/, or infra/.
 A prose chat answer with no knowledge/ commit is a rejected cycle.
 """.strip()
@@ -489,18 +741,19 @@ You are in CODING MODE. Read knowledge/INDEX.md and the relevant focused notes b
 game. Treat VERIFIED notes as the starting point and explicitly record when reality contradicts
 them. Use at most 4 external discovery calls before the first write/edit.
 
-Create the smallest coherent implementation advancing reset/observe/act/advance, the episode
-runner, evaluation, or the CPU player. You MUST modify an implementation or user-facing document
-and add or update a deterministic test under tests/ or evaluator_public/. Run the tests. Do not
-change knowledge/ in coding mode; unresolved questions are a reason for the next discovery cycle.
-A clean git tree is a rejected cycle.
+Prefer executable progress over abstractions: run one bounded probe against the real installed game,
+then turn its observed fields or failure mode into the smallest reusable bridge/probe/runner change.
+If the previous candidate was rejected, repair its exact promotion error before starting new work.
+Do not satisfy the cycle with documentation alone. You MUST modify executable implementation, add or
+update a deterministic test under tests/ or evaluator_public/, and run it. Do not change knowledge/
+in coding mode. A clean git tree or a docs-only diff is a rejected cycle.
 """.strip()
     prompt = f"""
 Work autonomously as the senior agent for Bonsai Dwarf Fortress.
 
 Objective payload: {json.dumps(objective_payload, ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
-Compacted previous-cycle handoff: {json.dumps(compact_previous, ensure_ascii=False)}
+Bounded previous-cycle handoff: {json.dumps(compact_previous, ensure_ascii=False)}
 
 You are root inside an isolated Debian LXC containing Steam Dwarf Fortress 53.15 and DFHack
 53.15-r2 at /srv/df-bonsai/current. This repository clone has no GitHub, PostgreSQL, Steam, or
@@ -514,8 +767,8 @@ read binary content. Do not modify protected control_plane/, db/, evaluator_priv
 security/, .github/, or lab_agent/. Do not add symlinks, submodules, secrets, generated binaries, or
 files over 2 MiB.
 
-Stay in this OpenCode run while working: its built-in context compaction preserves the active task
-when the context grows. Do not abandon the task merely because a response boundary is reached.
+Keep durable progress in the working tree and todo state. If the context grows too large, the harness
+will stop this OpenCode process and continue from that durable state in a fresh bounded phase.
 
 {mode_instructions}
 
@@ -538,6 +791,7 @@ Execution discipline is mandatory:
     ) -> None:
         nonlocal last_heartbeat
         budget_exhausted = False
+        controlled_stop_reason: str | None = None
         command = [
             config.opencode_bin,
             "run",
@@ -567,11 +821,42 @@ Execution discipline is mandatory:
                 while process.poll() is None:
                     elapsed = time.monotonic() - started
                     if elapsed > config.harness_timeout:
+                        if (
+                            not discovery_mode
+                            and working_tree_paths(repo)
+                            and trace_has_live_game_probe(trace_path)
+                            and trace_has_successful_test(trace_path)
+                        ):
+                            budget_exhausted = True
+                            controlled_stop_reason = "timeout_with_verified_candidate"
+                            stop_process_group(process)
+                            break
                         raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
-                    if max_tool_uses is not None and trace_path.exists():
+                    if not discovery_mode and trace_path.exists():
                         tool_uses = trace_path.read_text(
                             encoding="utf-8", errors="replace"
                         ).count('"type":"tool_use"')
+                        if (
+                            tool_uses >= 48
+                            and working_tree_paths(repo)
+                            and trace_has_live_game_probe(trace_path)
+                            and trace_has_successful_test(trace_path)
+                        ):
+                            budget_exhausted = True
+                            controlled_stop_reason = "verified_candidate_ready"
+                            stop_process_group(process)
+                            break
+                    if (
+                        config.context_rollover_tokens > 0
+                        and trace_latest_input_tokens(trace_path)
+                        >= config.context_rollover_tokens
+                    ):
+                        budget_exhausted = True
+                        controlled_stop_reason = "context_rollover"
+                        stop_process_group(process)
+                        break
+                    if max_tool_uses is not None and trace_path.exists():
+                        tool_uses = trace_phase_tool_use_count(trace_path, phase)
                         if tool_uses >= max_tool_uses:
                             budget_exhausted = True
                             stop_process_group(process)
@@ -600,6 +885,7 @@ Execution discipline is mandatory:
                             "type": "harness_budget_exhausted",
                             "phase": phase,
                             "max_tool_uses": max_tool_uses,
+                            "reason": controlled_stop_reason or "tool_budget",
                         }
                     )
                     + "\n"
@@ -609,17 +895,135 @@ Execution discipline is mandatory:
             trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
             raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
 
-    run_harness(prompt, "opencode", append=False, max_tool_uses=8 if discovery_mode else None)
+    discovery_tool_budget = min(
+        24,
+        max(8, int((job.get("constraints") or {}).get("discovery_tool_budget", 16))),
+    )
+    run_harness(
+        prompt,
+        "opencode",
+        append=False,
+        max_tool_uses=discovery_tool_budget if discovery_mode else None,
+    )
+
+    if not trace_has_live_game_probe(trace_path):
+        probe_recovery_prompt = f"""
+{prompt}
+
+MANDATORY RUNTIME RECOVERY: the preceding run did not execute a live-game probe. Stop reading repository
+documentation. Your next tool call must use `timeout` with the installed runtime under
+`/srv/df-bonsai/current` (for example dfhack-run/dwarfort or the repository's real DFHack probe). Record
+the exact command, exit status, stdout/stderr, and concrete observed game fields, IDs, coordinates, ticks,
+enums, or state transition. Then turn that evidence into executable code plus a public test in coding mode,
+or a new mechanic-specific evidence note in discovery mode. A version listing or `file` command is not a
+probe. Do not finish until this requirement is satisfied or an exact reproducible runtime blocker is shown.
+""".strip()
+        run_harness(
+            probe_recovery_prompt,
+            "live_game_probe_recovery",
+            append=True,
+            max_tool_uses=8 if discovery_mode else None,
+        )
+
+    if not trace_has_live_game_probe(trace_path):
+        raise RuntimeError(
+            "agent completed without a bounded live Dwarf Fortress runtime probe"
+        )
+
     if discovery_mode and discovery_needs_synthesis(repo):
         synthesize_discovery(config, api, job, repo, trace_path, started)
+
+    if not discovery_mode and trace_ended_with_degenerate_stop(trace_path):
+        changed = working_tree_paths(repo)
+        diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
+        recovery_prompt = f"""
+Continue the interrupted Bonsai Dwarf Fortress CODING job from the existing working tree.
+The prior model turn returned an empty one-token stop immediately after a tool result. Do not restart
+research and do not reread large files. Preserve and finish the current implementation.
+
+Current changed paths: {json.dumps(changed)}
+Current diff stat:
+{diff_stat or "(clean tree)"}
+
+Inspect the narrow diff, complete any unfinished edit, add or update a deterministic public test under
+tests/ or evaluator_public/, and run the relevant tests without a pipe that can hide their exit code.
+Finish only after `git status --short` shows both implementation and test evidence. Do not commit.
+""".strip()
+        run_harness(recovery_prompt, "empty_stop_recovery", append=True, max_tool_uses=24)
+
+    if not discovery_mode and working_tree_paths(repo) and (
+        not has_public_test_change(repo) or not trace_has_successful_test(trace_path)
+    ):
+        changed = working_tree_paths(repo)
+        diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
+        missing = []
+        if not has_public_test_change(repo):
+            missing.append("no changed public test/evaluation file")
+        if not trace_has_successful_test(trace_path):
+            missing.append("no trustworthy successful test output")
+        test_recovery_prompt = f"""
+You are the TEST-AND-FINISH agent for an interrupted Bonsai Dwarf Fortress coding candidate.
+Do not perform broad research and do not replace the implementation. Review the existing narrow diff,
+write the missing deterministic public regression test, run it, fix only failures caused by this candidate,
+and leave all verified changes in the working tree. Never use `pytest | tail` or another pipeline that can
+mask a failing exit code. Do not commit.
+
+Missing gate evidence: {", ".join(missing)}
+Changed paths: {json.dumps(changed)}
+Diff stat:
+{diff_stat}
+
+Before finishing, run `git status --short` and ensure tests/ or evaluator_public/ is changed and the test
+output explicitly reports passed tests with no failures or errors.
+""".strip()
+        run_harness(test_recovery_prompt, "test_recovery", append=True, max_tool_uses=32)
+
+    if not discovery_mode and working_tree_paths(repo):
+        missing = []
+        if not has_public_test_change(repo):
+            missing.append("public test/evaluation change")
+        if not trace_has_successful_test(trace_path):
+            missing.append("successful public test execution")
+        if missing:
+            raise RuntimeError(
+                "coding candidate is incomplete after test recovery: missing " + ", ".join(missing)
+            )
 
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
 
     status = run("git status --porcelain", repo, 30)["output"].strip()
     if status:
         subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(generate_commit_description, config, job, repo)
+                while True:
+                    try:
+                        commit_title, commit_body = future.result(timeout=25)
+                        break
+                    except FutureTimeout:
+                        elapsed = round(time.monotonic() - started)
+                        progress = {
+                            "phase": "commit_description",
+                            "model": config.model,
+                            "elapsed_seconds": elapsed,
+                        }
+                        api.heartbeat(job, progress)
+                        api.worker_heartbeat("running", str(job["id"]), progress)
+        except Exception as exc:
+            print(f"commit description fallback: {exc}", flush=True)
+            commit_title, commit_body = normalize_commit_description({}, str(job["job_type"]))
+        trailers = (
+            f"Bonsai-Job-Type: {job['job_type']}\n"
+            f"Bonsai-Job-ID: {job['id']}"
+        )
         subprocess.run(
-            ["git", "-C", str(repo), "commit", "-m", f"agent: {job['job_type']}"],
+            [
+                "git", "-C", str(repo), "commit",
+                "-m", commit_title,
+                "-m", commit_body,
+                "-m", trailers,
+            ],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
