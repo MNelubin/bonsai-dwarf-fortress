@@ -283,3 +283,57 @@ def can_perform_labor(profession, labor_name):
     if labors is None:
         return False
     return labor_name in labors
+
+
+# ===========================================================================
+# Unit needs / counters mechanic — DF 53.15 verified via
+# hack/scripts/internal/gm-unit/editor_counters.lua and
+# hack/scripts/internal/notify/notifications.lua
+# ===========================================================================
+
+# Thresholds for "dire need" (verified from notifications.lua:is_in_dire_need).
+HUNGER_DIRE_THRESHOLD = 75000
+THIRST_DIRE_THRESHOLD = 50000
+SLEEPINESS_DIRE_THRESHOLD = 150000
+
+COUNTERS_1_FIELDS = [
+    "job_counter", "swap_counter", "winded", "stunned",
+    "unconscious", "suffocation", "webbed", "pain",
+    "nausea", "dizziness",
+]
+
+COUNTERS_2_FIELDS = [
+    "hunger_timer", "thirst_timer", "sleepiness_timer",
+    "exhaustion", "stomach_content", "stored_fat",
+]
+
+
+def is_in_dire_need(needs_dict):
+    """Return True if the unit meets any dire-need threshold.
+
+    Verified from notifications.lua:is_in_dire_need().
+    """
+    return bool(
+        (needs_dict.get("hunger_timer", 0) > HUNGER_DIRE_THRESHOLD) or
+        (needs_dict.get("thirst_timer", 0) > THIRST_DIRE_THRESHOLD) or
+        (needs_dict.get("sleepiness_timer", 0) > SLEEPINESS_DIRE_THRESHOLD)
+    )
+
+
+def need_severity(needs_dict):
+    """Return an integer severity score from 0-6.
+
+    Each dire threshold exceeded adds 1 point; physical distress flags
+    (pain, nausea, dizziness, suffocation) add 0.5 each when non-zero.
+    """
+    score = 0
+    if needs_dict.get("hunger_timer", 0) > HUNGER_DIRE_THRESHOLD:
+        score += 1
+    if needs_dict.get("thirst_timer", 0) > THIRST_DIRE_THRESHOLD:
+        score += 1
+    if needs_dict.get("sleepiness_timer", 0) > SLEEPINESS_DIRE_THRESHOLD:
+        score += 1
+    for flag in ("pain", "nausea", "dizziness", "suffocation"):
+        if needs_dict.get(flag, 0) != 0:
+            score += 0.5
+    return min(score, 6.0)

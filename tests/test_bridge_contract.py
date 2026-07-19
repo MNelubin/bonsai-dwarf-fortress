@@ -24,6 +24,8 @@ from bridge.probe import (
     SEASON_NAMES, probe_time, season_name, total_ticks, days_elapsed,
     PROFESSION_LABOR_MAP, KNOWN_LABORS, labor_to_professions,
     get_profession_labors, classify_labor_category, can_perform_labor,
+    HUNGER_DIRE_THRESHOLD, THIRST_DIRE_THRESHOLD, SLEEPINESS_DIRE_THRESHOLD,
+    COUNTERS_1_FIELDS, COUNTERS_2_FIELDS, is_in_dire_need, need_severity,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -1840,6 +1842,89 @@ class TestTileMapLuaContract:
         )
 
 
+class TestUnitNeedsContract:
+    """Deterministic tests for unit needs / counters helpers in bridge/probe.py."""
+
+    def test_threshold_constants(self):
+        assert HUNGER_DIRE_THRESHOLD == 75000
+        assert THIRST_DIRE_THRESHOLD == 50000
+        assert SLEEPINESS_DIRE_THRESHOLD == 150000
+
+    def test_counters_field_lists(self):
+        expected_c1 = {"job_counter", "swap_counter", "winded", "stunned",
+                        "unconscious", "suffocation", "webbed", "pain",
+                        "nausea", "dizziness"}
+        assert set(COUNTERS_1_FIELDS) == expected_c1
+        expected_c2 = {"hunger_timer", "thirst_timer", "sleepiness_timer",
+                        "exhaustion", "stomach_content", "stored_fat"}
+        assert set(COUNTERS_2_FIELDS) == expected_c2
+
+    def test_is_in_dire_need_comfortable(self):
+        comfy = {"hunger_timer": 1000, "thirst_timer": 500, "sleepiness_timer": 2000}
+        assert is_in_dire_need(comfy) is False
+
+    def test_is_in_dire_need_hunger(self):
+        hungrier = {"hunger_timer": 75001, "thirst_timer": 0, "sleepiness_timer": 0}
+        assert is_in_dire_need(hungrier) is True
+
+    def test_is_in_dire_need_exact_boundary_hunger(self):
+        at_limit = {"hunger_timer": 75000, "thirst_timer": 0, "sleepiness_timer": 0}
+        assert is_in_dire_need(at_limit) is False
+
+    def test_is_in_dire_need_thirst(self):
+        thirsty = {"hunger_timer": 0, "thirst_timer": 50001, "sleepiness_timer": 0}
+        assert is_in_dire_need(thirsty) is True
+
+    def test_is_in_dire_need_sleepiness(self):
+        sleepy = {"hunger_timer": 0, "thirst_timer": 0, "sleepiness_timer": 150001}
+        assert is_in_dire_need(sleepy) is True
+
+    def test_is_in_dire_need_empty_dict(self):
+        assert is_in_dire_need({}) is False
+
+    def test_need_severity_none(self):
+        comfy = {"hunger_timer": 100, "thirst_timer": 100, "sleepiness_timer": 100}
+        assert need_severity(comfy) == 0
+
+    def test_need_severity_single_dire(self):
+        single = {"hunger_timer": 80000}
+        assert need_severity(single) == 1
+
+    def test_need_severity_all_dire(self):
+        all_dire = {
+            "hunger_timer": 75001,
+            "thirst_timer": 50001,
+            "sleepiness_timer": 150001,
+        }
+        assert need_severity(all_dire) == 3
+
+    def test_need_severity_physical_distress(self):
+        pained = {"pain": 5}
+        assert need_severity(pained) == 0.5
+
+    def test_need_severity_combined(self):
+        combined = {
+            "hunger_timer": 75001,
+            "thirst_timer": 50001,
+            "pain": 3,
+            "nausea": 2,
+        }
+        assert need_severity(combined) == 3.0
+
+    def test_need_severity_max_achievable(self):
+        """Max score is 3 dire + 4 physical flags * 0.5 = 5.0."""
+        extreme = {
+            "hunger_timer": 75001,
+            "thirst_timer": 50001,
+            "sleepiness_timer": 150001,
+            "pain": 1,
+            "nausea": 1,
+            "dizziness": 1,
+            "suffocation": 1,
+        }
+        assert need_severity(extreme) == 5.0
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -1861,8 +1946,9 @@ if __name__ == "__main__":
                    TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
                    TestMultiSeedStress, TestCurriculumGradualAndMonitor,
                    TestEpisodeLoggerIntegration, TestInferenceLatency,
-                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                   TestProfessionLabor, TestTileMapLuaContract]
+                    TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                    TestProfessionLabor, TestTileMapLuaContract,
+                    TestUnitNeedsContract]
 
     for cls in tc_classes:
         inst = cls()

@@ -248,4 +248,70 @@ function bridge.tile_map()
     return result
 end
 
+--- Unit needs / counters mechanic observation.
+-- Verified APIs (from hack/scripts/internal/gm-unit/editor_counters.lua and
+-- hack/scripts/internal/notify/notifications.lua in DFHack 53.15-r2):
+--   unit.counters:    job_counter, swap_counter, winded, stunned, unconscious,
+--                     suffocation, webbed, soldier_mood_countdown, soldier_mood,
+--                     pain, nausea, dizziness
+--   unit.counters2:   paralysis, numbness, fever, exhaustion, hunger_timer,
+--                     thirst_timer, sleepiness_timer, stomach_content,
+--                     stomach_food, vomit_timeout, stored_fat
+--   is_in_dire_need thresholds: hunger > 75000, thirst > 50000,
+--                              sleepiness > 150000
+-- Returns a snapshot of counters for every living unit.
+function bridge.unit_needs()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+    if not dfhack.units then
+        return result
+    end
+
+    for _, u in ipairs(dfhack.units.getUnits()) do
+        if dfhack.units.isDead(u) and not u.flags1.inactive then
+            goto continue_needs
+        end
+
+        local needs = {
+            id  = u.id,
+        }
+
+        -- Counters group 1 (physical state counters).
+        if u.counters then
+            pcall(function()
+                needs.job_counter    = u.counters.job_counter or 0
+                needs.swap_counter   = u.counters.swap_counter or 0
+                needs.winded         = u.counters.winded or 0
+                needs.stunned        = u.counters.stunned or 0
+                needs.unconscious    = u.counters.unconscious or 0
+                needs.suffocation    = u.counters.suffocation or 0
+                needs.webbed         = u.counters.webbed or 0
+                needs.pain           = u.counters.pain or 0
+                needs.nausea         = u.counters.nausea or 0
+                needs.dizziness      = u.counters.dizziness or 0
+            end)
+        end
+
+        -- Counters group 2 (needs / vitality counters).
+        if u.counters2 then
+            pcall(function()
+                needs.hunger_timer     = u.counters2.hunger_timer or 0
+                needs.thirst_timer     = u.counters2.thirst_timer or 0
+                needs.sleepiness_timer = u.counters2.sleepiness_timer or 0
+                needs.exhaustion       = u.counters2.exhaustion or 0
+                needs.stomach_content  = u.counters2.stomach_content or 0
+                needs.stored_fat       = u.counters2.stored_fat or 0
+            end)
+        end
+
+        table.insert(result, needs)
+
+        ::continue_needs::
+    end
+
+    return result
+end
+
 return bridge
