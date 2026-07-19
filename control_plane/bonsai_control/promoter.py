@@ -4,6 +4,7 @@ import ast
 import json
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from psycopg import Connection
 
 from .db import close_pool, connection as db_connection, open_pool
 from .policy import AUTO_PATHS, PROTECTED_PATHS
+from .quality_gate import evaluate_python_quality
 from .settings import get_settings
 
 
@@ -274,8 +276,53 @@ def inspect_candidate(
         if total_bytes > MAX_TOTAL_BYTES:
             reasons.append(f"changed content exceeds {MAX_TOTAL_BYTES} bytes")
 
+        if job_type != "discovery_cycle":
+            _git(repo, "switch", "--detach", candidate_commit)
+            public_targets = [
+                name for name in ("tests", "evaluator_public") if (repo / name).is_dir()
+            ]
+            if not public_targets:
+                public_test = {
+                    "exit_code": 2,
+                    "output": "candidate has no tests/ or evaluator_public/ directory",
+                }
+            else:
+                public_process = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q", *public_targets],
+                    cwd=repo,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=300,
+                )
+                public_test = {
+                    "exit_code": public_process.returncode,
+                    "output": public_process.stdout[-20000:],
+                }
+            checks["trusted_public_pytest"] = public_test
+            if public_test["exit_code"] != 0:
+                reasons.append(
+                    "trusted public pytest failed: " + public_test["output"][-4000:]
+                )
+
+            quality = evaluate_python_quality(
+                repo,
+                base_commit,
+                changed_paths,
+                candidate_ref=candidate_commit,
+            )
+            checks["python_quality"] = quality
+            for diagnostic in quality["diagnostics"][:40]:
+                reasons.append(
+                    "quality gate: "
+                    f"{diagnostic['path']}:{diagnostic['line']} "
+                    f"{diagnostic['code']} {diagnostic['message']}"
+                )
+
     report = {
-        "gate_mode": "bootstrap_static_v1",
+        "gate_mode": "static_quality_v2",
         "job_type": job_type,
         "allowed": not reasons,
         "reasons": reasons,

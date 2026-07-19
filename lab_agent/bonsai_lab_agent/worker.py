@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .quality_gate import evaluate_python_quality
+
 
 @dataclass(frozen=True)
 class Config:
@@ -764,9 +766,23 @@ def validate_coding_candidate(repo: Path) -> dict[str, Any]:
     else:
         commands.append({"name": "public_pytest", "exit_code": 2, "output": "no public test directory"})
 
+    quality = evaluate_python_quality(
+        repo,
+        "HEAD",
+        serializable_working_tree_paths(repo),
+    )
+    commands.append(
+        {
+            "name": "python_quality_gate",
+            "exit_code": 0 if quality["ok"] else 1,
+            "output": json.dumps(quality, ensure_ascii=False)[-24000:],
+        }
+    )
+
     return {
         "ok": all(command["exit_code"] == 0 for command in commands),
         "commands": commands,
+        "quality": quality,
     }
 
 

@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from bonsai_lab_agent.quality_gate import evaluate_python_quality
+
 from bonsai_lab_agent.worker import (
     Config,
     discovery_needs_synthesis,
@@ -228,7 +230,7 @@ def test_harness_owned_validation_detects_edits_after_old_test_output(tmp_path: 
     repo = init_repo(tmp_path)
     tests = repo / "tests"
     tests.mkdir()
-    (tests / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    (tests / "test_ok.py").write_text("def test_ok():\n    assert 2 * 3 == 6\n", encoding="utf-8")
     broken = repo / "bridge.py"
     broken.write_text("if True:\n", encoding="utf-8")
 
@@ -336,3 +338,94 @@ def test_cross_job_wip_defers_across_job_modes(tmp_path: Path):
     assert deferred is not None
     assert deferred["status"] == "job_type_mismatch"
     assert working_tree_paths(repo) == set()
+
+
+def test_quality_gate_ignores_preexisting_lint_but_checks_added_lines(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    legacy = repo / "bridge" / "legacy.py"
+    legacy.parent.mkdir()
+    legacy.write_text("import os\n\nVALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "legacy lint"], check=True, capture_output=True)
+    legacy.write_text("import os\n\nVALUE = 1\nNEW_VALUE = VALUE + 1\n", encoding="utf-8")
+
+    quality = evaluate_python_quality(repo, "HEAD", ["bridge/legacy.py"])
+    assert quality["ok"] is True
+    assert not any(item["code"] == "F401" for item in quality["diagnostics"])
+
+
+def test_quality_gate_blocks_undefined_names_on_new_lines(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "broken.py"
+    target.parent.mkdir()
+    target.write_text("def observe():\n    return invented_runtime_value\n", encoding="utf-8")
+
+    quality = evaluate_python_quality(repo, "HEAD", ["bridge/broken.py"])
+    assert quality["ok"] is False
+    assert any(item["code"] == "F821" for item in quality["diagnostics"])
+
+
+def test_quality_gate_blocks_placeholder_tests_and_swallowed_errors(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_slop.py"
+    target.parent.mkdir()
+    target.write_text(
+        "def test_placeholder():\n"
+        "    assert True\n\n"
+        "def swallow():\n"
+        "    try:\n"
+        "        return 1\n"
+        "    except Exception:\n"
+        "        pass\n",
+        encoding="utf-8",
+    )
+
+    quality = evaluate_python_quality(repo, "HEAD", ["tests/test_slop.py"])
+    codes = {item["code"] for item in quality["diagnostics"]}
+    assert quality["ok"] is False
+    assert "SLOP002" in codes
+    assert "SLOP003" in codes
+
+
+def test_quality_gate_blocks_placeholder_replacing_existing_test_body(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_existing.py"
+    target.parent.mkdir()
+    target.write_text(
+        "def test_existing():\n    assert 2 * 3 == 6\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "real test"],
+        check=True,
+        capture_output=True,
+    )
+    target.write_text("def test_existing():\n    assert True\n", encoding="utf-8")
+
+    quality = evaluate_python_quality(repo, "HEAD", ["tests/test_existing.py"])
+    assert quality["ok"] is False
+    assert any(item["code"] == "SLOP002" for item in quality["diagnostics"])
+
+
+def test_harness_validation_returns_exact_quality_errors_for_repair(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_real.py").write_text(
+        "def test_real():\n    assert 2 * 3 == 6\n",
+        encoding="utf-8",
+    )
+    (repo / "bridge").mkdir()
+    (repo / "bridge" / "broken.py").write_text(
+        "def observe():\n    return missing_df_state\n",
+        encoding="utf-8",
+    )
+
+    validation = validate_coding_candidate(repo)
+    quality_command = next(
+        command for command in validation["commands"] if command["name"] == "python_quality_gate"
+    )
+    assert validation["ok"] is False
+    assert quality_command["exit_code"] == 1
+    assert "F821" in quality_command["output"]
+    assert "missing_df_state" in quality_command["output"]
