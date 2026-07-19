@@ -17,6 +17,12 @@ from bridge.contracts import (
     validate_observe, validate_act_result, validate_advance_result,
     validate_episode_metrics, validate_episode_outcome, validate_act_input,
 )
+from bridge.probe import (
+    classify_material, TILE_MATERIAL_ENUM_MAP, is_liquid_tile,
+    is_floor_tile, classify_tile_label,
+    TICKS_PER_DAY as PROBE_TICKS_PER_DAY,
+    SEASON_NAMES, probe_time, season_name, total_ticks, days_elapsed,
+)
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
 from player.cpu_policy import cpu_policy, cpu_policy_with_features, TARGET_TICKS

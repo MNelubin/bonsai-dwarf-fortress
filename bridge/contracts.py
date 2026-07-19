@@ -50,7 +50,7 @@ class EpisodeLogger:
         self._outcome = None
         self._survivors = None
         self._final_tick = None
-        self._started_at = datetime.datetime.utcnow()
+        self._started_at = datetime.datetime.now(datetime.UTC)
 
     # -- logging calls -------------------------------------------------
 
@@ -89,7 +89,7 @@ class EpisodeLogger:
 
         Keys: ``seed_save_id_actions_ticks_outcome_survivors_final_tick_elapsed_ms``.
         """
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.UTC)
         elapsed_ms = int((now - self._started_at).total_seconds() * 1000)
         return {
             "seed": self.seed,
