@@ -397,6 +397,60 @@ function bridge.job_list()
     return result
 end
 
+--- Item snapshot observation — DF 53.15 verified via nuke-items.lua, view-item-info.lua,
+-- deteriorate.lua, fix/stable-temp.lua which iterate df.global.world.items.all and
+-- df.global.world.items.other.<TYPE>.
+-- Key accessors:
+--   item:getType()               → df.item_type enum integer
+--   dfhack.matinfo.decode(item)  → {material = ..., mode = "stone"|"plant"|...}
+--   dfhack.items.getValue(item)  → numeric value in currency (bits)
+--   df.item_type[item:getType()] → string label (TOOL, MEAT, FOOD, ARMOR, WOOD, …)
+function bridge.item_list()
+    local result = {}
+    if not df.global.world or not df.global.world.items then
+        return result
+    end
+
+    local all_items = df.global.world.items.all or {}
+    local count = #all_items
+    for i = 1, math.min(count, 300) do
+        local item = all_items[i - 1]
+        if not item then goto continue_items end
+
+        local itype = "unknown"
+        pcall(function()
+            itype = tostring(df.item_type[item:getType()]) or "unknown"
+        end)
+
+        local mat_mode = nil
+        local material_id = -1
+        pcall(function()
+            local mi = dfhack.matinfo.decode(item)
+            if mi then
+                mat_mode = mi.mode or nil
+                material_id = mi.material or -1
+            end
+        end)
+
+        local value = 0
+        pcall(function()
+            value = dfhack.items.getValue(item) or 0
+        end)
+
+        table.insert(result, {
+            idx         = i,
+            type        = itype,
+            mat_mode    = mat_mode,
+            material_id = material_id,
+            value       = value,
+        })
+
+        ::continue_items::
+    end
+
+    return result
+end
+
 --- Building list observation.
 -- Verified fields from DFHack scripts (extra-gamelog.lua, siegemanager.lua, advfort.lua):
 --   building.id                      — unique numeric identifier

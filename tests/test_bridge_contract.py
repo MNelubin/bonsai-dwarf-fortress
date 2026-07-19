@@ -27,6 +27,8 @@ from bridge.probe import (
     buildings_at_z, building_count_by_type,
     alive_units, dead_units, unit_population, units_by_civ_id,
     units_at_z, unit_positions, nearby_units,
+    ITEM_TYPE_ENUM_MAP, item_category, total_inventory_value,
+    count_items_by_category, high_value_items,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -1999,6 +2001,112 @@ class TestBuildingObservation:
         assert building_count_by_type([]) == {}
 
 
+class TestItemObservation:
+    """Deterministic tests for item observation helpers in bridge/probe.py."""
+
+    def _sample_items(self):
+        return [
+            {"idx": 1, "type": "FOOD", "mat_mode": "plant", "material_id": 5, "value": 20},
+            {"idx": 2, "type": "TOOL", "mat_mode": "metal", "material_id": 17, "value": 500},
+            {"idx": 3, "type": "WOOD", "mat_mode": "plant", "material_id": 8, "value": 10},
+            {"idx": 4, "type": "MEAT", "mat_mode": "flesh", "material_id": 12, "value": 50},
+            {"idx": 5, "type": "ARMOR", "mat_mode": "metal", "material_id": 17, "value": 3000},
+            {"idx": 6, "type": "BOOK", "mat_mode": "book", "material_id": -1, "value": 200},
+            {"idx": 7, "type": "CONTAINER", "mat_mode": "wood", "material_id": 8, "value": 75},
+            {"idx": 8, "type": "BAR_GEMS", "mat_mode": "gem", "material_id": 3, "value": 10000},
+            {"idx": 9, "type": "CHEESE", "mat_mode": "foodstuff", "material_id": -1, "value": 80},
+            {"idx": 10, "type": "LIQUID_MISC", "mat_mode": "liquid", "material_id": 42, "value": 5},
+        ]
+
+    def test_item_type_enum_map(self):
+        assert isinstance(ITEM_TYPE_ENUM_MAP, dict)
+        assert len(ITEM_TYPE_ENUM_MAP) >= 15
+        assert ITEM_TYPE_ENUM_MAP["TOOL"] == "tool"
+        assert ITEM_TYPE_ENUM_MAP["FOOD"] == "food"
+
+    def test_item_category_consumable(self):
+        for itype in ("FOOD", "MEAT", "PLANT", "CHEESE", "GLOB", "LIQUID_MISC", "POISON_FLASK"):
+            assert item_category({"type": itype}) == "consumable", itype
+
+
+    def test_item_category_structural(self):
+        for itype in ("WOOD", "STONE"):
+            assert item_category({"type": itype}) == "structural", itype
+
+    def test_item_category_metalwork(self):
+        for itype in ("METAL_INGOT", "BAR_GEMS", "CLOTH"):
+            assert item_category({"type": itype}) == "metalwork", itype
+
+    def test_item_category_protection(self):
+        for itype in ("ARMOR", "HELM", "GLOVES", "PANTS", "SHOES"):
+            assert item_category({"type": itype}) == "protection", itype
+
+    def test_item_category_tool(self):
+        assert item_category({"type": "TOOL"}) == "tool"
+
+    def test_item_category_knowledge(self):
+        for itype in ("BOOK", "PAPER", "ARTIFACT"):
+            assert item_category({"type": itype}) == "knowledge", itype
+
+    def test_item_category_storage(self):
+        assert item_category({"type": "CONTAINER"}) == "storage"
+
+    def test_item_category_other_fallback(self):
+        assert item_category({"type": "unknown"}) == "other"
+        assert item_category({}) == "other"
+        assert item_category({"type": None}) == "other"
+
+    def test_total_inventory_value(self):
+        items = self._sample_items()
+        expected = 20 + 500 + 10 + 50 + 3000 + 200 + 75 + 10000 + 80 + 5
+        assert total_inventory_value(items) == expected
+
+    def test_total_inventory_value_empty(self):
+        assert total_inventory_value([]) == 0
+
+    def test_total_inventory_value_missing_key(self):
+        assert total_inventory_value([{}]) == 0
+
+    def test_count_items_by_category_detailed(self):
+        items = self._sample_items()
+        counts = count_items_by_category(items)
+        # FOOD→consumable, MEAT→consumable, CHEESE→consumable, LIQUID_MISC→consumable = 4
+        assert counts["consumable"] == 4
+        # WOOD→structural = 1
+        assert counts["structural"] == 1
+        # TOOL→tool = 1
+        assert counts["tool"] == 1
+        # ARMOR→protection = 1
+        assert counts["protection"] == 1
+        # BOOK→knowledge = 1
+        assert counts["knowledge"] == 1
+        # CONTAINER→storage = 1
+        assert counts["storage"] == 1
+        # BAR_GEMS→metalwork = 1
+        assert counts["metalwork"] == 1
+
+    def test_count_items_by_category_empty(self):
+        assert count_items_by_category([]) == {}
+
+    def test_high_value_items_above_threshold(self):
+        items = self._sample_items()
+        high = high_value_items(items, threshold=1000)
+        vals = [i["value"] for i in high]
+        assert all(v > 1000 for v in vals)
+
+    def test_high_value_items_default_threshold(self):
+        items = self._sample_items()
+        high = high_value_items(items)
+        vals = {i["value"] for i in high}
+        # Only ARMOR(3000) and BAR_GEMS(10000) exceed default 1000
+        assert 3000 in vals
+        assert 10000 in vals
+        assert 500 not in vals
+
+    def test_high_value_items_empty(self):
+        assert high_value_items([]) == []
+
+
 class TestUnitPopulation:
 
     def _units(self):
@@ -2096,22 +2204,22 @@ if __name__ == "__main__":
     passed = 0
 
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
-                  TestBaselinePolicy, TestIntegrationStubEpisode,
-                  TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
-                  TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
-                  TestSkillChainPlayer, TestPublicEvaluator,
-                  TestTraceDeterminism, TestRunnerEnhancements,
-                  TestCitizenSimulation, TestBenchmarkRunner,
-                  TestValidationTypeSafety, TestEpisodeSerialization,
-                  TestConfidenceIntervals, TestAdvanceValidation,
-                  TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
-                  TestMultiSeedStress, TestCurriculumGradualAndMonitor,
-                  TestSkillChainReset, TestRunnerMultiple,
-                  TestEpisodeLoggerIntegration, TestInferenceLatency,
-                  TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                  TestProfessionLabor, TestTileMapLuaContract,
-                  TestUnitNeedsContract, TestBuildingObservation,
-                  TestUnitPopulation]
+                   TestBaselinePolicy, TestIntegrationStubEpisode,
+                   TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
+                   TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
+                   TestSkillChainPlayer, TestPublicEvaluator,
+                   TestTraceDeterminism, TestRunnerEnhancements,
+                   TestCitizenSimulation, TestBenchmarkRunner,
+                   TestValidationTypeSafety, TestEpisodeSerialization,
+                   TestConfidenceIntervals, TestAdvanceValidation,
+                   TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                   TestMultiSeedStress, TestCurriculumGradualAndMonitor,
+                   TestSkillChainReset, TestRunnerMultiple,
+                   TestEpisodeLoggerIntegration, TestInferenceLatency,
+                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                   TestProfessionLabor, TestTileMapLuaContract,
+                   TestUnitNeedsContract, TestBuildingObservation,
+                   TestItemObservation, TestUnitPopulation]
 
     for cls in tc_classes:
         inst = cls()

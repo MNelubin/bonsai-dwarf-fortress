@@ -493,6 +493,98 @@ def building_count_by_type(buildings):
 
 
 # ===========================================================================
+# Item / inventory mechanics — DF 53.15 verified via nuke-items.lua,
+# view-item-info.lua, deteriorate.lua in hack/scripts/.
+# df.global.world.items.all → vector of all item records.
+# item:getType() → df.item_type enum; dfhack.matinfo.decode(item) → {mode, material}
+# dfhack.items.getValue(item) → currency value (bits).
+# ===========================================================================
+
+ITEM_TYPE_ENUM_MAP = {
+    "TOOL": "tool",
+    "FOOD": "food",
+    "MEAT": "meat",
+    "PLANT": "plant",
+    "WOOD": "wood",
+    "STONE": "stone",
+    "METAL_INGOT": "metal",
+    "BAR_GEMS": "gem",
+    "CLOTH": "cloth",
+    "PAPER": "paper",
+    "BOOK": "book",
+    "ARMOR": "armor",
+    "HELM": "helm",
+    "GLOVES": "gloves",
+    "PANTS": "pants",
+    "SHOES": "shoes",
+    "CONTAINER": "container",
+    "POISON_FLASK": "poison",
+    "ARTIFACT": "artifact",
+    "LIQUID_MISC": "liquid",
+    "CHEESE": "cheese",
+    "GLOB": "glob",
+}
+
+
+def item_category(item_record):
+    """Classify an item record into a resource category.
+
+    Categories verified from DF source and deteriorate.lua groupings:
+        consumable — FOOD, MEAT, PLANT, CHEESE, GLOB, LIQUID_MISC, POISON_FLASK
+        structural — WOOD, STONE (raw building materials)
+        metalwork  — METAL_INGOT, BAR_GEMS, CLOTH
+        protection — ARMOR, HELM, GLOVES, PANTS, SHOES
+        tool       — TOOL
+        knowledge  — BOOK, PAPER, ARTIFACT
+        storage    — CONTAINER
+        other      — fallback
+    """
+    itype = item_record.get("type", "unknown") or ""
+
+    consumable = {"FOOD", "MEAT", "PLANT", "CHEESE", "GLOB", "LIQUID_MISC", "POISON_FLASK"}
+    structural = {"WOOD", "STONE"}
+    metalwork = {"METAL_INGOT", "BAR_GEMS", "CLOTH"}
+    protection = {"ARMOR", "HELM", "GLOVES", "PANTS", "SHOES"}
+    knowledge = {"BOOK", "PAPER", "ARTIFACT"}
+    storage = {"CONTAINER"}
+
+    if itype in consumable:
+        return "consumable"
+    if itype in structural:
+        return "structural"
+    if itype in metalwork:
+        return "metalwork"
+    if itype in protection:
+        return "protection"
+    if itype == "TOOL":
+        return "tool"
+    if itype in knowledge:
+        return "knowledge"
+    if itype in storage:
+        return "storage"
+    return "other"
+
+
+def total_inventory_value(items):
+    """Sum currency value (bits) across item list."""
+    return sum(item.get("value", 0) for item in items)
+
+
+def count_items_by_category(items):
+    """Return dict mapping category → count."""
+    counts: dict[str, int] = {}
+    for it in items:
+        cat = item_category(it)
+        counts[cat] = counts.get(cat, 0) + 1
+    return counts
+
+
+def high_value_items(items, threshold=1000):
+    """Return items whose value exceeds *threshold* bits."""
+    return [it for it in items if it.get("value", 0) > threshold]
+
+
+# ===========================================================================
 # Unit position / population mechanics — DF 53.15 verified via
 # hack/scripts/internal/gm-unit/editor_counters.lua and bridge/core.lua observe()
 # which emits unit.pos as [x, y, z] and unit.civ_id per unit record.
