@@ -449,11 +449,13 @@ def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
     relative_target = f"dfhack/{note_path}"
     if relative_target not in index_markdown:
         raise ValueError("structured discovery index does not link the focused note")
+    clean_index = "\n".join(line.rstrip() for line in index_markdown.splitlines()).rstrip() + "\n"
+    clean_note = "\n".join(line.rstrip() for line in note_markdown.splitlines()).rstrip() + "\n"
     knowledge = repo / "knowledge"
     focused = knowledge / "dfhack"
     focused.mkdir(parents=True, exist_ok=True)
-    (knowledge / "INDEX.md").write_text(index_markdown.rstrip() + "\n", encoding="utf-8")
-    (focused / note_path).write_text(note_markdown.rstrip() + "\n", encoding="utf-8")
+    (knowledge / "INDEX.md").write_text(clean_index, encoding="utf-8")
+    (focused / note_path).write_text(clean_note, encoding="utf-8")
     return relative_target
 
 

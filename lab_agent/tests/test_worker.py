@@ -50,9 +50,9 @@ def test_structured_discovery_writes_validated_bundle(tmp_path: Path):
         repo,
         {
             "note_path": "bridge-primitives.md",
-            "index_markdown": "# Index\n\n[Bridge](dfhack/bridge-primitives.md)\n" + "context " * 30,
+            "index_markdown": "# Index  \n\n[Bridge](dfhack/bridge-primitives.md)  \n" + "context " * 30,
             "note_markdown": (
-                "# Bridge primitives\n\n"
+                "# Bridge primitives  \n\n"
                 "VERIFIED — Dwarf Fortress 53.15 with DFHack 53.15-r2.\n\n"
                 "INFERRED — bridge implication.\n\nOPEN — controlled probe remains.\n\n"
                 + "Source and recommendation. " * 30
@@ -61,6 +61,11 @@ def test_structured_discovery_writes_validated_bundle(tmp_path: Path):
     )
     assert target == "dfhack/bridge-primitives.md"
     assert discovery_needs_synthesis(repo) is False
+    assert subprocess.run(
+        ["git", "-C", str(repo), "diff", "--check"],
+        capture_output=True,
+        text=True,
+    ).returncode == 0
 
 
 def write_trace(path: Path, events: list[dict]) -> None:
