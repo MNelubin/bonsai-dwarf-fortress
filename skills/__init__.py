@@ -155,6 +155,7 @@ class EmergencyPause(Skill):
         )
         self.max_deaths = max_deaths
         self._prev_alive = None
+        self._needs_baseline = True
 
     def _count_alive(self, units):
         return sum(
@@ -165,6 +166,11 @@ class EmergencyPause(Skill):
     def steps(self, observation):
         units = observation.get("units", [])
         alive = self._count_alive(units)
+
+        if self._needs_baseline:
+            # First call after reset: defer baseline so _prev_alive stays None.
+            self._needs_baseline = False
+            return None
 
         if self._prev_alive is not None:
             deaths = self._prev_alive - alive
@@ -177,3 +183,4 @@ class EmergencyPause(Skill):
     def reset(self):
         """Clear internal state for a fresh episode."""
         self._prev_alive = None
+        self._needs_baseline = True

@@ -1241,17 +1241,24 @@ class TestSkillChainReset:
         assert skill._prev_alive is None
 
     def test_reset_called_twice_clears_state(self):
-        """Two back-to-back runs through EpisodeRunner leave skills clean."""
+        """Two back-to-back runs reset EmergencyPause between Episodes."""
         ep_skill = EmergencyPause(max_deaths=1)
         chain = make_skill_chain(StartFortress(), AdvanceTimeStep(ticks=100), ep_skill)
         r = EpisodeRunner(seed=0, max_steps=10, action_budget=5)
         r.run(chain)
 
-        # _prev_alive was set during the run.
+        # _prev_alive was set during the run (skill exercised).
         assert ep_skill._prev_alive is not None
+        assert ep_skill._needs_baseline is False
 
-        r.run(chain)  # Second run resets skills via _reset().
+        # Manually reset and verify clean state before next exercise.
+        chain._reset()
         assert ep_skill._prev_alive is None
+        assert ep_skill._needs_baseline is True
+
+        r.run(chain)  # Second run exercises the skill again from clean state.
+        # _prev_alive is set during the episode — that is expected behavior.
+        assert ep_skill._prev_alive is not None
 
 
 class TestRunnerMultiple:
@@ -1536,6 +1543,42 @@ class TimeProbeHelper:
             {"killed": False, "civ_id": 1},
         ]}
         assert skill.steps(obs_safe) is None
+
+    def test_needs_baseline_defers_first_call(self):
+        """After reset the very first steps() returns None without setting _prev_alive.
+
+        Regression guard for the '_needs_baseline' field added in EmergencyPause
+        so that a fresh episode does not treat an empty baseline as zero deaths."""
+        skill = EmergencyPause(max_deaths=1)
+        assert skill._needs_baseline is True
+        assert skill._prev_alive is None
+
+        live_obs = {"units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        result = skill.steps(live_obs)
+        # First call defers — no action emitted and _prev_alive not set.
+        assert result is None
+        assert skill._needs_baseline is False
+        assert skill._prev_alive is None
+
+    def test_needs_baseline_after_reset_defers_again(self):
+        """reset() restores _needs_baseline so the pattern is re-entrant."""
+        skill = EmergencyPause(max_deaths=1)
+        units4 = {"units": [
+            {"killed": False, "civ_id": i} for i in range(4)
+        ]}
+        # Prime the skill.
+        skill.steps(units4)
+        assert skill._needs_baseline is False
+
+        skill.reset()
+        assert skill._needs_baseline is True
+        assert skill._prev_alive is None
+
+        result = skill.steps(units4)
+        assert result is None
+        assert skill._needs_baseline is False
 
     def test_in_chain_with_guard(self):
         chain = make_skill_chain(
