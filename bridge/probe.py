@@ -136,3 +136,150 @@ def classify_tile_label(tile_type_int):
     if 1280 <= tile_type_int < 1536:
         return "WALL"
     return "DEFAULT"
+
+
+# ===========================================================================
+# Profession and labor mechanics — DF 53.15 verified via hack/data/professions/
+# ===========================================================================
+
+PROFESSION_DIR = "/srv/df-bonsai/current/hack/data/professions/"
+
+PROFESSION_LABOR_MAP = {
+    "Chef":          ["BUTCHER", "TANNER", "COOK", "HAUL_STONE", "HAUL_WOOD",
+                       "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
+                       "HAUL_TRADE", "HAUL_WATER", "CLEAN", "PULL_LEVER",
+                       "BUILD_ROAD", "BUILD_CONSTRUCTION"],
+    "Miner":         ["MINE", "DETAIL", "RECOVER_WOUNDED", "ALCHEMIST"],
+    "Farmer":        ["HARVEST", "PLANT CUTTING", "HAUL_STONE", "HAUL_WOOD",
+                       "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
+                       "HAUL_TRADE", "HAUL_WATER", "CLEAN", "PULL_LEVER",
+                       "BUILD_ROAD", "BUILD_CONSTRUCTION"],
+    "Doctor":        ["RECOVER_WOUNDED", "DETAIL", "HAUL_STONE", "HAUL_WOOD",
+                       "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
+                       "HAUL_TRADE", "HAUL_WATER", "CLEAN", "PULL_LEVER"],
+    "Mason":         ["QUARRY STONE", "CHISEL STONE", "BUILD ROADS FLOORS ETC.",
+                       "DETAIL", "CONSTRUCTION", "HAUL_STONE", "HAUL_WOOD",
+                       "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
+                       "HAUL_TRADE", "HAUL_WATER", "CLEAN", "PULL_LEVER"],
+    "Miner":         ["MINE", "DETAIL", "RECOVER_WOUNDED", "ALCHEMIST"],
+    "Laborer":       ["HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY",
+                       "HAUL_FOOD", "HAUL_REFUSE", "HAUL_FURNITURE",
+                       "HAUL_ANIMALS", "HANDLE_VEHICLES", "HAUL_TRADE",
+                       "HAUL_WATER"],
+    "Smith":         ["SMELT METAL", "FORGE TOOL", "FORGE ARMOR WEAPONS",
+                       "DETAIL", "HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM",
+                       "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
+                       "HAUL_TRADE", "HAUL_WATER"],
+    "Fisherdwarf":   ["FISHING", "DRINK WATER", "HAUL_STONE", "HAUL_WOOD",
+                       "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE", "HAUL_ANIMALS", "HANDLE_VEHICLES",
+                       "HAUL_TRADE", "HAUL_WATER"],
+    "Migrant":       ["DRINK WATER", "PULL_LEVER", "BUILD_ROAD", "CLEAN"],
+    "Meleedwarf":    ["MELEE COMBAT", "FORGE ARMOR WEAPONS", "DETAIL",
+                       "HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY",
+                       "HAUL_FOOD", "HAUL_REFUSE", "HAUL_FURNITURE",
+                       "HAUL_ANIMALS", "HANDLE_VEHICLES", "HAUL_TRADE",
+                       "HAUL_WATER"],
+    "Marksdwarf":    ["SHOOTING RANGED WEAPONS", "DETAIL", "HAUL_STONE",
+                       "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD",
+                       "HAUL_REFUSE", "HAUL_FURNITURE", "HAUL_ANIMALS",
+                       "HANDLE_VEHICLES", "HAUL_TRADE", "HAUL_WATER"],
+    "Tailor":        ["WOODWORK", "CLOTHIER", "LEATHER WORKER", "DETAIL",
+                       "HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY",
+                       "HAUL_FOOD", "HAUL_REFUSE", "HAUL_FURNITURE",
+                       "HAUL_ANIMALS"],
+    "Craftsdwarf":   ["WOODWORK", "GLASSWORK AND CERAMICS", "CRAFT MECHANISM",
+                       "DETAIL", "HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM",
+                       "HAUL_BODY", "HAUL_FOOD", "HAUL_REFUSE",
+                       "HAUL_FURNITURE"],
+    "Outdoorsdwarf": ["WOODCUTTING", "PLANT CUTTING", "DETAIL", "HAUL_STONE",
+                       "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY", "HAUL_FOOD",
+                       "HAUL_REFUSE", "HAUL_FURNITURE"],
+    "StartManager":  [],
+}
+
+KNOWN_LABORS = sorted(set(
+    labor for labors in PROFESSION_LABOR_MAP.values() for labor in labors
+))
+
+
+def labor_to_professions(labor_name):
+    """Return list of professions that include the given labor task.
+
+    Example: labor_to_professions('COOK') -> ['Chef']
+    """
+    return [
+        prof for prof, labors in PROFESSION_LABOR_MAP.items()
+        if labor_name in labors
+    ]
+
+
+def get_profession_labors(profession):
+    """Return the list of labor tasks for a profession name.
+
+    Returns None if the profession is unknown."""
+    return PROFESSION_LABOR_MAP.get(profession)
+
+
+def classify_labor_category(labor_name):
+    """Classify a labor task into a broad category.
+
+    Categories verified from DF source and community raws:
+      hauling   — any HAUL_* or HANDLE_VEHICLES
+      crafting  — FORGE, WOODWORK, CLOTHIER, GLASSWORK, ALCHEMIST, CRAFT*
+      food      — COOK, BUTCHER, HARVEST, FISHING, PLANT CUTTING, DRINK WATER
+      extraction — MINE, QUARRY STONE, WOODCUTTING, CHISEL STONE
+      military  — MELEE COMBAT, SHOOTING RANGED WEAPONS, RECOVER_WOUNDED
+      utility   — CLEAN, PULL_LEVER, BUILD ROADS, CONSTRUCTION, TANNER, DETAIL
+      unknown   — anything not categorized
+    """
+    hauling = {
+        "HAUL_STONE", "HAUL_WOOD", "HAUL_ITEM", "HAUL_BODY",
+        "HAUL_FOOD", "HAUL_REFUSE", "HAUL_FURNITURE", "HAUL_ANIMALS",
+        "HANDLE_VEHICLES", "HAUL_TRADE", "HAUL_WATER",
+    }
+    crafting = {
+        "FORGE TOOL", "FORGE ARMOR WEAPONS", "SMELT METAL", "WOODWORK",
+        "CLOTHIER", "LEATHER WORKER", "GLASSWORK AND CERAMICS",
+        "CRAFT MECHANISM", "ALCHEMIST", "TANNER",
+    }
+    food = {
+        "COOK", "BUTCHER", "HARVEST", "FISHING", "PLANT CUTTING", "DRINK WATER",
+    }
+    extraction = {
+        "MINE", "QUARRY STONE", "WOODCUTTING", "CHISEL STONE",
+    }
+    military = {
+        "MELEE COMBAT", "SHOOTING RANGED WEAPONS", "RECOVER_WOUNDED",
+    }
+    utility = {
+        "CLEAN", "PULL_LEVER", "BUILD_ROAD", "BUILD ROADS FLOORS ETC.",
+        "CONSTRUCTION", "BUILD_CONSTRUCTION", "DETAIL",
+    }
+
+    if labor_name in hauling:
+        return "hauling"
+    if labor_name in crafting:
+        return "crafting"
+    if labor_name in food:
+        return "food"
+    if labor_name in extraction:
+        return "extraction"
+    if labor_name in military:
+        return "military"
+    if labor_name in utility:
+        return "utility"
+    return "unknown"
+
+
+def can_perform_labor(profession, labor_name):
+    """Check whether a profession's labor set includes the given task."""
+    labors = PROFESSION_LABOR_MAP.get(profession)
+    if labors is None:
+        return False
+    return labor_name in labors

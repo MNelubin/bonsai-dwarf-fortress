@@ -22,6 +22,8 @@ from bridge.probe import (
     is_floor_tile, classify_tile_label,
     TICKS_PER_DAY as PROBE_TICKS_PER_DAY,
     SEASON_NAMES, probe_time, season_name, total_ticks, days_elapsed,
+    PROFESSION_LABOR_MAP, KNOWN_LABORS, labor_to_professions,
+    get_profession_labors, classify_labor_category, can_perform_labor,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -1611,6 +1613,97 @@ class TestEmergencyPauseCurriculum:
         assert validate_episode_metrics(metrics)
 
 
+class TestProfessionLabor:
+    """Tests for profession and labor mapping in bridge/probe.py."""
+
+    def test_map_has_known_professions(self):
+        expected = {"Chef", "Miner", "Farmer", "Doctor", "Mason", "Laborer",
+                    "Smith", "Fisherdwarf", "Migrant", "Meleedwarf",
+                    "Marksdwarf", "Tailor", "Craftsdwarf", "Outdoorsdwarf",
+                    "StartManager"}
+        assert set(PROFESSION_LABOR_MAP.keys()) == expected
+
+    def test_known_labors_non_empty(self):
+        assert len(KNOWN_LABORS) >= 15
+
+    def test_known_labors_sorted(self):
+        assert KNOWN_LABORS == sorted(KNOWN_LABORS)
+
+    def test_cook_belongs_to_chef(self):
+        profs = labor_to_professions("COOK")
+        assert "Chef" in profs
+
+    def test_mine_belongs_to_miner(self):
+        profs = labor_to_professions("MINE")
+        assert "Miner" in profs
+
+    def test_haul_stone_many_professions(self):
+        profs = labor_to_professions("HAUL_STONE")
+        assert len(profs) >= 8
+
+    def test_unknown_labor_returns_empty(self):
+        assert labor_to_professions("NONEXISTENT_LABOR") == []
+
+    def test_get_chef_labors(self):
+        labors = get_profession_labors("Chef")
+        assert "COOK" in labors
+        assert "BUTCHER" in labors
+
+    def test_get_unknown_profession(self):
+        assert get_profession_labors("Wizard") is None
+
+    def test_start_manager_no_labors(self):
+        assert get_profession_labors("StartManager") == []
+
+    def test_classify_hauling(self):
+        assert classify_labor_category("HAUL_STONE") == "hauling"
+        assert classify_labor_category("HAUL_WOOD") == "hauling"
+        assert classify_labor_category("HANDLE_VEHICLES") == "hauling"
+
+    def test_classify_crafting(self):
+        assert classify_labor_category("FORGE TOOL") == "crafting"
+        assert classify_labor_category("ALCHEMIST") == "crafting"
+        assert classify_labor_category("WOODWORK") == "crafting"
+
+    def test_classify_food(self):
+        assert classify_labor_category("COOK") == "food"
+        assert classify_labor_category("FISHING") == "food"
+        assert classify_labor_category("HARVEST") == "food"
+
+    def test_classify_extraction(self):
+        assert classify_labor_category("MINE") == "extraction"
+        assert classify_labor_category("WOODCUTTING") == "extraction"
+
+    def test_classify_military(self):
+        assert classify_labor_category("MELEE COMBAT") == "military"
+        assert classify_labor_category("SHOOTING RANGED WEAPONS") == "military"
+
+    def test_classify_utility(self):
+        assert classify_labor_category("CLEAN") == "utility"
+        assert classify_labor_category("PULL_LEVER") == "utility"
+        assert classify_labor_category("DETAIL") == "utility"
+
+    def test_classify_unknown(self):
+        assert classify_labor_category("SOMETHING_NEW") == "unknown"
+
+    def test_can_perform_chef_cook(self):
+        assert can_perform_labor("Chef", "COOK") is True
+
+    def test_cannot_perform_unknown_profession(self):
+        assert can_perform_labor("Wizard", "COOK") is False
+
+    def test_can_perform_mine(self):
+        assert can_perform_labor("Miner", "MINE") is True
+
+    def test_chef_cannot_mine(self):
+        assert can_perform_labor("Chef", "MINE") is False
+
+    def test_all_known_labors_have_category(self):
+        for labor in KNOWN_LABORS:
+            cat = classify_labor_category(labor)
+            assert cat != "unknown", f"Labor '{labor}' has no category"
+
+
 class TestTileMapLuaContract:
     """Static contract tests for bridge.tile_map() in core.lua.
 
@@ -1769,7 +1862,7 @@ if __name__ == "__main__":
                    TestMultiSeedStress, TestCurriculumGradualAndMonitor,
                    TestEpisodeLoggerIntegration, TestInferenceLatency,
                    TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                   TestTileMapLuaContract]
+                   TestProfessionLabor, TestTileMapLuaContract]
 
     for cls in tc_classes:
         inst = cls()
