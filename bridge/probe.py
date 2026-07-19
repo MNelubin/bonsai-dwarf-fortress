@@ -337,3 +337,109 @@ def need_severity(needs_dict):
         if needs_dict.get(flag, 0) != 0:
             score += 0.5
     return min(score, 6.0)
+
+
+# ===========================================================================
+# Job system — DF 53.15 verified via suspendmanager.lua, dwarfvet.lua,
+# stockflow.lua, workflow.lua, and suspendmanager.plugin source.
+# ===========================================================================
+
+JOB_STATE_QUEUED = "queued"
+JOB_STATE_ACTIVE = "active"
+JOB_STATE_SUSPENDED = "suspended"
+JOB_STATE_CANCELLED = "cancelled"
+
+CONSTRUCTION_JOB_PREFIXES = (
+    "Construct",
+)
+
+FOOD_JOB_TYPES = (
+    "PrepareMeal", "ButcherAnimal", "ExtractFromLandAnimal",
+    "PrepareRawFish", "CatchLiveLandAnimal", "CatchLiveFish",
+)
+
+
+def job_state(job_record):
+    """Derive a canonical state string for a single job record.
+
+    Parameters are the fields emitted by bridge/core.lua ``job_list()``:
+        cancelled  — bool
+        suspended  — bool
+        worker_id  — int or None
+    """
+    if job_record.get("cancelled"):
+        return JOB_STATE_CANCELLED
+    if job_record.get("suspended"):
+        return JOB_STATE_SUSPENDED
+    return JOB_STATE_ACTIVE if job_record.get("worker_id") is not None else JOB_STATE_QUEUED
+
+
+def job_category(job_type_str):
+    """Classify a job type string (e.g. 'df.job_type.ConstructBed') into a category.
+
+    Categories derived from workshops.lua and suspendmanager.lua evidence:
+        construction  — ConstructBuilding, ConstructBed, ConstructChest, …
+        food          — PrepareMeal, ButcherAnimal, etc.
+        manufacturing — MakeBarrel, MakeBucket, CutGems, SmeltOre, …
+        military      — ConstructBallistaParts, LoadCatapult, etc.
+        harvesting    — CollectSand, CollectClay, HarvestFruits, etc.
+        other         — fallback
+    """
+    jt = job_type_str or ""
+
+    if any(p in jt for p in CONSTRUCTION_JOB_PREFIXES):
+        return "construction"
+    if any(t in jt for t in FOOD_JOB_TYPES):
+        return "food"
+    if any(t in jt for t in ("LoadCatapult", "LoadBallista", "AssembleSiegeAmmo",
+                              "ConstructBallistaParts", "ConstructCatapultParts")):
+        return "military"
+    if any(t in jt for t in ("CollectSand", "CollectClay", "HarvestFruits",
+                              "PlantCutting", "CatchLiveLandAnimal")):
+        return "harvesting"
+    # Manufacturing covers MakeBarrel, SmeltOre, CutGems, WeaveCloth, etc.
+    if any(t in jt for t in ("Make", "Smelt", "Weave", "Dye", "Encrust",
+                              "ExtractFromRawFish")):
+        return "manufacturing"
+    return "other"
+
+
+def count_jobs_by_state(jobs):
+    """Return a dict mapping state string → count for a list of job records."""
+    counts = {JOB_STATE_QUEUED: 0, JOB_STATE_ACTIVE: 0,
+              JOB_STATE_SUSPENDED: 0, JOB_STATE_CANCELLED: 0}
+    for j in jobs:
+        s = job_state(j)
+        counts[s] = counts.get(s, 0) + 1
+    return counts
+
+
+def count_jobs_by_category(jobs):
+    """Return a dict mapping category string → count."""
+    cats = {}
+    for j in jobs:
+        c = job_category(j.get("type", ""))
+        cats[c] = cats.get(c, 0) + 1
+    return cats
+
+
+def active_worker_ids(jobs):
+    """Return a list of worker unit IDs currently assigned to active jobs."""
+    result = []
+    for j in jobs:
+        if job_state(j) == JOB_STATE_ACTIVE and j.get("worker_id") is not None:
+            result.append(j["worker_id"])
+    return result
+
+
+def suspicious_jobs(jobs):
+    """Return jobs that appear stuck (suspended with materials but no worker).
+
+    Heuristic: suspended=True, n_items > 0, worker_id is None.
+    These represent jobs that have lost their assigned worker entirely.
+    """
+    stuck = []
+    for j in jobs:
+        if j.get("suspended") and j.get("n_items", 0) > 0 and j.get("worker_id") is None:
+            stuck.append(j)
+    return stuck

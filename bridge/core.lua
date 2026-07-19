@@ -314,4 +314,88 @@ function bridge.unit_needs()
     return result
 end
 
+--- Job system observation — DF 53.15 verified via suspendmanager.lua, dwarfvet.lua, stockflow.lua.
+-- Job accessors verified:
+--   df.global.world.jobs.list          → vector of all job records
+--   job.job_type                       → df.job_type enum (ConstructBed, SmeltOre, …)
+--   job.flags.suspend                  → true if job is suspended
+--   job.flags.cancelled                → true if job was cancelled
+--   dfhack.job.getWorker(job)          → unit working on the job or nil
+--   dfhack.job.getName(job)           → human-readable caption string
+--   job.pos                            → {x, y, z} tile position of the job
+function bridge.job_list()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+
+    -- Guard: jobs vector may not exist before a map load.
+    if not df.global.world.jobs then
+        return result
+    end
+    if not df.global.world.jobs.list then
+        return result
+    end
+
+    for _, job in ipairs(df.global.world.jobs.list) do
+        local jtype = "unknown"
+        pcall(function()
+            jtype = tostring(df.job_type[job.job_type]) or "unknown"
+        end)
+
+        local suspended, cancelled, finished = false, false, false
+        if job.flags then
+            pcall(function()
+                suspended = job.flags.suspend or false
+                cancelled = job.flags.cancelled or false
+            end)
+        end
+
+        -- Finished jobs are not typically in the active list, but flag for completeness.
+        if finished or (cancelled == false and suspended == false) then
+            -- Heuristic: non-cancelled non-suspended → active/queued
+        end
+
+        local worker_id = nil
+        local worker_name = nil
+        pcall(function()
+            local wkr = dfhack.job.getWorker(job)
+            if wkr then
+                worker_id = wkr.id
+            end
+        end)
+
+        local job_pos = {x = 0, y = 0, z = 0}
+        if job.pos then
+            job_pos = {x = job.pos.x or 0, y = job.pos.y or 0, z = job.pos.z or 0}
+        end
+
+        -- Count input items (materials required).
+        local n_items = 0
+        pcall(function()
+            if job.job_items and job.job_items.elements then
+                n_items = #job.job_items.elements
+            end
+        end)
+
+        local job_name = nil
+        pcall(function()
+            job_name = dfhack.job.getName(job) or nil
+        end)
+
+        table.insert(result, {
+            id         = job.id or nil,
+            type       = jtype,
+            cancelled  = cancelled,
+            suspended  = suspended,
+            pos        = job_pos,
+            worker_id  = worker_id,
+            n_items    = n_items,
+            name       = job_name,
+        })
+    end
+
+    return result
+end
+
 return bridge

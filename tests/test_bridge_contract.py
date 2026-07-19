@@ -26,6 +26,9 @@ from bridge.probe import (
     get_profession_labors, classify_labor_category, can_perform_labor,
     HUNGER_DIRE_THRESHOLD, THIRST_DIRE_THRESHOLD, SLEEPINESS_DIRE_THRESHOLD,
     COUNTERS_1_FIELDS, COUNTERS_2_FIELDS, is_in_dire_need, need_severity,
+    JOB_STATE_QUEUED, JOB_STATE_ACTIVE, JOB_STATE_SUSPENDED, JOB_STATE_CANCELLED,
+    job_state, job_category, count_jobs_by_state, count_jobs_by_category,
+    active_worker_ids, suspicious_jobs,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
