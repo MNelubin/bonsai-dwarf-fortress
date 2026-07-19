@@ -8,4 +8,5 @@
 - [DF-Bonsai Runtime Analysis & Launcher Logic](dfhack/df-bonsai-runtime-analysis.md)
 - [DF-Bonsai Release Metadata and Versioning](dfhack/df-bonsai-release-metadata.md)
 - [DF-Bonsai Runtime Structure and File Layout](dfhack/df-bonsai-runtime-structure.md)
+- [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)
 ---
