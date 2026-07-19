@@ -1,5 +1,6 @@
 ---
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -11,6 +12,7 @@
 - [DF-Bonsai Runtime Structure and File Layout](dfhack/df-bonsai-runtime-structure.md)
 - [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)
 - [Job System Structures and State](dfhack/mechanics-jobs.md)
+- [Time, Calendar, and State Probes](dfhack/mechanics-time-and-state-probes.md)
 ---
 
 ---
