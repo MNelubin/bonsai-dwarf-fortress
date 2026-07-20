@@ -29,6 +29,11 @@ from bridge.probe import (
     units_at_z, unit_positions, nearby_units,
     ITEM_TYPE_ENUM_MAP, item_category, total_inventory_value,
     count_items_by_category, high_value_items,
+    classify_material, is_liquid_tile, is_floor_tile, classify_tile_label,
+    TILE_MATERIAL_ENUM_MAP,
+    job_state, job_category, count_jobs_by_state, count_jobs_by_category,
+    active_worker_ids, suspicious_jobs,
+    JOB_STATE_QUEUED, JOB_STATE_ACTIVE, JOB_STATE_SUSPENDED, JOB_STATE_CANCELLED,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -1779,6 +1784,156 @@ class TestProfessionLabor:
             assert cat != "unknown", f"Labor '{labor}' has no category"
 
 
+class TestTileClassification:
+    """Deterministic tests for tile classification helpers in bridge/probe.py."""
+
+    def test_tile_material_enum_map(self):
+        assert isinstance(TILE_MATERIAL_ENUM_MAP, dict)
+        assert len(TILE_MATERIAL_ENUM_MAP) >= 4
+        assert TILE_MATERIAL_ENUM_MAP[0] == "SOIL"
+        assert TILE_MATERIAL_ENUM_MAP[1] == "STONE"
+        assert TILE_MATERIAL_ENUM_MAP[2] == "PLANKS"
+        assert TILE_MATERIAL_ENUM_MAP[3] == "BRICKS"
+
+    def test_classify_material_known(self):
+        assert classify_material(0) == "SOIL"
+        assert classify_material(1) == "STONE"
+        assert classify_material(2) == "PLANKS"
+        assert classify_material(3) == "BRICKS"
+
+    def test_classify_material_unknown(self):
+        assert classify_material(999) == "UNKNOWN"
+        assert classify_material(-1) == "UNKNOWN"
+
+    def test_is_liquid_tile_true(self):
+        assert is_liquid_tile(1024) is True
+        assert is_liquid_tile(2000) is True
+
+    def test_is_liquid_tile_false(self):
+        assert is_liquid_tile(1023) is False
+        assert is_liquid_tile(0) is False
+
+    def test_is_floor_tile_true(self):
+        assert is_floor_tile(256) is True
+        assert is_floor_tile(500) is True
+        assert is_floor_tile(511) is True
+
+    def test_is_floor_tile_false(self):
+        assert is_floor_tile(255) is False
+        assert is_floor_tile(512) is False
+        assert is_floor_tile(0) is False
+
+    def test_classify_tile_label_liquid(self):
+        assert classify_tile_label(1024) == "LIQUID"
+        assert classify_tile_label(2048) == "LIQUID"
+
+    def test_classify_tile_label_floor(self):
+        assert classify_tile_label(300) == "FLOOR"
+        assert classify_tile_label(256) == "FLOOR"
+
+    def test_classify_tile_label_wall(self):
+        assert classify_tile_label(1280) == "WALL"
+        assert classify_tile_label(1535) == "WALL"
+
+    def test_classify_tile_label_default(self):
+        assert classify_tile_label(0) == "DEFAULT"
+        assert classify_tile_label(100) == "DEFAULT"
+
+
+class TestJobSystem:
+    """Deterministic tests for job system helpers in bridge/probe.py."""
+
+    def _sample_jobs(self):
+        return [
+            {"idx": 1, "type": "df.job_type.ConstructBed", "cancelled": False, "suspended": False, "worker_id": 1001, "n_items": 3},
+            {"idx": 2, "type": "df.job_type.PrepareMeal", "cancelled": False, "suspended": False, "worker_id": None, "n_items": 2},
+            {"idx": 3, "type": "df.job_type.MakeBarrel", "cancelled": True, "suspended": False, "worker_id": None, "n_items": 1},
+            {"idx": 4, "type": "df.job_type.CollectSand", "cancelled": False, "suspended": True, "worker_id": None, "n_items": 0},
+            {"idx": 5, "type": "df.job_type.ConstructBed", "cancelled": False, "suspended": True, "worker_id": None, "n_items": 5},
+            {"idx": 6, "type": "df.job_type.SmeltOre", "cancelled": False, "suspended": False, "worker_id": 2002, "n_items": 1},
+        ]
+
+    def test_job_state_constants(self):
+        assert JOB_STATE_QUEUED == "queued"
+        assert JOB_STATE_ACTIVE == "active"
+        assert JOB_STATE_SUSPENDED == "suspended"
+        assert JOB_STATE_CANCELLED == "cancelled"
+
+    def test_job_state_cancelled(self):
+        j = {"cancelled": True, "worker_id": None}
+        assert job_state(j) == JOB_STATE_CANCELLED
+
+    def test_job_state_suspended(self):
+        j = {"cancelled": False, "suspended": True, "worker_id": None}
+        assert job_state(j) == JOB_STATE_SUSPENDED
+
+    def test_job_state_active(self):
+        j = {"cancelled": False, "suspended": False, "worker_id": 42}
+        assert job_state(j) == JOB_STATE_ACTIVE
+
+    def test_job_state_queued(self):
+        j = {"cancelled": False, "suspended": False, "worker_id": None}
+        assert job_state(j) == JOB_STATE_QUEUED
+
+    def test_job_category_construction(self):
+        assert job_category("df.job_type.ConstructBed") == "construction"
+        assert job_category("df.job_type.ConstructChest") == "construction"
+
+    def test_job_category_food(self):
+        assert job_category("df.job_type.PrepareMeal") == "food"
+        assert job_category("df.job_type.ButcherAnimal") == "food"
+
+    def test_job_category_manufacturing(self):
+        assert job_category("df.job_type.MakeBarrel") == "manufacturing"
+        assert job_category("df.job_type.SmeltOre") == "manufacturing"
+        assert job_category("df.job_type.CutGems") == "manufacturing"
+
+    def test_job_category_harvesting(self):
+        assert job_category("df.job_type.CollectSand") == "harvesting"
+        assert job_category("df.job_type.HarvestFruits") == "harvesting"
+
+    def test_job_category_other_fallback(self):
+        assert job_category("") == "other"
+        assert job_category(None) == "other"
+        assert job_category("unknown_type") == "other"
+
+    def test_count_jobs_by_state(self):
+        jobs = self._sample_jobs()
+        counts = count_jobs_by_state(jobs)
+        # idx1: cancelled=F, suspended=F, worker=1001 -> active
+        # idx2: cancelled=F, suspended=F, worker=None -> queued
+        # idx3: cancelled=T -> cancelled
+        # idx4: cancelled=F, suspended=T -> suspended
+        # idx5: cancelled=F, suspended=T -> suspended
+        # idx6: cancelled=F, suspended=F, worker=2002 -> active
+        assert counts["active"] == 2
+        assert counts["queued"] == 1
+        assert counts["cancelled"] == 1
+        assert counts["suspended"] == 2
+
+    def test_count_jobs_by_category(self):
+        jobs = self._sample_jobs()
+        cats = count_jobs_by_category(jobs)
+        # ConstructBed(2) -> construction, PrepareMeal -> food, MakeBarrel -> manufacturing, CollectSand -> harvesting, SmeltOre -> manufacturing
+        assert cats["construction"] == 2
+        assert cats["food"] == 1
+        assert cats["manufacturing"] == 2
+        assert cats["harvesting"] == 1
+
+    def test_active_worker_ids(self):
+        jobs = self._sample_jobs()
+        workers = active_worker_ids(jobs)
+        assert set(workers) == {1001, 2002}
+
+    def test_suspicious_jobs(self):
+        jobs = self._sample_jobs()
+        stuck = suspicious_jobs(jobs)
+        # idx5: suspended=True, n_items=5, worker_id=None -> stuck
+        # idx4: suspended=True, n_items=0 -> not stuck (no items to block on)
+        assert len(stuck) == 1
+        assert stuck[0]["idx"] == 5
+
+
 class TestTileMapLuaContract:
     """Static contract tests for bridge.tile_map() in core.lua.
 
@@ -2281,23 +2436,24 @@ if __name__ == "__main__":
     passed = 0
 
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
-                   TestBaselinePolicy, TestIntegrationStubEpisode,
-                   TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
-                   TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
-                   TestSkillChainPlayer, TestPublicEvaluator,
-                   TestTraceDeterminism, TestRunnerEnhancements,
-                   TestCitizenSimulation, TestBenchmarkRunner,
-                   TestValidationTypeSafety, TestEpisodeSerialization,
-                   TestConfidenceIntervals, TestAdvanceValidation,
-                   TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
-                   TestMultiSeedStress, TestCurriculumGradualAndMonitor,
-                   TestSkillChainReset, TestRunnerMultiple,
-                   TestEpisodeLoggerIntegration, TestInferenceLatency,
-                   TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                   TestProfessionLabor, TestTileMapLuaContract,
-                   TestUnitNeedsContract, TestBuildingObservation,
-                    TestItemObservation, TestUnitPopulation,
-                    TestDfhackErrorHandling]
+                    TestBaselinePolicy, TestIntegrationStubEpisode,
+                    TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
+                    TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
+                    TestSkillChainPlayer, TestPublicEvaluator,
+                    TestTraceDeterminism, TestRunnerEnhancements,
+                    TestCitizenSimulation, TestBenchmarkRunner,
+                    TestValidationTypeSafety, TestEpisodeSerialization,
+                    TestConfidenceIntervals, TestAdvanceValidation,
+                    TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                    TestMultiSeedStress, TestCurriculumGradualAndMonitor,
+                    TestSkillChainReset, TestRunnerMultiple,
+                    TestEpisodeLoggerIntegration, TestInferenceLatency,
+                    TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                    TestProfessionLabor, TestTileClassification, TestJobSystem,
+                    TestTileMapLuaContract,
+                    TestUnitNeedsContract, TestBuildingObservation,
+                     TestItemObservation, TestUnitPopulation,
+                     TestDfhackErrorHandling]
 
     for cls in tc_classes:
         inst = cls()

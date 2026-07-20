@@ -127,19 +127,20 @@ def classify_tile_label(tile_type_int):
     """Return a short string label for any tile type integer.
 
     Categories (ordered by specificity):
-        liquid   — water/lava surface tiles
+        wall     — constructed walls (types [1280, 1535])  checked before liquid
+                     because this range falls within the >= 1024 liquid boundary
         floor    — built or natural floor surfaces
-        wall     — constructed walls (types [1280, 1535])
+        liquid   — water/lava surface tiles
         default  — standard terrain (soil, stone) for everything else
 
     Verified against DFHack source convention for tile range partitions.
     """
+    if 1280 <= tile_type_int < 1536:
+        return "WALL"
     if is_liquid_tile(tile_type_int):
         return "LIQUID"
     if is_floor_tile(tile_type_int):
         return "FLOOR"
-    if 1280 <= tile_type_int < 1536:
-        return "WALL"
     return "DEFAULT"
 
 
@@ -403,7 +404,7 @@ def job_category(job_type_str):
         return "harvesting"
     # Manufacturing covers MakeBarrel, SmeltOre, CutGems, WeaveCloth, etc.
     if any(t in jt for t in ("Make", "Smelt", "Weave", "Dye", "Encrust",
-                              "ExtractFromRawFish")):
+                               "ExtractFromRawFish", "CutGems", "Grind")):
         return "manufacturing"
     return "other"
 
