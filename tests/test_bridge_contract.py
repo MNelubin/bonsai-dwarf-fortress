@@ -22,6 +22,7 @@ from bridge.probe import (
     get_profession_labors, classify_labor_category, can_perform_labor,
     HUNGER_DIRE_THRESHOLD, THIRST_DIRE_THRESHOLD, SLEEPINESS_DIRE_THRESHOLD,
     COUNTERS_1_FIELDS, COUNTERS_2_FIELDS, is_in_dire_need, need_severity,
+    units_in_dire_need, worst_need_unit, needs_summary, probe_unit_needs,
     KNOWN_BUILDING_TYPES, BUILDING_SCHEMA_KEYS,
     is_complete_building, unfinished_buildings, building_type_label,
     buildings_at_z, building_count_by_type,
@@ -2157,6 +2158,54 @@ class TestUnitNeedsContract:
             "suffocation": 1,
         }
         assert need_severity(extreme) == 5.0
+
+    def test_units_in_dire_need_empty(self):
+        assert units_in_dire_need([]) == []
+
+    def test_units_in_dire_need_filters(self):
+        needs = [
+            {"id": "u1", "hunger_timer": 100, "thirst_timer": 100, "sleepiness_timer": 100},
+            {"id": "u2", "hunger_timer": 80000, "thirst_timer": 100, "sleepiness_timer": 100},
+            {"id": "u3", "hunger_timer": 100, "thirst_timer": 60000, "sleepiness_timer": 100},
+        ]
+        dire = units_in_dire_need(needs)
+        assert len(dire) == 2
+        assert dire[0]["id"] == "u2"
+        assert dire[1]["id"] == "u3"
+
+    def test_worst_need_unit_empty(self):
+        assert worst_need_unit([]) is None
+
+    def test_worst_need_unit_returns_highest_severity(self):
+        needs = [
+            {"id": "u1", "hunger_timer": 100, "thirst_timer": 100, "sleepiness_timer": 100},
+            {"id": "u2", "hunger_timer": 75001, "thirst_timer": 50001, "sleepiness_timer": 100},
+            {"id": "u3", "hunger_timer": 75001, "thirst_timer": 100, "sleepiness_timer": 100},
+        ]
+        worst = worst_need_unit(needs)
+        assert worst["id"] == "u2"
+
+    def test_needs_summary_empty(self):
+        summary = needs_summary([])
+        assert summary["total_units"] == 0
+        assert summary["dire_count"] == 0
+        assert summary["mean_severity"] == 0.0
+        assert summary["max_severity"] == 0.0
+
+    def test_needs_summary_values(self):
+        needs = [
+            {"id": "u1", "hunger_timer": 100, "thirst_timer": 100, "sleepiness_timer": 100},
+            {"id": "u2", "hunger_timer": 75001, "thirst_timer": 100, "sleepiness_timer": 100},
+            {"id": "u3", "hunger_timer": 100, "thirst_timer": 60000, "sleepiness_timer": 150001},
+        ]
+        summary = needs_summary(needs)
+        assert summary["total_units"] == 3
+        assert summary["dire_count"] == 2
+        assert summary["mean_severity"] > 0.0
+        assert summary["max_severity"] >= summary["mean_severity"]
+
+    def test_probe_unit_needs_return_type(self):
+        assert callable(probe_unit_needs)
 
 
 class TestBuildingObservation:

@@ -1015,3 +1015,54 @@ def probe_unit_skills(timeout=30):
         return result
     except Exception:
         return None
+
+
+def probe_unit_needs(timeout=30):
+    """Call bridge.unit_needs() via DFHack and return parsed needs snapshot.
+
+    Returns a list of unit dicts each with {id, counter fields…},
+    or None on transport failure."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').unit_needs()", timeout=timeout)
+        if not isinstance(result, list):
+            return None
+        for u in result:
+            if "id" not in u:
+                return None
+        return result
+    except Exception:
+        return None
+
+
+def units_in_dire_need(needs_list):
+    """Return units from a needs snapshot that exceed any dire-need threshold."""
+    return [n for n in needs_list if is_in_dire_need(n)]
+
+
+def worst_need_unit(needs_list):
+    """Return the unit with the highest severity score, or None."""
+    if not needs_list:
+        return None
+    best = max(needs_list, key=lambda n: need_severity(n))
+    return best
+
+
+def needs_summary(needs_list):
+    """Compute a compact summary dict from a unit needs probe result.
+
+    Returns keys: total_units, dire_count, mean_severity, max_severity."""
+    if not needs_list:
+        return {
+            "total_units": 0,
+            "dire_count": 0,
+            "mean_severity": 0.0,
+            "max_severity": 0.0,
+        }
+    severities = [need_severity(n) for n in needs_list]
+    dire_count = sum(1 for n in needs_list if is_in_dire_need(n))
+    return {
+        "total_units": len(needs_list),
+        "dire_count": dire_count,
+        "mean_severity": round(sum(severities) / len(severities), 4),
+        "max_severity": round(max(severities), 4),
+    }
