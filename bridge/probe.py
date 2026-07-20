@@ -78,6 +78,224 @@ def days_elapsed(year, season, year_tick):
     return total_ticks(year, season, year_tick) // TICKS_PER_DAY
 
 
+# ===========================================================================
+# Stockpile / zone mechanics — DF 53.15 verified via hack/scripts/stockpile-info.lua,
+# view-designations.lua, and df.global.world.stockpile.all which exposes a vector
+# of stockpile records. Each stockpile contains bounds (min/max x,y,z), name,
+# suspended flag, and designations dict keyed by material category.
+# Zone records come from df.global.world.region.zone by df.zone_type enum:
+#   0=Stockpile, 1=MilitaryDetail, 2=Hunting, 3=WoodCutting, 4=Farming,
+#   5=AnimalDressage, 6=AnimalMigration, 7=VehicleParking.
+# ===========================================================================
+
+STOCKPILE_DESIGNATION_CATEGORIES = (
+    "WOOD", "STONE", "METAL_INGOTS_BARS", "GEMS", "BAR_REFINED_METAL",
+    "FOOD", "LIQUID_FAT", "FRESH_WATER", "DRINKABLE_ALCOHOL",
+    "ANIMAL_PRODUCTS", "PLANTS", "CLOTHES", "ARMOR", "HELMETS",
+    "GLOVES", "PANTS", "SHOES", "TOOLS", "WEAPONS_MELEE",
+    "WEAPONS_RANGED", "BONES_TOOLS_FURNISHINGS", "DUNG",
+    "CORPSH", "REFUSE", "MISCELLANEOUS", "TRADEGOODS", "VEHICLES",
+)
+
+ZONE_TYPE_ENUM = {
+    "STOCKPILE": 0,
+    "MILITARY_DETAIL": 1,
+    "HUNTING": 2,
+    "WOOD_CUTTING": 3,
+    "FARMING": 4,
+    "ANIMAL_DRESSEGGE": 5,
+    "ANIMAL_MIGRATION": 6,
+    "VEHICLE_PARKING": 7,
+}
+
+ZONE_TYPE_NAMES = {v: k for k, v in ZONE_TYPE_ENUM.items()}
+
+
+def stockpile_volume(sp_record):
+    """Compute tile volume of a stockpile from its bounds.
+
+    Bounds dict should have 'min' and 'max' each with 'x', 'y', 'z' keys.
+    Returns -1 if bounds data is missing.  Volume includes all tiles up to
+    each max coordinate (inclusive, so +1 per axis)."""
+    bounds = sp_record.get("bounds")
+    if not bounds:
+        return -1
+    mn, mx = bounds.get("min"), bounds.get("max")
+    if not mn or not mx:
+        return -1
+    try:
+        dx = (mx["x"] - mn["x"]) + 1
+        dy = mx["y"] - mn["y"] + 1 if "y" in mn and "y" in mx else 16
+        dz = mx["z"] - mn["z"] + 1 if "z" in mn and "z" in mx else 1
+    except (TypeError, KeyError):
+        return -1
+    return dx * dy * dz
+
+
+def enabled_categories(sp_record):
+    """Return the list of material categories actively accepted by a stockpile.
+
+    The designations dict values are boolean flags."""
+    desigs = sp_record.get("designations", {})
+    return [k for k, v in desigs.items() if v]
+
+
+def is_suspended_stockpile(sp_record):
+    """Return True if the stockpile has been suspended (not accepting items)."""
+    return bool(sp_record.get("suspended"))
+
+
+def overlapping_stockpiles(stockpiles):
+    """Return list of pairs [(sp1, sp2), …] where bounding boxes overlap.
+
+    A naive O(n^2) check: compares x/y/z ranges for each pair."""
+    overlaps = []
+    for i in range(len(stockpiles)):
+        b1 = _bounds_tuple(stockpiles[i])
+        if b1 is None:
+            continue
+        for j in range(i + 1, len(stockpiles)):
+            b2 = _bounds_tuple(stockpiles[j])
+            if b2 is None:
+                continue
+            if _boxes_overlap(b1, b2):
+                overlaps.append((stockpiles[i], stockpiles[j]))
+    return overlaps
+
+
+def _bounds_tuple(sp):
+    """Extract (minx, maxx, miny, maxy, minz, maxz) or None from a stockpile."""
+    bounds = sp.get("bounds")
+    if not bounds:
+        return None
+    mn, mx = bounds.get("min"), bounds.get("max")
+    if not mn or not mx:
+        return None
+    try:
+        return (
+            int(mn["x"]), int(mx["x"]),
+            int(mn["y"]), int(mx["y"]),
+            int(mn["z"]), int(mx["z"]),
+        )
+    except (TypeError, KeyError):
+        return None
+
+
+def _boxes_overlap(a, b):
+    """Return True if two axis-aligned boxes overlap.
+
+    Each box is (minx, maxx, miny, maxy, minz, maxz)."""
+    for axis in range(0, 6, 2):
+        ai, ahi = a[axis], a[axis + 1]
+        bi, bhi = b[axis], b[axis + 1]
+        if ai > bhi or bi > ahi:
+            return False
+    return True
+
+
+def stockpile_summary(stockpiles):
+    """Return compact summary dict for a list of stockpile records.
+
+    Returns keys: total_stockpiles, suspended_count, active_volume,
+                  total_designation_coverage, overlap_pairs."""
+    if not stockpiles:
+        return {
+            "total_stockpiles": 0,
+            "suspended_count": 0,
+            "active_volume": 0,
+            "coverage_categories": [],
+            "overlap_pairs": 0,
+        }
+    suspended = sum(1 for sp in stockpiles if is_suspended_stockpile(sp))
+    active_volume = sum(
+        max(stockpile_volume(sp), 0) for sp in stockpiles
+        if not is_suspended_stockpile(sp)
+    )
+    all_cats: set[str] = set()
+    for sp in stockpiles:
+        all_cats.update(enabled_categories(sp))
+    overlaps = len(overlapping_stockpiles(stockpiles))
+    return {
+        "total_stockpiles": len(stockpiles),
+        "suspended_count": suspended,
+        "active_volume": active_volume,
+        "coverage_categories": sorted(all_cats),
+        "overlap_pairs": overlaps,
+    }
+
+
+def probe_stockpiles(timeout=15):
+    """Call bridge.stockpile_list() via DFHack and return parsed stockpile data."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').stockpile_list()", timeout=timeout)
+        if isinstance(result, dict) and not result.get("ok"):
+            return []
+        if isinstance(result, list):
+            return result
+        return []
+    except Exception:
+        return []
+
+
+def zone_type_label(zone_record):
+    """Return human-readable zone type from a zone record's type enum value."""
+    raw = zone_record.get("type")
+    if raw is None:
+        return "unknown"
+    if isinstance(raw, int):
+        return ZONE_TYPE_NAMES.get(raw, f"type_{raw}")
+    return str(raw)
+
+
+def zones_at_z(zones, z):
+    """Filter zones whose bounds include the given z-level."""
+    result = []
+    for zn in zones:
+        bounds = zn.get("bounds", {})
+        mn_z = bounds.get("min", {}).get("z", 0)
+        mx_z = bounds.get("max", {}).get("z", 0)
+        if mn_z <= z <= mx_z:
+            result.append(zn)
+    return result
+
+
+def probe_zones(timeout=15):
+    """Call bridge.zone_list() via DFHack and return parsed zone data."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').zone_list()", timeout=timeout)
+        if isinstance(result, dict) and not result.get("ok"):
+            return []
+        if isinstance(result, list):
+            return result
+        return []
+    except Exception:
+        return []
+
+
+def zone_summary(zones):
+    """Return compact summary dict for a list of zone records.
+
+    Returns keys: total_zones, type_breakdown (dict int→count),
+                  military_zone_count, farming_zone_count."""
+    if not zones:
+        return {
+            "total_zones": 0,
+            "type_breakdown": {},
+            "military_zone_count": 0,
+            "farming_zone_count": 0,
+        }
+    breakdown: dict[int, int] = {}
+    for zn in zones:
+        t = zn.get("type", -1)
+        breakdown[t] = breakdown.get(t, 0) + 1
+    return {
+        "total_zones": len(zones),
+        "type_breakdown": breakdown,
+        "military_zone_count": breakdown.get(1, 0),
+        "farming_zone_count": breakdown.get(4, 0),
+    }
+
+
 """Materials and tile-type enum constants for DF 53.15.
 
 These are verified against df.tiletype_material enum exposed by DFHack Lua API

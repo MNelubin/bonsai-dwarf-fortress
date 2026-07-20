@@ -48,6 +48,10 @@ from bridge.probe import (
     tile_summary, dominant_material, TILE_MAP_SCHEMA_KEYS, TILE_SAMPLE_LIMIT,
     SKILL_RANK_LABELS, skill_rank_label, skill_rank_tier,
     highest_skill_rating, average_skill_rating, mastery_fraction, top_skills,
+    STOCKPILE_DESIGNATION_CATEGORIES, ZONE_TYPE_ENUM, ZONE_TYPE_NAMES,
+    stockpile_volume, enabled_categories, is_suspended_stockpile,
+    overlapping_stockpiles, stockpile_summary, probe_stockpiles,
+    zone_type_label, zones_at_z, zone_summary, probe_zones,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -2917,6 +2921,340 @@ class TestThoughtEmotions:
         assert summary["dominant_emotion"] is None
 
 
+class TestStockpileContracts:
+    """Deterministic tests for stockpile helpers in bridge/probe.py."""
+
+    def _sp(self, x1=0, y1=0, z1=0, x2=4, y2=4, z2=0, suspended=False, desigs=None):
+        return {
+            "name": "test_sp",
+            "suspended": suspended,
+            "bounds": {"min": {"x": x1, "y": y1, "z": z1}, "max": {"x": x2, "y": y2, "z": z2}},
+            "designations": desigs or {},
+        }
+
+    def test_designation_categories(self):
+        assert isinstance(STOCKPILE_DESIGNATION_CATEGORIES, tuple)
+        assert len(STOCKPILE_DESIGNATION_CATEGORIES) >= 20
+        assert "WOOD" in STOCKPILE_DESIGNATION_CATEGORIES
+        assert "STONE" in STOCKPILE_DESIGNATION_CATEGORIES
+
+    def test_stockpile_volume_normal(self):
+        sp = self._sp(0, 0, 0, 4, 4, 0)
+        assert stockpile_volume(sp) == 5 * 5 * 1
+
+    def test_stockpile_volume_multiz(self):
+        sp = self._sp(0, 0, 0, 2, 2, 2)
+        assert stockpile_volume(sp) == 3 * 3 * 3
+
+    def test_stockpile_volume_missing_bounds(self):
+        assert stockpile_volume({"name": "x"}) == -1
+
+    def test_stockpile_volume_partial_bounds(self):
+        sp = self._sp()
+        del sp["bounds"]["min"]["y"]
+        del sp["bounds"]["max"]["y"]
+        assert stockpile_volume(sp) > 0
+
+    def test_stockpile_volume_no_bounds_key(self):
+        assert stockpile_volume({"designations": {}}) == -1
+
+    def test_enabled_categories_empty(self):
+        sp = self._sp(desigs={"WOOD": False, "STONE": False})
+        assert enabled_categories(sp) == []
+
+    def test_enabled_categories_some(self):
+        sp = self._sp(desigs={"WOOD": True, "STONE": False, "GEMS": True})
+        cats = enabled_categories(sp)
+        assert set(cats) == {"WOOD", "GEMS"}
+
+    def test_is_suspended_true(self):
+        sp = self._sp(suspended=True)
+        assert is_suspended_stockpile(sp) is True
+
+    def test_is_suspended_false(self):
+        sp = self._sp(suspended=False)
+        assert is_suspended_stockpile(sp) is False
+
+    def test_is_suspended_missing_key(self):
+        assert is_suspended_stockpile({}) is False
+
+    def test_overlapping_adjacent(self):
+        s1 = self._sp(0, 0, 0, 4, 4, 0)
+        s2 = self._sp(3, 3, 0, 8, 8, 0)
+        assert len(overlapping_stockpiles([s1, s2])) == 1
+
+    def test_overlapping_disjoint(self):
+        s1 = self._sp(0, 0, 0, 2, 2, 0)
+        s2 = self._sp(5, 5, 0, 8, 8, 0)
+        assert overlapping_stockpiles([s1, s2]) == []
+
+    def test_overlapping_different_z(self):
+        s1 = self._sp(0, 0, 0, 4, 4, 0)
+        s2 = self._sp(0, 0, 5, 4, 4, 5)
+        assert overlapping_stockpiles([s1, s2]) == []
+
+    def test_overlapping_single(self):
+        assert overlapping_stockpiles([self._sp()]) == []
+
+    def test_overlapping_empty(self):
+        assert overlapping_stockpiles([]) == []
+
+    def test_stockpile_summary_empty(self):
+        summary = stockpile_summary([])
+        assert summary["total_stockpiles"] == 0
+        assert summary["suspended_count"] == 0
+        assert summary["active_volume"] == 0
+        assert summary["coverage_categories"] == []
+        assert summary["overlap_pairs"] == 0
+
+    def test_stockpile_summary_mixed(self):
+        s1 = self._sp(0, 0, 0, 4, 4, 0, suspended=False, desigs={"WOOD": True})
+        s2 = self._sp(0, 0, 0, 4, 4, 0, suspended=True, desigs={"STONE": True})
+        summary = stockpile_summary([s1, s2])
+        assert summary["total_stockpiles"] == 2
+        assert summary["suspended_count"] == 1
+        assert summary["active_volume"] > 0
+        assert "WOOD" in summary["coverage_categories"]
+        assert "STONE" in summary["coverage_categories"]
+        assert summary["overlap_pairs"] >= 1
+
+
+class TestZoneContracts:
+    """Deterministic tests for zone helpers in bridge/probe.py."""
+
+    def _zone(self, ztype=0, name="z", min_z=0, max_z=0):
+        return {
+            "name": name,
+            "type": ztype,
+            "bounds": {"min": {"x": 0, "y": 0, "z": min_z}, "max": {"x": 10, "y": 10, "z": max_z}},
+        }
+
+    def test_zone_type_enum(self):
+        assert ZONE_TYPE_ENUM["STOCKPILE"] == 0
+        assert ZONE_TYPE_ENUM["MILITARY_DETAIL"] == 1
+        assert ZONE_TYPE_ENUM["FARMING"] == 4
+        assert ZONE_TYPE_ENUM["VEHICLE_PARKING"] == 7
+
+    def test_zone_type_names_reverse(self):
+        assert ZONE_TYPE_NAMES[0] == "STOCKPILE"
+        assert ZONE_TYPE_NAMES[1] == "MILITARY_DETAIL"
+        assert ZONE_TYPE_NAMES[4] == "FARMING"
+
+    def test_zone_type_label_known(self):
+        assert zone_type_label({"type": 0}) == "STOCKPILE"
+        assert zone_type_label({"type": 4}) == "FARMING"
+
+    def test_zone_type_label_unknown_int(self):
+        assert zone_type_label({"type": 99}) == "type_99"
+
+    def test_zone_type_label_none(self):
+        assert zone_type_label({}) == "unknown"
+        assert zone_type_label({"type": None}) == "unknown"
+
+    def test_zones_at_z_matching(self):
+        z1 = self._zone(min_z=0, max_z=0)
+        z2 = self._zone(min_z=1, max_z=2)
+        assert zones_at_z([z1, z2], 0) == [z1]
+        assert len(zones_at_z([z1, z2], 1)) == 1
+
+    def test_zones_at_z_none(self):
+        z = self._zone(min_z=5, max_z=5)
+        assert zones_at_z([z], 0) == []
+
+    def test_zone_summary_empty(self):
+        s = zone_summary([])
+        assert s["total_zones"] == 0
+        assert s["type_breakdown"] == {}
+        assert s["military_zone_count"] == 0
+        assert s["farming_zone_count"] == 0
+
+    def test_zone_summary_mixed(self):
+        zones = [
+            self._zone(ztype=1),
+            self._zone(ztype=4),
+            self._zone(ztype=4),
+        ]
+        s = zone_summary(zones)
+        assert s["total_zones"] == 3
+        assert s["military_zone_count"] == 1
+        assert s["farming_zone_count"] == 2
+        assert s["type_breakdown"][1] == 1
+        assert s["type_breakdown"][4] == 2
+
+
+class TestProbeStockpileIntegration:
+    """Harness-owned mock tests for probe_stockpiles() end-to-end.
+
+    Validates that probe_stockpiles() correctly handles the _dfhack_run contract:
+    - Parses list responses from a mocked df.global.world.stockpiles.all vector.
+    - Returns empty list on error dicts (segfault / no game).
+    - Returns empty list on timeout exceptions.
+    """
+
+    def test_probe_stockpiles_parses_list(self):
+        fake_sp_data = [
+            {
+                "id": 0,
+                "name": "Wood",
+                "suspended": False,
+                "bounds": {"min": {"x": 5, "y": 5, "z": 0}, "max": {"x": 10, "y": 10, "z": 0}},
+                "designations": {"WOOD": True, "STONE": False},
+            },
+            {
+                "id": 1,
+                "name": "Stone",
+                "suspended": True,
+                "bounds": {"min": {"x": 12, "y": 5, "z": 0}, "max": {"x": 15, "y": 8, "z": 0}},
+                "designations": {"STONE": True},
+            },
+        ]
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", return_value=fake_sp_data):
+            result = probe_stockpiles(timeout=5)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["name"] == "Wood"
+        assert result[1]["suspended"] is True
+        assert stockpile_volume(result[0]) == 6 * 6 * 1
+        assert enabled_categories(result[0]) == ["WOOD"]
+
+    def test_probe_stockpiles_empty_on_error_dict(self):
+        import unittest.mock as mock
+        err_result = {
+            "_dfhack_error": True,
+            "exit_code": 139,
+            "_stderr": "Segmentation fault",
+        }
+        with mock.patch("bridge.probe._dfhack_run", return_value=err_result):
+            result = probe_stockpiles(timeout=5)
+        assert result == []
+
+    def test_probe_stockpiles_empty_on_exception(self):
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", side_effect=TimeoutError("timeout")):
+            result = probe_stockpiles(timeout=1)
+        assert result == []
+
+    def test_probe_stockpiles_summary_pipeline(self):
+        """End-to-end: probe → summary with mocked dfhack returning stockpile data."""
+        fake_sp_data = [
+            {
+                "id": 0,
+                "name": "Food",
+                "suspended": False,
+                "bounds": {"min": {"x": 0, "y": 0, "z": 0}, "max": {"x": 4, "y": 4, "z": 0}},
+                "designations": {"FOOD": True, "DRINKABLE_ALCOHOL": True},
+            },
+            {
+                "id": 1,
+                "name": "Metal",
+                "suspended": False,
+                "bounds": {"min": {"x": 6, "y": 0, "z": 0}, "max": {"x": 9, "y": 4, "z": 0}},
+                "designations": {"BAR_REFINED_METAL": True},
+            },
+        ]
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", return_value=fake_sp_data):
+            data = probe_stockpiles(timeout=5)
+        summary = stockpile_summary(data)
+        assert summary["total_stockpiles"] == 2
+        assert summary["suspended_count"] == 0
+        assert summary["active_volume"] == 5 * 5 * 1 + 4 * 5 * 1
+        assert "FOOD" in summary["coverage_categories"]
+        assert "BAR_REFINED_METAL" in summary["coverage_categories"]
+        assert summary["overlap_pairs"] == 0
+
+    def test_probe_stockpiles_empty_on_ok_false(self):
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", return_value={"ok": False, "message": "no fortress"}):
+            result = probe_stockpiles(timeout=5)
+        assert result == []
+
+
+class TestProbeZoneIntegration:
+    """Harness-owned mock tests for probe_zones() end-to-end.
+
+    Validates that probe_zones() correctly handles the _dfhack_run contract:
+    - Parses list responses from a mocked df.global.world.region.zone vector.
+    - Returns empty list on error dicts (segfault / no game).
+    - Summary pipeline exercises zone_summary against probed data.
+    """
+
+    def test_probe_zones_parses_list(self):
+        fake_zone_data = [
+            {
+                "id": 0,
+                "type": 1,
+                "name": "Military",
+                "bounds": {"min": {"x": 10, "y": 10, "z": 0}, "max": {"x": 20, "y": 20, "z": 0}},
+                "active": True,
+            },
+            {
+                "id": 1,
+                "type": 4,
+                "name": "Farm",
+                "bounds": {"min": {"x": 30, "y": 30, "z": 0}, "max": {"x": 40, "y": 40, "z": 0}},
+                "active": True,
+            },
+        ]
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", return_value=fake_zone_data):
+            result = probe_zones(timeout=5)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert zone_type_label(result[0]) == "MILITARY_DETAIL"
+        assert zone_type_label(result[1]) == "FARMING"
+
+    def test_probe_zones_empty_on_error_dict(self):
+        import unittest.mock as mock
+        err_result = {
+            "_dfhack_error": True,
+            "exit_code": 42,
+            "_stderr": "test error",
+        }
+        with mock.patch("bridge.probe._dfhack_run", return_value=err_result):
+            result = probe_zones(timeout=5)
+        assert result == []
+
+    def test_probe_zones_empty_on_exception(self):
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", side_effect=Exception("boom")):
+            result = probe_zones(timeout=1)
+        assert result == []
+
+    def test_probe_zones_summary_pipeline(self):
+        """End-to-end: probe → zone_summary with mocked dfhack returning zone data."""
+        fake_zone_data = [
+            {
+                "id": 0,
+                "type": 2,
+                "name": "Hunting",
+                "bounds": {"min": {"x": 0, "y": 0, "z": 0}, "max": {"x": 50, "y": 50, "z": 3}},
+                "active": True,
+            },
+            {
+                "id": 1,
+                "type": 4,
+                "name": "Farm",
+                "bounds": {"min": {"x": 0, "y": 0, "z": 0}, "max": {"x": 20, "y": 20, "z": 0}},
+                "active": True,
+            },
+        ]
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", return_value=fake_zone_data):
+            data = probe_zones(timeout=5)
+        summary = zone_summary(data)
+        assert summary["total_zones"] == 2
+        assert summary["type_breakdown"][2] == 1
+        assert summary["farming_zone_count"] == 1
+
+    def test_probe_zones_empty_on_ok_false(self):
+        import unittest.mock as mock
+        with mock.patch("bridge.probe._dfhack_run", return_value={"ok": False}):
+            result = probe_zones(timeout=5)
+        assert result == []
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -2944,7 +3282,8 @@ if __name__ == "__main__":
                        TestItemObservation, TestUnitPopulation,
                        TestDfhackErrorHandling, TestMapFeatures,
                          TestTileMapObservation, TestUnitSkillsContract,
-                         TestSkillRanking, TestThoughtEmotions]
+                          TestSkillRanking, TestThoughtEmotions,
+                          TestStockpileContracts, TestZoneContracts]
 
     for cls in tc_classes:
         inst = cls()

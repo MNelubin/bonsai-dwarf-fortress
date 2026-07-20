@@ -783,4 +783,134 @@ function bridge.thought_emotions()
     return result
 end
 
+--- Stockpile observation — DF 53.15 via df.global.world.stockpiles.all
+--- (verified against stockpile-info.lua, view-designations.lua).
+--- Each stockpile record has:
+---   id, name, suspended flag, bounds {min{x,y,z}, max{x,y,z}},
+---   designations keyed by material category (boolean flags).
+function bridge.stockpile_list()
+    local spiles = {}
+    if not df.global or not df.global.world then
+        return spiles
+    end
+
+    local stockpiles_vec = nil
+    pcall(function()
+        stockpiles_vec = df.global.world.stockpiles.all
+    end)
+    if not stockpiles_vec then
+        return spiles
+    end
+
+    local count = #stockpiles_vec
+    for i = 1, math.min(count, 200) do
+        local sp = stockpiles_vec[i - 1]
+        if not sp then goto continue_sp end
+
+        local name_val = ""
+        pcall(function()
+            name_val = sp.name.value or ""
+        end)
+
+        local suspended_flag = false
+        pcall(function()
+            suspended_flag = sp.suspended or false
+        end)
+
+        local bounds_data = {min = {x = -1, y = -1, z = -1}, max = {x = -1, y = -1, z = -1}}
+        if sp.bounds then
+            pcall(function()
+                bounds_data.min.x = sp.bounds[0].pos.x or -1
+                bounds_data.min.y = sp.bounds[0].pos.y or -1
+                bounds_data.min.z = sp.bounds[0].pos.z or -1
+                bounds_data.max.x = sp.bounds[1].pos.x or -1
+                bounds_data.max.y = sp.bounds[1].pos.y or -1
+                bounds_data.max.z = sp.bounds[1].pos.z or -1
+            end)
+        end
+
+        local desigs = {}
+        if sp.designations then
+            pcall(function()
+                for k, v in pairs(sp.designations) do
+                    desigs[k] = bool(v)
+                end
+            end)
+        end
+
+        table.insert(spiles, {
+            id         = sp.id or nil,
+            name       = name_val,
+            suspended  = suspended_flag,
+            bounds     = bounds_data,
+            designations = desigs,
+        })
+
+        ::continue_sp::
+    end
+
+    return spiles
+end
+
+--- Zone observation — DF 53.15 via df.global.world.region.zone
+--- (verified against fortview.lua, zone-info.lua).
+--- Each zone record has: id, type (df.zone_type enum), name, bounds {min{x,y,z}, max{x,y,z}}.
+function bridge.zone_list()
+    local zones = {}
+    if not df.global or not df.global.world then
+        return zones
+    end
+
+    local zones_vec = nil
+    pcall(function()
+        zones_vec = df.global.world.region.zone
+    end)
+    if not zones_vec then
+        return zones
+    end
+
+    local count = #zones_vec
+    for i = 1, math.min(count, 200) do
+        local zn = zones_vec[i - 1]
+        if not zn then goto continue_zone end
+
+        local zone_type = -1
+        pcall(function()
+            zone_type = zn.zone_type or -1
+        end)
+
+        local name_val = ""
+        pcall(function()
+            name_val = zn.name.value or ""
+        end)
+
+        local bounds_data = {min = {x = -1, y = -1, z = -1}, max = {x = -1, y = -1, z = -1}}
+        pcall(function()
+            bounds_data.min.x = zn.bounds.pos.x or -1
+            bounds_data.min.y = zn.bounds.pos.y or -1
+            bounds_data.min.z = zn.bounds.pos.z or -1
+            bounds_data.max.x = zn.bounds.dim_x or -1
+            bounds_data.max.y = zn.bounds.dim_y or -1
+            bounds_data.max.z = zn.bounds.dim_z or -1
+        end)
+
+        local is_active = false
+        pcall(function()
+            is_active = zn.is_active or false
+        end)
+
+        table.insert(zones, {
+            id      = zn.id or nil,
+            type    = zone_type,
+            name    = name_val,
+            bounds  = bounds_data,
+            active  = is_active,
+        })
+
+        ::continue_zone::
+    end
+
+    return zones
+end
+
 return bridge
