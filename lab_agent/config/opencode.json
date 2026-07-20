@@ -40,7 +40,15 @@
     }
   },
   "model": "ollama/qwen3.6:27b-96k",
-  "permission": "allow",
+  "permission": {
+    "*": "allow",
+    "bash": {
+      "*": "allow",
+      "*dwarfort*": "deny",
+      "*dfhack-run*": "deny",
+      "*/bonsai-df-probe *": "allow"
+    }
+  },
   "compaction": {
     "auto": true,
     "prune": true,

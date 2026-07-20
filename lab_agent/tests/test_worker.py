@@ -211,6 +211,9 @@ def test_implementation_only_environment_removes_research_tools(monkeypatch, tmp
 
     assert general["OPENCODE_CONFIG_CONTENT"] == '{"permission":{"task":"allow"}}'
     permissions = json.loads(restricted["OPENCODE_CONFIG_CONTENT"])["permission"]
+    assert permissions["bash"]["*dwarfort*"] == "deny"
+    assert permissions["bash"]["*dfhack-run*"] == "deny"
+    assert permissions["bash"]["*/bonsai-df-probe *"] == "allow"
     assert permissions["task"] == "deny"
     assert permissions["webfetch"] == "deny"
     assert permissions["websearch"] == "deny"

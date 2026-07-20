@@ -21,6 +21,14 @@ from typing import Any
 from .quality_gate import evaluate_python_quality
 
 
+GUARDED_BASH_PERMISSIONS = {
+    "*": "allow",
+    "*dwarfort*": "deny",
+    "*dfhack-run*": "deny",
+    "*/bonsai-df-probe *": "allow",
+}
+
+
 @dataclass(frozen=True)
 class Config:
     control_url: str
@@ -1220,6 +1228,7 @@ def harness_environment(config: Config, *, implementation_only: bool = False) ->
         child_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
             {
                 "permission": {
+                    "bash": GUARDED_BASH_PERMISSIONS,
                     "task": "deny",
                     "webfetch": "deny",
                     "websearch": "deny",
