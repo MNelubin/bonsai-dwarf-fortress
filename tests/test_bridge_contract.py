@@ -23,6 +23,11 @@ from bridge.probe import (
     HUNGER_DIRE_THRESHOLD, THIRST_DIRE_THRESHOLD, SLEEPINESS_DIRE_THRESHOLD,
     COUNTERS_1_FIELDS, COUNTERS_2_FIELDS, is_in_dire_need, need_severity,
     units_in_dire_need, worst_need_unit, needs_summary, probe_unit_needs,
+    HAPPINESS_STRESS_SCALE, EMOTION_STRENGTH_LABELS, KNOWN_EMOTION_TYPES,
+    EMOTION_CATEGORIES, THOUGHT_SCHEMA_KEYS,
+    emotion_strength_label, emotion_category, unit_happiness_rating,
+    units_by_happiness, most_stressed_unit, happiest_unit, mean_happiness,
+    unhappy_faction_count, dominant_emotion_type, emotions_summary,
     KNOWN_BUILDING_TYPES, BUILDING_SCHEMA_KEYS,
     is_complete_building, unfinished_buildings, building_type_label,
     buildings_at_z, building_count_by_type,
@@ -2790,6 +2795,128 @@ class TestSkillRanking:
         assert SKILL_RANK_LABELS[-1] == "Grand Master"
 
 
+class TestThoughtEmotions:
+    """Deterministic tests for the thought / emotion / happiness helpers."""
+
+    def test_happiness_scale_constant(self):
+        assert HAPPINESS_STRESS_SCALE == 2000000
+
+    def test_emotion_strength_labels(self):
+        assert EMOTION_STRENGTH_LABELS[1] == "Slight"
+        assert EMOTION_STRENGTH_LABELS[2] == "Moderate"
+        assert EMOTION_STRENGTH_LABELS[5] == "Strong"
+        assert EMOTION_STRENGTH_LABELS[10] == "Intense"
+
+    def test_known_emotion_types_nonempty(self):
+        assert len(KNOWN_EMOTION_TYPES) >= 8
+
+    def test_emotion_categories_all_known(self):
+        for et in KNOWN_EMOTION_TYPES:
+            assert et in EMOTION_CATEGORIES, f"{et} missing from EMOTION_CATEGORIES"
+
+    def test_thought_schema_keys(self):
+        expected = {"id", "stress", "happiness_pctile", "emotions", "n_emotions"}
+        assert set(THOUGHT_SCHEMA_KEYS) == expected
+
+    def test_emotion_strength_label_values(self):
+        assert emotion_strength_label(1) == "Slight"
+        assert emotion_strength_label(2) == "Moderate"
+        assert emotion_strength_label(3) == "Moderate"
+        assert emotion_strength_label(4) == "Strong"
+        assert emotion_strength_label(5) == "Strong"
+        assert emotion_strength_label(6) == "Strong"
+        assert emotion_strength_label(7) == "Intense"
+
+    def test_emotion_category_prefix_fallback(self):
+        assert emotion_category("Negative_Something") == "negative"
+        assert emotion_category("Positive_Something") == "positive"
+        assert emotion_category("Unknown") == "neutral"
+
+    def test_unit_happiness_rating_depressed(self):
+        rec = {"happiness_pctile": 0.1}
+        assert unit_happiness_rating(rec) == "depressed"
+
+    def test_unit_happiness_rating_miserable(self):
+        rec = {"happiness_pctile": 0.3}
+        assert unit_happiness_rating(rec) == "miserable"
+
+    def test_unit_happiness_rating_okay(self):
+        rec = {"happiness_pctile": 0.5}
+        assert unit_happiness_rating(rec) == "okay"
+
+    def test_unit_happiness_rating_happy(self):
+        rec = {"happiness_pctile": 0.7}
+        assert unit_happiness_rating(rec) == "happy"
+
+    def test_unit_happiness_rating_ecstatic(self):
+        rec = {"happiness_pctile": 0.9}
+        assert unit_happiness_rating(rec) == "ecstatic"
+
+    def test_units_by_happiness_buckets(self):
+        data = [
+            {"id": 1, "stress": 800000, "happiness_pctile": 0.1},
+            {"id": 2, "stress": -800000, "happiness_pctile": 0.9},
+        ]
+        buckets = units_by_happiness(data)
+        assert len(buckets["depressed"]) == 1
+        assert len(buckets["ecstatic"]) == 1
+
+    def test_most_stressed_unit(self):
+        data = [
+            {"id": 1, "stress": 100},
+            {"id": 2, "stress": 500},
+        ]
+        assert most_stressed_unit(data)["id"] == 2
+
+    def test_happiest_unit(self):
+        data = [
+            {"id": 1, "stress": -900000},
+            {"id": 2, "stress": -100},
+        ]
+        assert happiest_unit(data)["id"] == 1
+
+    def test_mean_happiness_basic(self):
+        data = [
+            {"happiness_pctile": 0.8},
+            {"happiness_pctile": 0.6},
+        ]
+        assert mean_happiness(data) == 0.7
+
+    def test_mean_happiness_empty(self):
+        assert mean_happiness([]) == 0.5
+
+    def test_unhappy_faction_count_default(self):
+        data = [
+            {"happiness_pctile": 0.1},
+            {"happiness_pctile": 0.3},
+            {"happiness_pctile": 0.8},
+        ]
+        assert unhappy_faction_count(data) == 2
+
+    def test_dominant_emotion_type(self):
+        data = [{"emotions": [{"type": "Negative_SadMemory"}, {"type": "Negative_SadMemory"}, {"type": "Positive_PleasantConversation"}]}]
+        assert dominant_emotion_type(data) == "Negative_SadMemory"
+
+    def test_dominant_emotion_empty(self):
+        assert dominant_emotion_type([]) is None
+
+    def test_emotions_summary_basic(self):
+        data = [
+            {"id": 1, "stress": 500, "happiness_pctile": 0.4, "emotions": [{"type": "Negative_SadMemory"}]},
+            {"id": 2, "stress": -300, "happiness_pctile": 0.6, "emotions": []},
+        ]
+        summary = emotions_summary(data)
+        assert summary["total_units"] == 2
+        assert summary["most_stressed_id"] == 1
+        assert summary["happiest_id"] == 2
+
+    def test_emotions_summary_empty(self):
+        summary = emotions_summary([])
+        assert summary["total_units"] == 0
+        assert summary["mean_happiness"] == 0.5
+        assert summary["dominant_emotion"] is None
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -2816,8 +2943,8 @@ if __name__ == "__main__":
                       TestUnitNeedsContract, TestBuildingObservation,
                        TestItemObservation, TestUnitPopulation,
                        TestDfhackErrorHandling, TestMapFeatures,
-                        TestTileMapObservation, TestUnitSkillsContract,
-                        TestSkillRanking]
+                         TestTileMapObservation, TestUnitSkillsContract,
+                         TestSkillRanking, TestThoughtEmotions]
 
     for cls in tc_classes:
         inst = cls()

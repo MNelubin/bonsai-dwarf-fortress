@@ -686,4 +686,101 @@ function bridge.unit_skills()
     return result
 end
 
+--- Thought / emotion / happiness observation — DF 53.15 verified via
+-- add-thought.lua, fillneeds.lua, remove-stress.lua, emigration.lua,
+-- idle-crafting.lua in hack/scripts/.
+-- Key accessors:
+--   u.status.current_soul.personality       → personality record
+--   soul.personality.emotions               → vector of df.personality_moodst
+--   mood.type                               → df.emotion_type enum int
+--   df.emotion_type.attrs[mood.type].divider → positive = stress-increasing, negative = stress-decreasing
+--   mood.strength                            → 1=Slight, 2=Moderate, 5=Strong, 10=Intense
+--   mood.thought                             → df.unit_thought_type enum int
+--   mood.severity                            → raw severity integer
+--   soul.personality.stress                  → int (negative = happy, positive = stressed)
+-- Returns per-unit snapshot {id, stress, happiness pctile, recent_emotions: [{type, strength, thought, severity}]}
+function bridge.thought_emotions()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+    if not dfhack.units then
+        return result
+    end
+
+    for _, u in ipairs(dfhack.units.getUnits()) do
+        if dfhack.units.isDead(u) and not u.flags1.inactive then
+            goto continue_emotions
+        end
+
+        local stress = 0
+        local emotion_records = {}
+
+        pcall(function()
+            local soul = u.status.current_soul
+            if soul and soul.personality then
+                stress = soul.personality.stress or 0
+                local emotions = soul.personality.emotions
+                if emotions then
+                    for _, m in ipairs(emotions) do
+                        local em_type = "unknown"
+                        local thought_str = "unknown"
+
+                        pcall(function()
+                            em_type = tostring(df.emotion_type[m.type]) or "unknown"
+                        end)
+
+                        pcall(function()
+                            thought_str = tostring(df.unit_thought_type[m.thought]) or "unknown"
+                        end)
+
+                        table.insert(emotion_records, {
+                            type     = em_type,
+                            strength = m.strength or 0,
+                            thought  = thought_str,
+                            severity = m.severity or 0,
+                        })
+                    end
+                end
+            end
+        end)
+
+        -- happiness_pctile: map stress to [0, 1] where 0 = maximally stressed, 1 = maximally happy.
+        -- Verified range from emigration.lua: stress / 5000 gives a 0-100 scale (clamped).
+        -- Negative stress = happy, positive stress = upset.
+        -- Scale: -1000000 (max happy) … +1000000 (max stressed)
+        local happiness_pctile = 0.5
+        pcall(function()
+            if stress < -999999 then
+                happiness_pctile = 0.0
+            elseif stress > 999998 then
+                happiness_pctile = 1.0
+            else
+                happiness_pctile = math.max(0, math.min(1, -stress / 2000000 + 0.5))
+            end
+        end)
+
+        -- Keep only recent emotions (last 20 per unit to bound output size).
+        local recent = {}
+        for i = 1, #emotion_records do
+            local idx = math.max(1, i - 20)
+            if idx <= 20 then
+                table.insert(recent, emotion_records[#emotion_records - idx + 1])
+            end
+        end
+
+        table.insert(result, {
+            id            = u.id,
+            stress        = stress,
+            happiness_pctile = math.floor(happiness_pctile * 1000) / 1000,
+            emotions      = recent,
+            n_emotions    = #emotion_records,
+        })
+
+        ::continue_emotions::
+    end
+
+    return result
+end
+
 return bridge

@@ -1066,3 +1066,223 @@ def needs_summary(needs_list):
         "mean_severity": round(sum(severities) / len(severities), 4),
         "max_severity": round(max(severities), 4),
     }
+
+
+# ===========================================================================
+# Thoughts / emotions / happiness — DF 53.15 verified via
+# hack/scripts/add-thought.lua, fillneeds.lua, remove-stress.lua,
+# emigration.lua, idle-crafting.lua which access:
+#   unit.status.current_soul.personality.emotions → vector of mood records
+#   mood.type → df.emotion_type enum (Negative_DistastefulThought, etc.)
+#   mood.strength → 1=Slight, 2=Moderate, 5=Strong, 10=Intense
+#   mood.thought → df.unit_thought_type enum (BadDream, NeedsUnfulfilled, …)
+#   mood.severity → raw severity integer
+#   personality.stress → int (negative=very happy, positive=very stressed)
+# ===========================================================================
+
+HAPPINESS_STRESS_SCALE = 2000000  # stress range: -1000000…+1000000 maps to 0…1 via −stress/scale + 0.5
+
+EMOTION_STRENGTH_LABELS = {
+    1: "Slight",
+    2: "Moderate",
+    3: "Moderate",
+    4: "Strong",
+    5: "Strong",
+    6: "Strong",
+    7: "Intense",
+    8: "Intense",
+    9: "Intense",
+    10: "Intense",
+}
+
+KNOWN_EMOTION_TYPES = [
+    "Negative_DistastefulThought",
+    "Negative_MeaningfulEvent",
+    "Negative_NeedsUnfulfilled",
+    "Negative_ThreateningCreatureEncounters",
+    "Negative_SadMemory",
+    "Negative_AwkwardConversation",
+    "Neutral_BelongingsAppreciation",
+    "Neutral_FineFoodAndDrink",
+    "Positive_FineFoodAndDrink",
+    "Positive_MeaningfulEvent",
+    "Positive_PleasantConversation",
+    "Positive_ThoughtOfHome",
+]
+
+EMOTION_CATEGORIES = {
+    "Negative_DistastefulThought": "negative",
+    "Negative_MeaningfulEvent": "negative",
+    "Negative_NeedsUnfulfilled": "negative",
+    "Negative_ThreateningCreatureEncounters": "negative",
+    "Negative_SadMemory": "negative",
+    "Negative_AwkwardConversation": "negative",
+    "Neutral_BelongingsAppreciation": "neutral",
+    "Neutral_FineFoodAndDrink": "neutral",
+    "Positive_FineFoodAndDrink": "positive",
+    "Positive_MeaningfulEvent": "positive",
+    "Positive_PleasantConversation": "positive",
+    "Positive_ThoughtOfHome": "positive",
+}
+
+THOUGHT_SCHEMA_KEYS = [
+    "id", "stress", "happiness_pctile", "emotions", "n_emotions",
+]
+
+
+def emotion_strength_label(strength):
+    """Map a numerical emotion strength to its label."""
+    if strength == 1:
+        return EMOTION_STRENGTH_LABELS[1]
+    if strength <= 2:
+        return EMOTION_STRENGTH_LABELS[2]
+    if strength == 3:
+        return EMOTION_STRENGTH_LABELS[3]
+    if strength <= 6:
+        return EMOTION_STRENGTH_LABELS[5]
+    return "Intense"
+
+
+def emotion_category(emotion_type_name):
+    """Return 'positive', 'negative', or 'neutral' for an emotion type label."""
+    cat = EMOTION_CATEGORIES.get(emotion_type_name)
+    if cat:
+        return cat
+    if emotion_type_name and emotion_type_name.startswith("Negative"):
+        return "negative"
+    if emotion_type_name and emotion_type_name.startswith("Positive"):
+        return "positive"
+    return "neutral"
+
+
+def unit_happiness_rating(emotion_record):
+    """Classify a unit's happiness into a qualitative tier.
+
+    Uses the happiness_pctile field from bridge/thought_emotions().
+    Returns one of: 'depressed', 'miserable', 'okay', 'happy', 'ecstatic'.
+    """
+    pctile = emotion_record.get("happiness_pctile", 0.5)
+    if isinstance(pctile, (int, float)) is False:
+        return "okay"
+    if pctile < 0.2:
+        return "depressed"
+    if pctile < 0.4:
+        return "miserable"
+    if pctile < 0.6:
+        return "okay"
+    if pctile < 0.8:
+        return "happy"
+    return "ecstatic"
+
+
+def probe_thought_emotions(timeout=30):
+    """Call bridge.thought_emotions() via DFHack and return parsed snapshot.
+
+    Returns a list of unit dicts each with {id, stress, happiness_pctile,
+    emotions: [{type, strength, thought, severity}], n_emotions}, or None."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').thought_emotions()", timeout=timeout)
+        if not isinstance(result, list):
+            return None
+        for u in result:
+            if "id" not in u:
+                return None
+        return result
+    except Exception:
+        return None
+
+
+def units_by_happiness(emotions_list):
+    """Return dict mapping happiness tier → list of records."""
+    buckets: dict[str, list] = {
+        "depressed": [],
+        "miserable": [],
+        "okay": [],
+        "happy": [],
+        "ecstatic": [],
+    }
+    for rec in emotions_list:
+        tier = unit_happiness_rating(rec)
+        buckets[tier].append(rec)
+    return dict(buckets)
+
+
+def most_stressed_unit(emotions_list):
+    """Return the unit record with the highest (most positive) stress value, or None."""
+    if not emotions_list:
+        return None
+    return max(emotions_list, key=lambda r: r.get("stress", 0))
+
+
+def happiest_unit(emotions_list):
+    """Return the unit record with the lowest (most negative) stress value, or None."""
+    if not emotions_list:
+        return None
+    return min(emotions_list, key=lambda r: r.get("stress", 0))
+
+
+def mean_happiness(emotions_list):
+    """Return the arithmetic mean of happiness_pctile across records.
+
+    Returns 0.5 for an empty list."""
+    if not emotions_list:
+        return 0.5
+    pctiles = [r.get("happiness_pctile", 0.5) for r in emotions_list]
+    return round(sum(pctiles) / len(pctiles), 4)
+
+
+def unhappy_faction_count(emotions_list, threshold=0.4):
+    """Count units whose happiness_pctile is below *threshold*.
+
+    Default threshold (0.4) corresponds to 'depressed'/'miserable' tiers."""
+    if not emotions_list:
+        return 0
+    return sum(1 for r in emotions_list if r.get("happiness_pctile", 0.5) < threshold)
+
+
+def dominant_emotion_type(emotions_list):
+    """Return the most common emotion type across all units, or None."""
+    type_counts: dict[str, int] = {}
+    for rec in emotions_list:
+        for em in rec.get("emotions", []):
+            t = em.get("type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+    if not type_counts:
+        return None
+    return max(type_counts, key=lambda k: type_counts[k])
+
+
+def emotions_summary(emotions_list):
+    """Compute a compact summary dict from a thought/emotion probe result.
+
+    Returns keys: total_units, mean_happiness, most_stressed_id, happiest_id,
+    unhappy_count, dominant_emotion, emotion_type_breakdown."""
+    if not emotions_list:
+        return {
+            "total_units": 0,
+            "mean_happiness": 0.5,
+            "most_stressed_id": None,
+            "happiest_id": None,
+            "unhappy_count": 0,
+            "dominant_emotion": None,
+            "emotion_type_breakdown": {},
+        }
+
+    type_counts: dict[str, int] = {}
+    for rec in emotions_list:
+        for em in rec.get("emotions", []):
+            t = em.get("type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+    most_stressed = most_stressed_unit(emotions_list)
+    happiest = happiest_unit(emotions_list)
+
+    return {
+        "total_units": len(emotions_list),
+        "mean_happiness": mean_happiness(emotions_list),
+        "most_stressed_id": most_stressed.get("id") if most_stressed else None,
+        "happiest_id": happiest.get("id") if happiest else None,
+        "unhappy_count": unhappy_faction_count(emotions_list),
+        "dominant_emotion": max(type_counts, key=lambda k: type_counts[k]) if type_counts else None,
+        "emotion_type_breakdown": type_counts,
+    }
