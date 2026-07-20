@@ -4,6 +4,7 @@
 ---
 ---
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -19,6 +20,7 @@
 - [Job Categorization and Unit Needs Heuristics](dfhack/mechanics-jobs-and-units.md)
 - [Tile Material Resolution and Geology](dfhack/mechanics-tile-materials.md)
 - [Unit, Job, Item, and Skill Mechanics](dfhack/mechanics-units-jobs-items.md)
+- [CLI Lua Execution and RPC Limitations](dfhack/mechanics-cli-lua-execution.md)
 ---
 
 ---
