@@ -40,6 +40,8 @@ from bridge.probe import (
     map_dimensions, tile_material_counts,
     walkable_tile_fraction, liquid_tile_fraction, floor_tile_fraction,
     tile_summary, dominant_material, TILE_MAP_SCHEMA_KEYS, TILE_SAMPLE_LIMIT,
+    SKILL_RANK_LABELS, skill_rank_label, skill_rank_tier,
+    highest_skill_rating, average_skill_rating, mastery_fraction, top_skills,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -1081,7 +1083,7 @@ class TestDiskCheckpoint:
     def test_load_nonexistent_raises(self):
         try:
             EpisodeRunner.load_checkpoint("/tmp/does_not_exist_bonsai.json")
-            assert False, "Expected FileNotFoundError"
+            raise AssertionError("Expected FileNotFoundError")
         except FileNotFoundError:
             pass
 
@@ -1257,7 +1259,7 @@ class TestSkillChainReset:
             {"killed": False, "civ_id": i} for i in range(4)
         ]}
         chain._reset()
-        a2 = chain(warm2)
+        _ = chain(warm2)
 
         # After reset, baseline captures alive count for comparison.
         assert skill._prev_alive == 4
@@ -1305,7 +1307,7 @@ class TestRunnerMultiple:
         r2 = EpisodeRunner(max_steps=20, action_budget=12)
         b = r2.run_multiple(baseline_policy, num_runs=4, seed_start=100)
 
-        for m1, m2 in zip(a, b):
+        for m1, m2 in zip(a, b, strict=False):
             assert m1["seed"] == m2["seed"]
             assert m1["outcome"] == m2["outcome"]
             assert m1["survivors"] == m2["survivors"]
@@ -1471,10 +1473,8 @@ class TestTimeProbeHelper:
     def test_days_elapsed_30_day_survival(self):
         from bridge.probe import TICKS_PER_DAY
         # Start at end of season 0, advance to day 30 in season 1.
-        total = (1 * 361 + 30) * TICKS_PER_DAY
-        d = days_elapsed(0, 1, _ := 30 * TICKS_PER_DAY)
-        # Just verify the partial computation is correct for season 1
-        assert d == (0 * 4 + 1) * 361 // 1 + 30
+        d = days_elapsed(0, 1, 30 * TICKS_PER_DAY)
+        assert d == (0 * 4 + 1) * 361 + 30
 
     def test_days_elapsed_zero(self):
         assert days_elapsed(0, 0, 0) == 0
@@ -2617,6 +2617,57 @@ class TestTileMapObservation:
     def test_sample_limit_is_256(self):
         assert TILE_SAMPLE_LIMIT == 256
 
+class TestSkillRanking:
+    def test_skill_rank_label_basic(self):
+        assert skill_rank_label(0) == "Dabbling"
+        assert skill_rank_label(7) == "Adept"
+        assert skill_rank_label(14) == "Grand Master"
+        assert skill_rank_label(20) == "Legendary"
+        assert skill_rank_label(-1) is None
+
+    def test_skill_rank_tier(self):
+        assert skill_rank_tier(0) == "novice"
+        assert skill_rank_tier(4) == "competent"
+        assert skill_rank_tier(7) == "skilled"
+        assert skill_rank_tier(12) == "master"
+        assert skill_rank_tier(15) == "legendary"
+        assert skill_rank_tier(-1) == "unlearned"
+
+    def test_highest_skill_rating(self):
+        skills = [{"rating": 3}, {"rating": 7}]
+        assert highest_skill_rating(skills) == 7
+        assert highest_skill_rating([]) == -1
+
+    def test_average_skill_rating(self):
+        skills = [{"rating": 4}, {"rating": 8}]
+        assert average_skill_rating(skills) == 6.0
+        assert average_skill_rating([]) == 0.0
+        unlearned = [{"rating": -1}]
+        assert average_skill_rating(unlearned) == 0.0
+
+    def test_mastery_fraction(self):
+        units = [
+            {"skills": [{"rating": 10}, {"rating": 5}]},
+            {"skills": [{"rating": 3}]},
+        ]
+        assert mastery_fraction(units) == 1 / 3
+        assert mastery_fraction([]) == 0.0
+
+    def test_top_skills(self):
+        units = [
+            {"id": "u1", "skills": [{"rating": 8, "id": 0}]},
+            {"id": "u2", "skills": [{"rating": 3, "id": 1}]},
+        ]
+        top = top_skills(units, n=1)
+        assert len(top) == 1
+        assert top[0]["rating"] == 8
+
+    def test_skill_rank_labels_tuple(self):
+        assert len(SKILL_RANK_LABELS) == 15
+        assert SKILL_RANK_LABELS[0] == "Dabbling"
+        assert SKILL_RANK_LABELS[-1] == "Grand Master"
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -2625,25 +2676,25 @@ if __name__ == "__main__":
     passed = 0
 
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
-                     TestBaselinePolicy, TestIntegrationStubEpisode,
-                     TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
-                     TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
-                     TestSkillChainPlayer, TestPublicEvaluator,
-                     TestTraceDeterminism, TestRunnerEnhancements,
-                     TestCitizenSimulation, TestBenchmarkRunner,
-                     TestValidationTypeSafety, TestEpisodeSerialization,
-                     TestConfidenceIntervals, TestAdvanceValidation,
-                     TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
-                     TestMultiSeedStress, TestCurriculumGradualAndMonitor,
-                     TestSkillChainReset, TestRunnerMultiple,
-                     TestEpisodeLoggerIntegration, TestInferenceLatency,
-                     TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                     TestProfessionLabor, TestTileClassification, TestJobSystem,
-                     TestTileMapLuaContract,
-                     TestUnitNeedsContract, TestBuildingObservation,
-                      TestItemObservation, TestUnitPopulation,
-                      TestDfhackErrorHandling, TestMapFeatures,
-                      TestTileMapObservation]
+                      TestBaselinePolicy, TestIntegrationStubEpisode,
+                      TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
+                      TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
+                      TestSkillChainPlayer, TestPublicEvaluator,
+                      TestTraceDeterminism, TestRunnerEnhancements,
+                      TestCitizenSimulation, TestBenchmarkRunner,
+                      TestValidationTypeSafety, TestEpisodeSerialization,
+                      TestConfidenceIntervals, TestAdvanceValidation,
+                      TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                      TestMultiSeedStress, TestCurriculumGradualAndMonitor,
+                      TestSkillChainReset, TestRunnerMultiple,
+                      TestEpisodeLoggerIntegration, TestInferenceLatency,
+                      TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                      TestProfessionLabor, TestTileClassification, TestJobSystem,
+                      TestTileMapLuaContract,
+                      TestUnitNeedsContract, TestBuildingObservation,
+                       TestItemObservation, TestUnitPopulation,
+                       TestDfhackErrorHandling, TestMapFeatures,
+                       TestTileMapObservation, TestSkillRanking]
 
     for cls in tc_classes:
         inst = cls()

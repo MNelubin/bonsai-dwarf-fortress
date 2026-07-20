@@ -866,3 +866,135 @@ def dominant_material(tiles):
     if not counts:
         return None
     return max(counts, key=counts.get)
+
+
+# ===========================================================================
+# Unit skill levels — DF 53.15 verified via hack/scripts/assign-skills.lua
+# and adv-max-skills.lua which walk unit.status.current_soul.skills as a
+# vector of { id=df.job_skill enum, rating=int } pairs.
+#
+# Rating range: -1 (unlearned) to normally 20 (Legendary + 5).
+# Rank labels assigned by the game for non-negative ratings:
+#   0=Dabbling, 1=Novice, 2=Adequate, 3=Competent, 4=Skilled,
+#   5=Proficient, 6=Talented, 7=Adept, 8=Expert, 9=Professional,
+#   10=Accomplished, 11=Great, 12=Master, 13=High Master,
+#   14=Grand Master, 15+=Legendary
+# ===========================================================================
+
+SKILL_RANK_LABELS = (
+    "Dabbling",      # 0
+    "Novice",        # 1
+    "Adequate",      # 2
+    "Competent",     # 3
+    "Skilled",       # 4
+    "Proficient",    # 5
+    "Talented",      # 6
+    "Adept",         # 7
+    "Expert",        # 8
+    "Professional",  # 9
+    "Accomplished",  # 10
+    "Great",         # 11
+    "Master",        # 12
+    "High Master",   # 13
+    "Grand Master",  # 14
+)
+
+SKILL_RANK_LEGENDARY = 15
+
+
+def skill_rank_label(rating):
+    """Map an integer rating to the human-readable rank label.
+
+    Returns ``None`` for unlearned skills (rating < 0).  Ratings >= 15
+    are all "Legendary" (+n suffix omitted for compactness)."""
+    if rating is None or rating < 0:
+        return None
+    if rating < len(SKILL_RANK_LABELS):
+        return SKILL_RANK_LABELS[rating]
+    return "Legendary"
+
+
+def skill_rank_tier(rating):
+    """Bucket a raw rating into coarse tiers.
+
+    Tiers verified from DF community classification:
+      novice     — ratings [0, 3)   (Dabbling..Adequate)
+      competent  — ratings [3, 6)   (Competent..Skilled)
+      skilled    — ratings [6, 9)   (Proficient..Expert)
+      master     — ratings [9, 15)  (Professional..Grand Master)
+      legendary  — ratings >= 15
+      unlearned  — rating < 0
+
+    This is used by the evaluator to normalize skill investment
+    across different DF job_skill enums.
+    """
+    if rating is None or rating < 0:
+        return "unlearned"
+    if rating < 3:
+        return "novice"
+    if rating < 6:
+        return "competent"
+    if rating < 9:
+        return "skilled"
+    if rating < SKILL_RANK_LEGENDARY:
+        return "master"
+    return "legendary"
+
+
+def highest_skill_rating(unit_skills):
+    """Return the maximum rating across a list of skill records.
+
+    Each record is a dict with a ``rating`` key (int).  Returns -1 if
+    the list is empty."""
+    if not unit_skills:
+        return -1
+    return max((s.get("rating", -1) for s in unit_skills), default=-1)
+
+
+def average_skill_rating(unit_skills):
+    """Return the arithmetic mean of learned skill ratings.
+
+    Only counts skills with rating >= 0 (learned).  Returns 0.0 if
+    no skills are learned."""
+    learned = [s.get("rating", -1) for s in unit_skills]
+    learned = [r for r in learned if r >= 0]
+    if not learned:
+        return 0.0
+    return sum(learned) / len(learned)
+
+
+def mastery_fraction(units):
+    """Fraction of total non-negative skill slots across all units that
+    have reached master tier (rating >= 9).
+
+    Returns a float in [0.0, 1.0].  Units without skills or with only
+    unlearned skills contribute 0 to both numerator and denominator."""
+    total_learned = 0
+    mastered = 0
+    for u in units:
+        for s in u.get("skills", []):
+            r = s.get("rating", -1)
+            if r >= 0:
+                total_learned += 1
+                if r >= 9:
+                    mastered += 1
+    if total_learned == 0:
+        return 0.0
+    return mastered / total_learned
+
+
+def top_skills(units, n=5):
+    """Return the *n* highest-rating skill records across all units.
+
+    Each record is augmented with ``unit_id`` from its parent unit.
+    Returns list of dicts sorted descending by rating."""
+    flat = []
+    for u in units:
+        uid = u.get("id")
+        for s in u.get("skills", []):
+            if s.get("rating", -1) >= 0:
+                rec = dict(s)
+                rec["unit_id"] = uid
+                flat.append(rec)
+    flat.sort(key=lambda x: x.get("rating", 0), reverse=True)
+    return flat[:n]
