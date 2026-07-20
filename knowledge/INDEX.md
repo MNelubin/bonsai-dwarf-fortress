@@ -3,6 +3,7 @@
 ---
 ---
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -17,6 +18,7 @@
 - [Time, Calendar, and State Probes](dfhack/mechanics-time-and-state-probes.md)
 - [Job Categorization and Unit Needs Heuristics](dfhack/mechanics-jobs-and-units.md)
 - [Tile Material Resolution and Geology](dfhack/mechanics-tile-materials.md)
+- [Unit, Job, Item, and Skill Mechanics](dfhack/mechanics-units-jobs-items.md)
 ---
 
 ---
