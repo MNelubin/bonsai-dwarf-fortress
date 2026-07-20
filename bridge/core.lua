@@ -529,4 +529,97 @@ function bridge.building_list()
     return buildings
 end
 
+--- Map features observation — DF 53.15 verified via feature.lua, agitation-rebalance.lua,
+-- deep-embark.lua, export-map.lua, hfs-pit.lua in hack/scripts/.
+-- Key accessors:
+--   df.global.world.features.map_features → vector of all map feature records
+--   feat:isWater(), :isMagma(), :isSubterranean(), :isChasm(), :isUnderworld() → boolean
+--   feat:getName(name)                   → populates string object with display name
+--   feat:getType()                       → df.feature_type enum integer
+--   feat.flags.Discovered                → boolean discovery flag
+function bridge.map_features()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+
+    local features_obj = nil
+    pcall(function()
+        features_obj = df.global.world.features
+    end)
+    if not features_obj then
+        return result
+    end
+
+    local map_features = nil
+    pcall(function()
+        map_features = features_obj.map_features
+    end)
+    if not map_features then
+        return result
+    end
+
+    for i, feat in ipairs(map_features) do
+        local feat_name = ""
+        local ftype_str = "unknown"
+        local is_water = false
+        local is_magma = false
+        local is_subterranean = false
+        local is_chasm = false
+        local is_underworld = false
+        local discovered = false
+
+        pcall(function()
+            local name_buf = df.new("string")
+            feat:getName(name_buf)
+            feat_name = name_buf.value or ""
+            df.delete(name_buf)
+        end)
+
+        pcall(function()
+            ftype_str = tostring(df.feature_type[feat:getType()]) or "unknown"
+        end)
+
+        pcall(function()
+            is_water = feat:isWater() or false
+        end)
+
+        pcall(function()
+            is_magma = feat:isMagma() or false
+        end)
+
+        pcall(function()
+            is_subterranean = feat:isSubterranean() or false
+        end)
+
+        pcall(function()
+            is_chasm = feat:isChasm() or false
+        end)
+
+        pcall(function()
+            is_underworld = feat:isUnderworld() or false
+        end)
+
+        pcall(function()
+            if feat.flags then
+                discovered = feat.flags.Discovered or false
+            end
+        end)
+
+        table.insert(result, {
+            idx          = i - 1,
+            name         = feat_name,
+            type         = ftype_str,
+            water        = is_water,
+            magma        = is_magma,
+            subterranean = is_subterranean,
+            chasm        = is_chasm,
+            underworld   = is_underworld,
+            discovered   = discovered,
+        })
+    end
+
+    return result
+end
+
 return bridge

@@ -34,6 +34,9 @@ from bridge.probe import (
     job_state, job_category, count_jobs_by_state, count_jobs_by_category,
     active_worker_ids, suspicious_jobs,
     JOB_STATE_QUEUED, JOB_STATE_ACTIVE, JOB_STATE_SUSPENDED, JOB_STATE_CANCELLED,
+    MAP_FEATURE_SCHEMA_KEYS, KNOWN_FEATURE_TYPES,
+    water_features, magma_features,
+    discovered_features, feature_categories, hazardous_features,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -2428,6 +2431,79 @@ class TestUnitPopulation:
         assert 3 not in ids
 
 
+class TestMapFeatures:
+    """Tests for the map features observation bridge and helpers."""
+
+    def _sample_features(self):
+        return [
+            {"idx": 0, "name": "Wyr River", "type": "RiverStream",
+             "water": True, "magma": False, "subterranean": False,
+             "chasm": False, "underworld": False, "discovered": True},
+            {"idx": 1, "name": "Volsky", "type": "Volcano",
+             "water": False, "magma": True, "subterranean": False,
+             "chasm": False, "underworld": False, "discovered": False},
+            {"idx": 2, "name": "Dark Passage", "type": "UnderworldChasm",
+             "water": False, "magma": False, "subterranean": True,
+             "chasm": True, "underworld": True, "discovered": True},
+        ]
+
+    def test_map_feature_schema_keys_present(self):
+        for feat in self._sample_features():
+            for key in MAP_FEATURE_SCHEMA_KEYS:
+                assert key in feat, f"Missing schema key: {key}"
+
+    def test_water_features_filter(self):
+        features = self._sample_features()
+        water = water_features(features)
+        assert len(water) == 1
+        assert water[0]["name"] == "Wyr River"
+
+    def test_magma_features_filter(self):
+        features = self._sample_features()
+        magma = magma_features(features)
+        assert len(magma) == 1
+        assert magma[0]["type"] == "Volcano"
+
+    def test_discovered_features_filter(self):
+        features = self._sample_features()
+        disc = discovered_features(features)
+        ids = [f["idx"] for f in disc]
+        assert 0 in ids
+        assert 2 in ids
+        assert 1 not in ids
+
+    def test_feature_categories(self):
+        features = self._sample_features()
+        cats = feature_categories(features)
+        assert len(cats["water"]) == 1
+        assert len(cats["magma"]) == 1
+        assert len(cats["chasm"]) == 1
+        assert len(cats["subterranean"]) == 1
+        assert len(cats["underworld"]) == 1
+
+    def test_hazardous_features(self):
+        features = self._sample_features()
+        haz = hazardous_features(features)
+        ids = [f["idx"] for f in haz]
+        assert 1 in ids   # Volcano (magma)
+        assert 2 in ids   # UnderworldChasm (underworld + chasm)
+        assert 0 not in ids
+
+    def test_empty_features(self):
+        assert water_features([]) == []
+        assert magma_features([]) == []
+        assert discovered_features([]) == []
+        assert hazardous_features([]) == []
+        cats = feature_categories([])
+        for _key, val in cats.items():
+            assert val == []
+
+    def test_known_feature_types_not_empty(self):
+        assert len(KNOWN_FEATURE_TYPES) > 0
+        assert "Volcano" in KNOWN_FEATURE_TYPES
+        assert "RiverStream" in KNOWN_FEATURE_TYPES
+
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -2453,7 +2529,7 @@ if __name__ == "__main__":
                     TestTileMapLuaContract,
                     TestUnitNeedsContract, TestBuildingObservation,
                      TestItemObservation, TestUnitPopulation,
-                     TestDfhackErrorHandling]
+                     TestDfhackErrorHandling, TestMapFeatures]
 
     for cls in tc_classes:
         inst = cls()

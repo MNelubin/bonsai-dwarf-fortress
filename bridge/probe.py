@@ -675,3 +675,79 @@ def nearby_units(units, anchor_x, anchor_y, radius):
         if dist <= radius:
             result.append(u)
     return result
+
+
+# ===========================================================================
+# Map features observation — DF 53.15 verified via bridge/core.lua map_features()
+# df.global.world.features.map_features → vector of all map feature records.
+# Each feature exposes: name, type (df.feature_type enum), boolean flags for
+# water/magma/subterranean/chasm/underworld, and a Discovered flag.
+# ===========================================================================
+
+MAP_FEATURE_SCHEMA_KEYS = [
+    "idx", "name", "type", "water", "magma",
+    "subterranean", "chasm", "underworld", "discovered",
+]
+
+KNOWN_FEATURE_TYPES = [
+    "None", "RiverStream", "OceanLake", "WaterfallCascade",
+    "Volcano", "GeyserHotSpring", "Forest", "MountainRange",
+    "DesertBadland", "SwampMire", "ChasmCanyon", "UnderworldChasm",
+]
+
+
+def map_features_probe():
+    """Call bridge.map_features() via DFHack and return parsed feature list."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').map_features()", timeout=10)
+        if not result.get("ok"):
+            return []
+        data = result.get("data")
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception:
+        return []
+
+
+def water_features(features):
+    """Return map features that are water-based (rivers, oceans, lakes)."""
+    return [f for f in features if f.get("water")]
+
+
+def magma_features(features):
+    """Return map features associated with magma."""
+    return [f for f in features if f.get("magma")]
+
+
+def discovered_features(features):
+    """Return map features that have been discovered by the player."""
+    return [f for f in features if f.get("discovered")]
+
+
+def feature_categories(features):
+    """Group features by their boolean category flags.
+
+    Returns dict with keys: water, magma, subterranean, chasm, underworld,
+    each mapping to list of features in that category."""
+    categories: dict[str, list] = {
+        "water": [],
+        "magma": [],
+        "subterranean": [],
+        "chasm": [],
+        "underworld": [],
+    }
+    for f in features:
+        for key in categories:
+            if f.get(key):
+                categories[key].append(f)
+    return categories
+
+
+def hazardous_features(features):
+    """Return features that are magma or underworld (hazardous zones)."""
+    hazardous = []
+    for f in features:
+        if f.get("magma") or f.get("underworld"):
+            hazardous.append(f)
+    return hazardous
