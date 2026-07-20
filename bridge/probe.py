@@ -751,3 +751,118 @@ def hazardous_features(features):
         if f.get("magma") or f.get("underworld"):
             hazardous.append(f)
     return hazardous
+
+
+# ===========================================================================
+# Tile map observation — DF 53.15 verified via bridge/core.lua tile_map()
+# which calls dfhack.maps.isValidTilePos(), dfhack.maps.getTileType(),
+# df.tiletype.attrs[].material, and df.tiletype.iswalkable().
+# Map uses a block-based grid: each block = 16x16x16 tiles.
+# ===========================================================================
+
+TILE_MAP_SCHEMA_KEYS = [
+    "has_map", "width", "height", "depth",
+    "block_width", "block_height", "block_depth", "tiles",
+]
+
+TILE_SAMPLE_LIMIT = 256
+
+
+def probe_tile_map(timeout=30):
+    """Call bridge.tile_map() via DFHack and return the parsed map snapshot."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').tile_map()", timeout=timeout)
+        if not isinstance(result, dict):
+            return None
+        for key in ("has_map", "width", "height", "tiles"):
+            if key not in result:
+                return None
+        return result
+    except Exception:
+        return None
+
+
+def map_dimensions(tile_map_result):
+    """Return (width, height, depth) from a tile map probe result."""
+    if not isinstance(tile_map_result, dict):
+        return (0, 0, 0)
+    return (
+        int(tile_map_result.get("width", 0)),
+        int(tile_map_result.get("height", 0)),
+        int(tile_map_result.get("depth", 0)),
+    )
+
+
+def tile_material_counts(tiles):
+    """Return a dict mapping material label → count for sampled tiles.
+
+    Parameters:
+        tiles — list of tile dicts as emitted by bridge.tile_map(), each with
+                keys {x, y, z, type, material, walkable}.
+    """
+    counts: dict[str, int] = {}
+    for t in tiles:
+        mat = t.get("material", "unknown") if t else "unknown"
+        counts[mat] = counts.get(mat, 0) + 1
+    return counts
+
+
+def walkable_tile_fraction(tiles):
+    """Return the fraction of sampled tiles that are walkable (0.0–1.0)."""
+    if not tiles:
+        return 0.0
+    walkable_count = sum(1 for t in tiles if t.get("walkable", False))
+    return walkable_count / len(tiles)
+
+
+def liquid_tile_fraction(tiles):
+    """Return the fraction of sampled tiles that are liquid type (>= 1024)."""
+    if not tiles:
+        return 0.0
+    liquid_count = sum(1 for t in tiles if is_liquid_tile(t.get("type", -1)))
+    return liquid_count / len(tiles)
+
+
+def floor_tile_fraction(tiles):
+    """Return the fraction of sampled tiles that are floor type ([256, 511])."""
+    if not tiles:
+        return 0.0
+    floor_count = sum(1 for t in tiles if is_floor_tile(t.get("type", -1)))
+    return floor_count / len(tiles)
+
+
+def tile_summary(tile_map_result):
+    """Compute a compact summary dict from a tile map probe result.
+
+    Returns keys: has_map, dimensions, total_sampled, walkable_pct,
+    liquid_pct, floor_pct, material_breakdown."""
+    if not isinstance(tile_map_result, dict):
+        return {
+            "has_map": False,
+            "dimensions": (0, 0, 0),
+            "total_sampled": 0,
+            "walkable_pct": 0.0,
+            "liquid_pct": 0.0,
+            "floor_pct": 0.0,
+            "material_breakdown": {},
+        }
+    tiles = tile_map_result.get("tiles", [])
+    return {
+        "has_map": bool(tile_map_result.get("has_map")),
+        "dimensions": map_dimensions(tile_map_result),
+        "total_sampled": len(tiles),
+        "walkable_pct": round(walkable_tile_fraction(tiles), 4),
+        "liquid_pct": round(liquid_tile_fraction(tiles), 4),
+        "floor_pct": round(floor_tile_fraction(tiles), 4),
+        "material_breakdown": tile_material_counts(tiles),
+    }
+
+
+def dominant_material(tiles):
+    """Return the most common material label among sampled tiles."""
+    if not tiles:
+        return None
+    counts = tile_material_counts(tiles)
+    if not counts:
+        return None
+    return max(counts, key=counts.get)

@@ -37,6 +37,9 @@ from bridge.probe import (
     MAP_FEATURE_SCHEMA_KEYS, KNOWN_FEATURE_TYPES,
     water_features, magma_features,
     discovered_features, feature_categories, hazardous_features,
+    map_dimensions, tile_material_counts,
+    walkable_tile_fraction, liquid_tile_fraction, floor_tile_fraction,
+    tile_summary, dominant_material, TILE_MAP_SCHEMA_KEYS, TILE_SAMPLE_LIMIT,
 )
 from game_runner.episode import EpisodeRunner, evaluate_multiple_runs, _simulate_citizens
 from player.baseline import baseline_policy, evaluate_episode, TICKS_PER_DAY
@@ -2504,6 +2507,116 @@ class TestMapFeatures:
         assert "RiverStream" in KNOWN_FEATURE_TYPES
 
 
+class TestTileMapObservation:
+    """Deterministic tests for tile map observation helpers.
+
+    The probe_tile_map() function calls bridge.tile_map() via DFHack at runtime.
+    These tests are pure-Python and exercise the shape of the returned data using
+    synthetic tile dicts that mirror bridge/core.lua output.
+    """
+
+    def _sample_tiles(self, n=10):
+        return [
+            {"x": i % 4, "y": i // 4, "z": 0,
+             "type": 256 + (i % 3),  # floor range [256..511]
+             "material": "STONE" if i < 7 else "SOIL",
+             "walkable": i < 8}
+            for i in range(n)
+        ]
+
+    def test_map_dimensions_basic(self):
+        data = {"has_map": True, "width": 64, "height": 64, "depth": 25}
+        w, h, d = map_dimensions(data)
+        assert (w, h, d) == (64, 64, 25)
+
+    def test_map_dimensions_none_input(self):
+        assert map_dimensions(None) == (0, 0, 0)
+        assert map_dimensions({}) == (0, 0, 0)
+
+    def test_tile_material_counts(self):
+        tiles = self._sample_tiles(10)
+        counts = tile_material_counts(tiles)
+        assert counts["STONE"] == 7
+        assert counts["SOIL"] == 3
+
+    def test_tile_material_counts_empty(self):
+        assert tile_material_counts([]) == {}
+
+    def test_tile_material_counts_with_none_tile(self):
+        tiles = [None, {"material": "STONE"}]
+        counts = tile_material_counts(tiles)
+        # None → "unknown", the second is "STONE".
+        assert counts["unknown"] == 1
+        assert counts["STONE"] == 1
+
+    def test_walkable_fraction(self):
+        tiles = self._sample_tiles(10)
+        ratio = walkable_tile_fraction(tiles)
+        assert ratio == 0.8
+
+    def test_walkable_fraction_empty(self):
+        assert walkable_tile_fraction([]) == 0.0
+
+    def test_liquid_fraction(self):
+        tiles = [
+            {"x": 0, "y": 0, "z": 0, "type": 1100, "material": "AIR", "walkable": False},
+            {"x": 1, "y": 0, "z": 0, "type": 200, "material": "STONE", "walkable": True},
+        ]
+        assert liquid_tile_fraction(tiles) == 0.5
+
+    def test_floor_fraction(self):
+        tiles = [
+            {"x": 0, "y": 0, "z": 0, "type": 300, "material": "STONE", "walkable": True},
+            {"x": 1, "y": 0, "z": 0, "type": 350, "material": "STONE", "walkable": True},
+            {"x": 2, "y": 0, "z": 0, "type": 400, "material": "STONE", "walkable": True},
+        ]
+        assert floor_tile_fraction(tiles) == 1.0
+
+    def test_dominant_material(self):
+        tiles = self._sample_tiles(10)
+        assert dominant_material(tiles) == "STONE"
+
+    def test_dominant_material_empty(self):
+        assert dominant_material([]) is None
+
+    def test_dominant_material_tie(self):
+        tiles = [
+            {"x": 0, "y": 0, "z": 0, "type": 100, "material": "STONE", "walkable": True},
+            {"x": 1, "y": 0, "z": 0, "type": 100, "material": "SOIL", "walkable": True},
+        ]
+        # Both have count 1; max will return one of them.
+        result = dominant_material(tiles)
+        assert result in ("STONE", "SOIL")
+
+    def test_tile_summary_valid(self):
+        tiles = self._sample_tiles(8)
+        data = {
+            "has_map": True, "width": 16, "height": 16, "depth": 5,
+            "block_width": 2, "block_height": 2, "block_depth": 1,
+            "tiles": tiles,
+        }
+        summary = tile_summary(data)
+        assert summary["has_map"] is True
+        assert summary["dimensions"] == (16, 16, 5)
+        assert summary["total_sampled"] == 8
+        assert 0.0 <= summary["walkable_pct"] <= 1.0
+        assert isinstance(summary["material_breakdown"], dict)
+
+    def test_tile_summary_none(self):
+        summary = tile_summary(None)
+        assert summary["has_map"] is False
+        assert summary["dimensions"] == (0, 0, 0)
+        assert summary["total_sampled"] == 0
+
+    def test_schema_keys_defined(self):
+        for key in TILE_MAP_SCHEMA_KEYS:
+            assert isinstance(key, str)
+        assert "has_map" in TILE_MAP_SCHEMA_KEYS
+        assert "tiles" in TILE_MAP_SCHEMA_KEYS
+
+    def test_sample_limit_is_256(self):
+        assert TILE_SAMPLE_LIMIT == 256
+
 if __name__ == "__main__":
 
     """Run all tests without pytest — portable to bare Python 3.13."""
@@ -2512,24 +2625,25 @@ if __name__ == "__main__":
     passed = 0
 
     tc_classes = [TestContractSchema, TestValidationHelpers, TestEpisodeRunner,
-                    TestBaselinePolicy, TestIntegrationStubEpisode,
-                    TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
-                    TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
-                    TestSkillChainPlayer, TestPublicEvaluator,
-                    TestTraceDeterminism, TestRunnerEnhancements,
-                    TestCitizenSimulation, TestBenchmarkRunner,
-                    TestValidationTypeSafety, TestEpisodeSerialization,
-                    TestConfidenceIntervals, TestAdvanceValidation,
-                    TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
-                    TestMultiSeedStress, TestCurriculumGradualAndMonitor,
-                    TestSkillChainReset, TestRunnerMultiple,
-                    TestEpisodeLoggerIntegration, TestInferenceLatency,
-                    TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
-                    TestProfessionLabor, TestTileClassification, TestJobSystem,
-                    TestTileMapLuaContract,
-                    TestUnitNeedsContract, TestBuildingObservation,
-                     TestItemObservation, TestUnitPopulation,
-                     TestDfhackErrorHandling, TestMapFeatures]
+                     TestBaselinePolicy, TestIntegrationStubEpisode,
+                     TestEvolvingTicks, TestMultiRunEvaluator, TestSkills,
+                     TestCPUPolicy, TestBenchmarkCPUBaseline, TestCurricula,
+                     TestSkillChainPlayer, TestPublicEvaluator,
+                     TestTraceDeterminism, TestRunnerEnhancements,
+                     TestCitizenSimulation, TestBenchmarkRunner,
+                     TestValidationTypeSafety, TestEpisodeSerialization,
+                     TestConfidenceIntervals, TestAdvanceValidation,
+                     TestDiskCheckpoint, TestGradualAdvance, TestResourceMonitor,
+                     TestMultiSeedStress, TestCurriculumGradualAndMonitor,
+                     TestSkillChainReset, TestRunnerMultiple,
+                     TestEpisodeLoggerIntegration, TestInferenceLatency,
+                     TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
+                     TestProfessionLabor, TestTileClassification, TestJobSystem,
+                     TestTileMapLuaContract,
+                     TestUnitNeedsContract, TestBuildingObservation,
+                      TestItemObservation, TestUnitPopulation,
+                      TestDfhackErrorHandling, TestMapFeatures,
+                      TestTileMapObservation]
 
     for cls in tc_classes:
         inst = cls()
