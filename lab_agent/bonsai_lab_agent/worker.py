@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.metadata
 import json
@@ -182,7 +183,7 @@ def working_tree_paths(repo: Path) -> set[str]:
         paths.update(
             line
             for line in subprocess.check_output(command, text=True).splitlines()
-            if line
+            if line and line not in GENERATED_RUNTIME_PATHS
         )
     return paths
 
@@ -190,6 +191,74 @@ def working_tree_paths(repo: Path) -> set[str]:
 def serializable_working_tree_paths(repo: Path) -> list[str]:
     """Return stable JSON-safe paths for prompts and API payloads."""
     return sorted(working_tree_paths(repo))
+
+
+GENERATED_RUNTIME_PATHS = frozenset(
+    {"errorlog.txt", "gamelog.txt", "stderr.log", "stdout.log"}
+)
+DF_RUNTIME_ROOT = Path("/srv/df-bonsai")
+
+
+def cleanup_generated_runtime_files(repo: Path) -> list[str]:
+    """Remove only untracked DF logs generated in an agent repository."""
+    removed: list[str] = []
+    for relative in sorted(GENERATED_RUNTIME_PATHS):
+        target = repo / relative
+        if not target.is_file() or target.is_symlink():
+            continue
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", relative],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if tracked:
+            continue
+        target.unlink()
+        removed.append(relative)
+    return removed
+
+
+def df_runtime_process_ids(
+    proc_root: Path = Path("/proc"),
+    runtime_root: Path = DF_RUNTIME_ROOT,
+) -> set[int]:
+    """Return exact dwarfort executables rooted under the managed DF installation."""
+    result: set[int] = set()
+    root_text = runtime_root.resolve().as_posix().rstrip("/") + "/"
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return result
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = Path(os.readlink(entry / "exe"))
+        except (FileNotFoundError, OSError, PermissionError):
+            continue
+        if executable.name == "dwarfort" and executable.as_posix().startswith(root_text):
+            result.add(int(entry.name))
+    return result
+
+
+def reap_df_probe_processes(grace_seconds: float = 2.0) -> dict[str, Any]:
+    """Terminate leaked DF probe executables, escalating to SIGKILL when required."""
+    targets = sorted(df_runtime_process_ids() - {os.getpid()})
+    for pid in targets:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGTERM)
+    if targets:
+        time.sleep(grace_seconds)
+    survivors: list[int] = []
+    for pid in targets:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        survivors.append(pid)
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    return {"targets": targets, "sigkill": survivors}
 
 
 WIP_AUTO_PATHS = (
@@ -536,16 +605,9 @@ def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
 
 
 def trace_has_live_game_probe(trace_path: Path) -> bool:
-    """Require an actual bounded interaction with the installed DF runtime."""
+    """Require a completed trusted-wrapper result, not merely a launched command."""
     if not trace_path.is_file():
         return False
-    execution_markers = (
-        "dfhack-run",
-        "dwarfort",
-        "dwarf_fortress",
-        "probe_dfhack",
-        "bridge/probe.py",
-    )
     for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
@@ -556,10 +618,25 @@ def trace_has_live_game_probe(trace_path: Path) -> bool:
         part = event.get("part") or {}
         if part.get("tool") != "bash":
             continue
-        tool_input = ((part.get("state") or {}).get("input") or {})
+        state = part.get("state") or {}
+        if state.get("status") != "completed":
+            continue
+        tool_input = state.get("input") or {}
         command = " ".join(str(value) for value in tool_input.values()).lower()
-        if "timeout " in command and any(marker in command for marker in execution_markers):
-            return True
+        if "bonsai-df-probe" not in command:
+            continue
+        output = str((state.get("metadata") or {}).get("output") or state.get("output") or "")
+        for output_line in output.splitlines():
+            if not output_line.startswith("BONSAI_PROBE_RESULT "):
+                continue
+            try:
+                result = json.loads(output_line.removeprefix("BONSAI_PROBE_RESULT "))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(result.get("exit"), int) and isinstance(
+                result.get("timed_out"), bool
+            ):
+                return True
     return False
 
 
@@ -846,6 +923,12 @@ def has_public_test_change(repo: Path) -> bool:
     )
 
 
+def has_executable_candidate_change(repo: Path) -> bool:
+    """Return true only when a coding candidate changes an implementation area."""
+    implementation_roots = ("bridge/", "game_runner/", "player/", "skills/", "curricula/")
+    return any(path.startswith(implementation_roots) for path in working_tree_paths(repo))
+
+
 def normalize_commit_description(payload: dict[str, Any], job_type: str) -> tuple[str, str]:
     """Validate model-authored commit prose and provide deterministic fallbacks."""
     raw_title = str(payload.get("title") or "").replace("\r", " ").replace("\n", " ")
@@ -1047,12 +1130,12 @@ Research trace:
             try:
                 raw = future.result(timeout=25)
                 break
-            except FutureTimeout:
+            except FutureTimeout as exc:
                 elapsed = round(time.monotonic() - started)
                 if elapsed > config.harness_timeout:
                     raise TimeoutError(
                         f"structured synthesis exceeded {config.harness_timeout} seconds"
-                    )
+                    ) from exc
                 progress = {
                     "phase": "discovery_structured_synthesis",
                     "model": config.model,
@@ -1247,8 +1330,10 @@ data, or another observable subsystem. Spend at most two calls reading existing 
 three investigative calls must target actual files or processes under /srv/df-bonsai/current or the
 live DF runtime, not this repository.
 
-Run at least one bounded executable probe with `timeout` against a real DF/DFHack entry point, script,
-raw, save, or runtime API. Capture exact stdout/stderr/exit status and extract actual field names,
+Run at least one bounded executable probe through the trusted wrapper, for example:
+`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run status`.
+Never execute `dwarfort` or `dfhack-run` directly or through shell `timeout`; the game ignores SIGTERM
+and leaked earlier probes. Capture the wrapper's BONSAI_PROBE_RESULT, stdout/stderr, and extract field names,
 enum values, IDs, coordinates, ticks, or state transitions. If a game launch is blocked, the failed
 command and its precise blocker are evidence, but `ls`, `file`, or rereading VERSIONS.txt alone are not.
 
@@ -1267,6 +1352,8 @@ them. Use at most 4 external discovery calls before the first write/edit.
 
 Prefer executable progress over abstractions: run one bounded probe against the real installed game,
 then turn its observed fields or failure mode into the smallest reusable bridge/probe/runner change.
+All real-runtime commands must use `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe`; never launch
+`dwarfort`, `dfhack-run`, or a shell `timeout` around them directly.
 If the previous candidate was rejected, repair its exact promotion error before starting new work.
 Do not satisfy the cycle with documentation alone. You MUST modify executable implementation, add or
 update a deterministic test under tests/ or evaluator_public/, and run it. Do not change knowledge/
@@ -1306,6 +1393,8 @@ Execution discipline is mandatory:
    extensions such as .lua, .txt, .md, .json, .proto, .py, or .rst. Never use cat/head on an
    executable, shared object, archive, image, database, or extensionless unknown file.
 3. Check `git status --short` before finishing and summarize exact files and verification evidence.
+4. Treat a running/high-CPU process as a timeout, not successful evidence. Only the wrapper's terminal
+   `BONSAI_PROBE_RESULT` proves a bounded probe completed.
 """.strip()
 
     started = time.monotonic()
@@ -1359,6 +1448,21 @@ Execution discipline is mandatory:
                     + "\n"
                 )
                 trace.flush()
+            pre_reap = reap_df_probe_processes()
+            pre_removed = cleanup_generated_runtime_files(repo)
+            trace.write(
+                json.dumps(
+                    {
+                        "type": "runtime_cleanup",
+                        "phase": phase,
+                        "when": "before",
+                        "processes": pre_reap,
+                        "removed_files": pre_removed,
+                    }
+                )
+                + "\n"
+            )
+            trace.flush()
             process = subprocess.Popen(
                 command,
                 cwd=repo,
@@ -1416,6 +1520,21 @@ Execution discipline is mandatory:
                 return_code = process.returncode
             finally:
                 stop_process_group(process)
+                post_reap = reap_df_probe_processes()
+                post_removed = cleanup_generated_runtime_files(repo)
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "runtime_cleanup",
+                            "phase": phase,
+                            "when": "after",
+                            "processes": post_reap,
+                            "removed_files": post_removed,
+                        }
+                    )
+                    + "\n"
+                )
+                trace.flush()
         if budget_exhausted:
             with trace_path.open("a", encoding="utf-8") as trace:
                 trace.write(
@@ -1455,8 +1574,9 @@ research. The deterministic checkpoint below is the complete handoff from the pr
 
 Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
 
-Your first tool call must use `timeout` with an installed runtime entry point under /srv/df-bonsai/current
-(dfhack-run, dwarfort, or the repository's real bridge probe). Preserve the exact command, exit status,
+Your first tool call must use the trusted wrapper exactly in this form:
+`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run <command>`.
+Do not invoke `dwarfort`, `dfhack-run`, or shell `timeout` directly. Preserve BONSAI_PROBE_RESULT,
 stdout/stderr, and any concrete fields or blocker. In coding mode, leave useful evidence in the working
 tree only when it directly supports executable implementation. Do not commit.
 """.strip()
@@ -1514,6 +1634,7 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
                 continuation_phase,
                 append=True,
                 max_tool_uses=config.coding_tool_budget,
+                phase_timeout=min(240, config.phase_timeout),
                 implementation_only=True,
             )
             if (
@@ -1522,6 +1643,13 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
                 and not trace_ended_with_degenerate_stop(trace_path)
             ):
                 break
+
+    cleanup_generated_runtime_files(repo)
+    if not discovery_mode and not has_executable_candidate_change(repo):
+        save_checkpoint(last_phase, "terminal_no_implementation")
+        raise RuntimeError(
+            "coding cycle produced no executable implementation change after bounded phases"
+        )
 
     if not discovery_mode and working_tree_paths(repo):
         validation = validate_coding_candidate(repo)
@@ -1677,8 +1805,12 @@ def main() -> None:
     config.runs_dir.mkdir(parents=True, exist_ok=True)
     config.outbox_dir.mkdir(parents=True, exist_ok=True)
     config.wip_dir.mkdir(parents=True, exist_ok=True)
+    startup_reap = reap_df_probe_processes()
     api = Api(config)
-    print(f"Bonsai lab agent started with {config.model}", flush=True)
+    print(
+        f"Bonsai lab agent started with {config.model}; runtime_cleanup={startup_reap}",
+        flush=True,
+    )
     while True:
         job: dict[str, Any] | None = None
         try:
@@ -1694,6 +1826,9 @@ def main() -> None:
             api.worker_heartbeat("idle", details={"last_job_id": str(job["id"])})
             print(f"completed job {job['id']} artifacts={len(artifacts)}", flush=True)
         except Exception as exc:
+            emergency_reap = reap_df_probe_processes()
+            if emergency_reap["targets"]:
+                print(f"reaped DF probes after worker exception: {emergency_reap}", flush=True)
             print(f"job failed: {exc}", flush=True)
             if job is not None and OBJECTIVE_ID.fullmatch(str(job.get("objective_id") or "")):
                 run_repositories = sorted(

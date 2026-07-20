@@ -1,60 +1,78 @@
 # CLI Lua Execution and RPC Limitations
 
-## Overview
-This note documents the observed execution models for interacting with Dwarf Fortress (v53.15) via DFHack (v53.15-r2) in the DF-Bonsai environment. It highlights a critical divergence between the Remote Procedure Call (RPC) interface and direct Command Line Interface (CLI) invocation.
+## Scope
 
-## Observed Execution Models
+This note records observed behavior for Dwarf Fortress 53.15 with DFHack 53.15-r2 in the
+DF-Bonsai LXC. It supersedes the earlier claim that a high-CPU `dwarfort -- lua -e` process
+proved successful Lua execution.
 
-### 1. RPC Interface Limitations [VERIFIED]
-The standard DFHack remote client interface appears to reject direct Lua script execution commands when passed as arguments to the `lua` command within the RPC stream.
+## RPC command behavior [VERIFIED]
 
-* **Evidence**: The file `/srv/df-bonsai/current/stderr.log` contains repeated entries indicating command rejection:
-  ```text
-  lua local json=require('data-JSON');local g=df.global;... is not a recognized command.
-  Shutting down client connection.
-  ```
-* **Implication**: Agents relying on the standard `dfhack-run` or RPC bridge to execute arbitrary Lua snippets for state probing (e.g., checking `df.global.world`) will fail. The RPC interface likely expects specific DFHack commands rather than raw Lua code injection via the `lua` keyword in this context.
+Passing an arbitrary `lua <code>` string to the existing `dfhack-run` RPC client was rejected.
 
-### 2. Direct CLI Invocation [VERIFIED]
-The binary `./dwarfort` supports direct Lua execution via the `-- lua -e "..."` syntax, bypassing the RPC layer entirely.
+Observed stderr:
 
-* **Evidence**: Process listing (`ps aux`) shows active processes utilizing this pattern:
-  ```bash
-  ./dwarfort -- lua -e "local items = df.item_type; ..."
-  ./dwarfort -- lua -e local jt = df.job_type; ...
-  ```
-* **Status**: These processes are observed running with high CPU usage, indicating successful initialization and execution of the Lua environment.
+```text
+lua local json=require('data-JSON');local g=df.global;... is not a recognized command.
+Shutting down client connection.
+```
 
-### 3. Execution Latency and Timeout Risks [INFERRED]
-Direct CLI invocation incurs significant startup overhead due to game initialization (window resizing, font loading).
+This proves only that this command form is unsupported by the connected RPC command parser. It
+does not prove that all DFHack RPC commands are unavailable.
 
-* **Evidence**: A probe command executed via:
-  ```bash
-  cd /srv/df-bonsai/current && DISPLAY="" SDL_VIDEODRIVER=dummy ./dwarfort -- lua -e "local w=df.global.world; print('WORLD_OK year=' .. w.cur_year ..."
-  ```
-  Resulted in:
-  ```text
-  New window size: 1024x768
-  Font size: 8x12
-  Resizing grid to 128x64
-  <shell_metadata>
-  shell tool terminated command after exceeding timeout 60000 ms.
-  ```
-* **Implication**: While the CLI method works, it is too slow for frequent polling. The game engine initializes fully before executing the Lua snippet, leading to timeouts in short-lived agent probes.
+## Direct `dwarfort` probes did not complete [VERIFIED]
 
-## Implications for Agent Design
+Commands such as:
 
-### Reset / Observe / Act / Advance
-1.  **Observe**: Do not use RPC `lua` commands for state extraction. Use CLI invocation only if necessary, but be aware of high latency. Prefer reading static files or using established DFHack plugins that expose data via faster mechanisms (if available).
-2.  **Act**: Direct CLI injection is viable for one-off actions but risky due to timeouts.
-3.  **Advance**: Time advancement should likely rely on existing DFHack commands (e.g., `advance`) rather than Lua scripts injected via CLI, unless the Lua script is pre-loaded into a persistent session.
+```bash
+./dwarfort -- lua -e "local w=df.global.world; print(w.cur_year)"
+./dwarfort --help
+./dwarfort --version
+```
 
-### Coding Recommendations
-1.  **Avoid RPC Lua Injection**: Do not send `lua <code>` strings to the DFHack remote client. It will reject them as unrecognized commands.
-2.  **Use Persistent Sessions**: If Lua execution is required, establish a persistent DFHack session (via `dofile` or similar) that keeps the Lua environment alive, rather than spawning new `./dwarfort -- lua -e` processes for every query.
-3.  **Timeout Handling**: If CLI invocation is used, increase timeout thresholds significantly (>60s) to account for game initialization overhead.
-4.  **Environment Variables**: Ensure `DISPLAY=""` and `SDL_VIDEODRIVER=dummy` are set when invoking `./dwarfort` in headless environments to prevent graphical subsystem errors.
+remained alive with high CPU usage and produced no terminal result. On 2026-07-20 the lab contained
+21 `dwarfort`/wrapper processes, 15 older than three hours and one about 19 hours old. Their summed
+CPU usage was approximately 756%, and CT123 load average was 29.6 on 16 vCPUs.
 
-## Open Questions
-* Is there a specific DFHack plugin or command that allows faster state querying via RPC without full game initialization? [OPEN]
-* Why does the RPC interface reject `lua` commands while accepting other DFHack commands? Is this a configuration issue in `dfhack-run`? [OPEN]
+Therefore:
+
+- process existence or CPU usage is **not** evidence that injected Lua executed;
+- the direct CLI Lua form is currently [OPEN], not VERIFIED;
+- a timeout without a kill-after escalation is insufficient because `dwarfort` can ignore SIGTERM;
+- short-lived direct `dwarfort` launches must not be used by autonomous jobs.
+
+## Required bounded probe path [VERIFIED]
+
+Autonomous jobs must use the trusted wrapper:
+
+```bash
+/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- \
+  /srv/df-bonsai/current/dfhack-run <dfhack-command>
+```
+
+The wrapper:
+
+1. accepts only `dfhack-run` or `dwarfort` from `/srv/df-bonsai/current`;
+2. runs from the actual game directory;
+3. places the command in a separate process group;
+4. sends SIGTERM at the deadline and SIGKILL after a short grace period;
+5. emits a terminal `BONSAI_PROBE_RESULT` containing exit status, timeout state, duration, and command.
+
+A failed wrapper result is useful evidence when stdout/stderr contains a precise blocker. Merely
+observing a still-running process is not a completed probe.
+
+## Design implications
+
+- **Observe/act/advance:** prefer supported DFHack commands over arbitrary RPC Lua injection.
+- **Persistent bridge:** arbitrary live state access still requires a controlled persistent DFHack
+  bridge or plugin; repeatedly starting the full game is not an acceptable polling mechanism.
+- **Evidence discipline:** record exact wrapper output and keep uncertain API behavior tagged OPEN.
+- **Generated logs:** root-level `errorlog.txt`, `gamelog.txt`, `stdout.log`, and `stderr.log` produced
+  by a probe are runtime artifacts, not candidate implementation changes.
+
+## Open questions
+
+- Which existing DFHack command or plugin offers the smallest persistent state-query surface? [OPEN]
+- Can a dedicated DFHack Lua script be invoked through a supported command without starting another
+  game instance? [OPEN]
+- What reset/observe/act/advance protocol should the persistent bridge expose first? [OPEN]

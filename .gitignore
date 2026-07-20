@@ -12,6 +12,10 @@ artifacts/
 backups/
 state/
 logs/
+errorlog.txt
+gamelog.txt
+stderr.log
+stdout.log
 *.save
 *.sav
 *.zip
