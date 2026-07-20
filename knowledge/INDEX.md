@@ -1,6 +1,7 @@
 ---
 ---
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -13,6 +14,9 @@
 - [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)
 - [Job System Structures and State](dfhack/mechanics-jobs.md)
 - [Time, Calendar, and State Probes](dfhack/mechanics-time-and-state-probes.md)
+- [Job Categorization and Unit Needs Heuristics](dfhack/mechanics-jobs-and-units.md)
+---
+
 ---
 
 ---
