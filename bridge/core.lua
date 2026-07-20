@@ -622,4 +622,68 @@ function bridge.map_features()
     return result
 end
 
+--- Unit skill observation — DF 53.15 verified via assign-skills.lua and
+-- adv-max-skills.lua which walk unit.status.current_soul.skills as a
+-- vector of { id=df.job_skill enum, rating=int } pairs.
+-- Key accessors:
+--   dfhack.units.getUnits()            -> all units (civilians + military)
+--   u.status                          -> unit status struct
+--   u.status.current_soul             -> active soul record
+--   soul.skills                       -> vector of skill records
+--   skill:id()                        -> df.job_skill enum integer
+--   skill:rating                     -> int rating (-1=unlearned, 0..20+)
+--   df.job_skill[skill:id()]         -> string label (e.g. "WOODCUTTING")
+function bridge.unit_skills()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+    if not dfhack.units then
+        return result
+    end
+
+    for _, u in ipairs(dfhack.units.getUnits()) do
+        if dfhack.units.isDead(u) and not u.flags1.inactive then
+            goto continue_skills
+        end
+
+        local skills = {}
+        pcall(function()
+            local soul = u.status.current_soul
+            if soul and soul.skills then
+                for _, sk in ipairs(soul.skills) do
+                    local sid = nil
+                    local sname = "unknown"
+                    local srating = -1
+
+                    pcall(function()
+                        sid = sk:id()
+                    end)
+                    pcall(function()
+                        sname = tostring(df.job_skill[sk:id()]) or "unknown"
+                    end)
+                    pcall(function()
+                        srating = sk.rating or -1
+                    end)
+
+                    table.insert(skills, {
+                        id     = sid,
+                        name   = sname,
+                        rating = srating,
+                    })
+                end
+            end
+        end)
+
+        table.insert(result, {
+            id     = u.id,
+            skills = skills,
+        })
+
+        ::continue_skills::
+    end
+
+    return result
+end
+
 return bridge

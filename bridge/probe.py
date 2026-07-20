@@ -998,3 +998,20 @@ def top_skills(units, n=5):
                 flat.append(rec)
     flat.sort(key=lambda x: x.get("rating", 0), reverse=True)
     return flat[:n]
+
+
+def probe_unit_skills(timeout=30):
+    """Call bridge.unit_skills() via DFHack and return parsed skill snapshot.
+
+    Returns a list of unit dicts each with {id, skills: [{id, name, rating}]},
+    or None on transport failure."""
+    try:
+        result = _dfhack_run("lua require('bridge.core').unit_skills()", timeout=timeout)
+        if not isinstance(result, list):
+            return None
+        for u in result:
+            if "skills" not in u:
+                return None
+        return result
+    except Exception:
+        return None

@@ -2617,6 +2617,79 @@ class TestTileMapObservation:
     def test_sample_limit_is_256(self):
         assert TILE_SAMPLE_LIMIT == 256
 
+class TestUnitSkillsContract:
+    """Static contract tests for bridge.unit_skills() in core.lua.
+
+    Validates the Lua function definition and structure without live DFHack.
+    Also verifies probe.py provides probe_unit_skills and data-shape helpers.
+    """
+
+    @staticmethod
+    def _core_lua_path():
+        return os.path.join(os.path.dirname(__file__), "..", "bridge", "core.lua")
+
+    @staticmethod
+    def _load_core():
+        with open(TestUnitSkillsContract._core_lua_path()) as f:
+            return f.read()
+
+    def test_unit_skills_function_defined(self):
+        src = self._load_core()
+        assert "function bridge.unit_skills()" in src, (
+            "bridge.unit_skills() function not defined in core.lua"
+        )
+
+    def test_unit_skills_guards_global(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.unit_skills()")[1].split("\nreturn bridge")[0]
+        assert "df.global" in func_body, (
+            "unit_skills must guard on absence of df.global"
+        )
+
+    def test_unit_skills_guards_dfhack_units(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.unit_skills()")[1].split("\nreturn bridge")[0]
+        assert "dfhack.units" in func_body, (
+            "unit_skills must guard on absence of dfhack.units"
+        )
+
+    def test_unit_skills_walks_current_soul(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.unit_skills()")[1].split("\nreturn bridge")[0]
+        assert "current_soul" in func_body, (
+            "unit_skills must access u.status.current_soul for skill data"
+        )
+
+    def test_unit_skills_returns_list_shape(self):
+        src = self._load_core()
+        func_body = src.split("function bridge.unit_skills()")[1].split("\nreturn bridge")[0]
+        assert "id     = u.id" in func_body or "id=u.id" in func_body, (
+            "unit_skills result entries must contain id field"
+        )
+        assert "skills = skills" in func_body, (
+            "unit_skills result entries must contain skills field"
+        )
+
+    def test_probe_unit_skills_importable(self):
+        from bridge.probe import probe_unit_skills
+        assert callable(probe_unit_skills)
+
+    def test_probe_py_has_skill_helpers(self):
+        from bridge.probe import (
+            skill_rank_label, skill_rank_tier, highest_skill_rating,
+            average_skill_rating, mastery_fraction, top_skills,
+            SKILL_RANK_LABELS, probe_unit_skills,
+        )
+        assert len(SKILL_RANK_LABELS) == 15
+        assert callable(skill_rank_label)
+        assert callable(skill_rank_tier)
+        assert callable(highest_skill_rating)
+        assert callable(average_skill_rating)
+        assert callable(mastery_fraction)
+        assert callable(top_skills)
+        assert callable(probe_unit_skills)
+
+
 class TestSkillRanking:
     def test_skill_rank_label_basic(self):
         assert skill_rank_label(0) == "Dabbling"
@@ -2694,7 +2767,8 @@ if __name__ == "__main__":
                       TestUnitNeedsContract, TestBuildingObservation,
                        TestItemObservation, TestUnitPopulation,
                        TestDfhackErrorHandling, TestMapFeatures,
-                       TestTileMapObservation, TestSkillRanking]
+                        TestTileMapObservation, TestUnitSkillsContract,
+                        TestSkillRanking]
 
     for cls in tc_classes:
         inst = cls()
