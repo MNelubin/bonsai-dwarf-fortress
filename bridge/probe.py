@@ -50,7 +50,7 @@ def probe_time(timeout=20):
     except Exception:
         return None
     if isinstance(result, dict):
-        if "_raw" in result:
+        if "_raw" in result or "_dfhack_error" in result:
             return None
         return result
     return None

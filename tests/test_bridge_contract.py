@@ -1518,6 +1518,72 @@ class TestTimeProbeHelper:
         assert result is None
 
 
+class TestDfhackErrorHandling:
+    """Tests for _dfhack_run segfault/error capture and probe_time guard.
+
+    Live-probed evidence: /srv/df-bonsai/current/hack/dfhack-run exits with code 139
+    (segfault) when no DF process is running. The runner must return an error dict
+    rather than crashing or returning empty data.
+    """
+
+    def test_dfhack_run_returns_error_dict_on_segfault(self):
+        """_dfhack_run captures non-zero exit as structured error.
+
+        Live-probed: /srv/df-bonsai/current/hack/dfhack-run crashes (segfault / SIGSEGV)
+        when no DF process is running. subprocess.run captures a non-zero returncode;
+        the runner wraps it into an error dict with _dfhack_error, exit_code, _stderr.
+        """
+        from game_runner.episode import _dfhack_run
+        result = _dfhack_run("print('hello')", timeout=5)
+        assert isinstance(result, dict)
+        assert "_dfhack_error" in result
+        assert result["_dfhack_error"] is True
+        assert "exit_code" in result
+        # Non-zero exit code (varies by platform: 1, 139, etc.)
+        assert result["exit_code"] > 0
+        assert "_stderr" in result
+
+    def test_dfhack_run_error_dict_no_data_fields(self):
+        """Error dict must NOT contain observation fields (year, season, etc.)."""
+        from game_runner.episode import _dfhack_run
+        result = _dfhack_run("print('hello')", timeout=5)
+        assert "year" not in result
+        assert "season" not in result
+        assert "tick" not in result
+
+    def test_probe_time_none_on_dfhack_error(self):
+        """probe_time returns None when _dfhack_error dict is returned."""
+        # This is a live test — the dfhack binary will segfault, probe_time should
+        # catch it and return None (not raise).
+        result = probe_time(timeout=5)
+        assert result is None
+
+    def test_dfhack_run_empty_stdout_on_success_path(self):
+        """_dfhack_run returns {} when stdout is empty and exit code is 0."""
+        import unittest.mock as mock
+        from game_runner.episode import _dfhack_run
+        fake_proc = mock.Mock()
+        fake_proc.stdout = ""
+        fake_proc.stderr = ""
+        fake_proc.returncode = 0
+        with mock.patch("subprocess.run", return_value=fake_proc):
+            result = _dfhack_run("echo '{}'", timeout=5)
+            assert result == {}
+
+    def test_dfhack_run_error_on_non_zero(self):
+        """_dfhack_run returns error dict for any non-zero exit code."""
+        import unittest.mock as mock
+        from game_runner.episode import _dfhack_run
+        fake_proc = mock.Mock()
+        fake_proc.stdout = ""
+        fake_proc.stderr = "custom error"
+        fake_proc.returncode = 42
+        with mock.patch("subprocess.run", return_value=fake_proc):
+            result = _dfhack_run("boom", timeout=5)
+            assert "_dfhack_error" in result
+            assert result["exit_code"] == 42
+            assert "custom error" in result["_stderr"]
+
 
 class TestEmergencyPauseSkill:
     """Deterministic tests for EmergencyPause skill."""
@@ -2230,7 +2296,8 @@ if __name__ == "__main__":
                    TestEmergencyPauseSkill, TestEmergencyPauseCurriculum,
                    TestProfessionLabor, TestTileMapLuaContract,
                    TestUnitNeedsContract, TestBuildingObservation,
-                   TestItemObservation, TestUnitPopulation]
+                    TestItemObservation, TestUnitPopulation,
+                    TestDfhackErrorHandling]
 
     for cls in tc_classes:
         inst = cls()

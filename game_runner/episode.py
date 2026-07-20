@@ -1,15 +1,13 @@
 """Episode runner for headless DF episodes via the bridge contract."""
 
 import copy
-import datetime
 import hashlib
 import json
-import math
 import os
 import subprocess
 import uuid
 
-from bridge.contracts import EpisodeLogger, validate_episode_metrics
+from bridge.contracts import EpisodeLogger
 
 # Path to the active DFHack installation.
 DF_DIR = "/srv/df-bonsai/current"
@@ -35,7 +33,6 @@ def _simulate_citizens(seed, num_citizens=4):
     units = []
     for i in range(num_citizens):
         # Simple LCG style from our hash bytes.
-        h = int.from_bytes(d[offset:offset + 4], "little") if offset + 4 <= len(d) else seed
         b_offset = (i * 2 + offset) % HASHID_BYTES
         raw_id = d[b_offset] if b_offset < len(d) else 0
         race_id = (raw_id + i) % 5
@@ -79,6 +76,11 @@ def _dfhack_run(lualine, timeout=30):
     Uses ``dfhack-run <command>`` syntax (live-probed on 53.15-r2).
     The caller is responsible for escaping the Lua expression as valid
     code; this wrapper simply passes ``lua <lualine>`` to the runner.
+
+    If the DFHack process exits with a non-zero exit code (e.g., segfault 139
+    when no game process is active), returns a dict with keys ``dfhack_error``,
+    ``exit_code``, and ``stderr`` so that callers can distinguish between
+    "no data" and "runtime unavailable".
     """
     env = {**os.environ, "HOME": "/srv/df-bonsai/state/home"}
     dfhack_bin = os.path.join(DF_DIR, "hack", "dfhack-run")
@@ -88,6 +90,14 @@ def _dfhack_run(lualine, timeout=30):
             capture_output=True, text=True, timeout=timeout, env=env,
             cwd=DF_DIR,
         )
+        # Non-zero exit code indicates a runtime failure (e.g., segfault when
+        # no DF process is active).  Capture evidence for callers.
+        if proc.returncode != 0:
+            return {
+                "_dfhack_error": True,
+                "exit_code": proc.returncode,
+                "_stderr": proc.stderr.strip()[:200],
+            }
         raw = proc.stdout.strip()
         # DFHack wraps output in ANSI reset codes; strip control sequences.
         import re
@@ -100,6 +110,12 @@ def _dfhack_run(lualine, timeout=30):
             return {"_raw": raw}
     except subprocess.TimeoutExpired:
         return {"error": "timeout"}
+    except FileNotFoundError as exc:
+        return {
+            "_dfhack_error": True,
+            "exit_code": getattr(exc, "errno", 2),
+            "_stderr": str(exc)[:200],
+        }
 
 
 class EpisodeRunner:
