@@ -45,8 +45,13 @@ def probe_time(timeout=20):
     Returns a dict with keys ``year``, ``season``, ``tick``, ``paused``
     or None if the runner returns an error.
     """
-    result = _dfhack_run(_lua_time_snapshot(), timeout=timeout)
+    try:
+        result = _dfhack_run(_lua_time_snapshot(), timeout=timeout)
+    except Exception:
+        return None
     if isinstance(result, dict):
+        if "_raw" in result:
+            return None
         return result
     return None
 

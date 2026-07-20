@@ -6,7 +6,7 @@ local bridge = {}
 
 --- Ticks per season constant (verified from position.lua).
 bridge.TICKS_PER_DAY = 86400
-bridge.TICKS_PER_SEASON = 3600 * bridge.TICKS_PER_DAY
+bridge.TICKS_PER_SEASON = 361 * bridge.TICKS_PER_DAY
 
 --- Current timestamp as a single table.
 function bridge.observe()

@@ -1417,7 +1417,7 @@ class TestInferenceLatency:
         assert ms_cpu <= ms_baseline * 10
 
 
-class TimeProbeHelper:
+class TestTimeProbeHelper:
     """Pure-python helpers from bridge/probe can be unit tested here.
 
     df.global.cur_year, cur_season, cur_year_tick fields are verified
@@ -1488,6 +1488,17 @@ class TimeProbeHelper:
         from bridge.probe import TICKS_PER_DAY
         from player.baseline import TICKS_PER_DAY as BTPD
         assert TICKS_PER_DAY == BTPD == 86400
+
+    def test_ticks_per_season_consistency(self):
+        """TICKS_PER_SEASON across probe, baseline, and evaluator all equal 361 * 86400."""
+        from bridge.probe import TICKS_PER_SEASON as PROBE_TPS
+        from player.baseline import DAYS_PER_SEASON as BASELINES_DPS
+        from player.baseline import TICKS_PER_DAY as BASELINE_TPD
+        from evaluator_public import DAYS_PER_SEASON as EVAL_DPS
+        expected = 361 * 86400
+        assert expected == PROBE_TPS
+        assert expected == BASELINES_DPS * BASELINE_TPD
+        assert EVAL_DPS == 361
 
     def test_lua_time_snapshot_is_string(self):
         """The Lua expression builder returns valid code."""
