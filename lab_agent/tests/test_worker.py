@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from bonsai_lab_agent.quality_gate import evaluate_python_quality
-from bonsai_lab_agent.probe_guard import run_guarded_probe
+from bonsai_lab_agent.probe_guard import ensure_runtime_ready, run_guarded_probe
 
 from bonsai_lab_agent.worker import (
     Config,
@@ -22,6 +22,7 @@ from bonsai_lab_agent.worker import (
     trace_phase_latest_input_tokens,
     trace_phase_tool_use_count,
     serializable_working_tree_paths,
+    supervised_df_runtime_process_ids,
     validate_coding_candidate,
     working_tree_paths,
     write_discovery_bundle,
@@ -112,7 +113,7 @@ def test_live_probe_requires_completed_trusted_wrapper_result(tmp_path: Path):
                     "status": "completed",
                     "input": {"command": "/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 20 -- /srv/df-bonsai/current/dfhack-run status"},
                     "metadata": {
-                        "output": 'connection failed\nBONSAI_PROBE_RESULT {"exit":124,"timed_out":true}'
+                        "output": 'probe complete\nBONSAI_PROBE_RESULT {"exit":0,"timed_out":false,"runtime_ready":true}'
                     },
                 },
             },
@@ -148,6 +149,27 @@ def test_live_probe_rejects_raw_timeout_and_unfinished_wrapper(tmp_path: Path):
                 },
             },
         ],
+    )
+    assert trace_has_live_game_probe(trace) is False
+
+
+def test_live_probe_rejects_wrapper_when_runtime_never_became_ready(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    write_trace(
+        trace,
+        [{
+            "type": "tool_use",
+            "part": {
+                "tool": "bash",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "bonsai-df-probe -- dfhack-run status"},
+                    "metadata": {
+                        "output": 'BONSAI_PROBE_RESULT {"exit":126,"timed_out":false,"runtime_ready":false}'
+                    },
+                },
+            },
+        }],
     )
     assert trace_has_live_game_probe(trace) is False
 
@@ -279,6 +301,25 @@ def test_df_runtime_process_ids_only_accepts_managed_dwarfort(tmp_path: Path):
     assert df_runtime_process_ids(proc, runtime) == {101}
 
 
+def test_supervised_runtime_pid_is_identified_by_systemd_cgroup(tmp_path: Path):
+    proc = tmp_path / "proc"
+    runtime = tmp_path / "df-runtime"
+    proc.mkdir()
+    runtime.mkdir()
+    executable = runtime / "dwarfort"
+    executable.write_text("binary", encoding="utf-8")
+    for pid, cgroup in (
+        ("101", "0::/system.slice/bonsai-df-runtime.service\n"),
+        ("102", "0::/user.slice/opencode.scope\n"),
+    ):
+        entry = proc / pid
+        entry.mkdir()
+        os.symlink(executable, entry / "exe")
+        (entry / "cgroup").write_text(cgroup, encoding="utf-8")
+
+    assert supervised_df_runtime_process_ids(proc, runtime) == {101}
+
+
 def test_guarded_probe_hard_kills_term_ignoring_runtime(tmp_path: Path):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -312,6 +353,67 @@ def test_guarded_probe_rejects_executable_outside_runtime(tmp_path: Path):
         assert "probe executable" in str(exc)
     else:
         raise AssertionError("outside executable was accepted")
+
+
+def test_runtime_readiness_starts_service_then_observes_rpc(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    client = runtime / "dfhack-run"
+    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    client_results = iter(
+        [
+            subprocess.CompletedProcess([], 2, b"Could not connect\n"),
+            subprocess.CompletedProcess([], 0, b"DFHack 53.15-r2\n"),
+        ]
+    )
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        if command[0] == "/usr/bin/systemctl":
+            return subprocess.CompletedProcess(command, 0, b"")
+        return next(client_results)
+
+    readiness = ensure_runtime_ready(
+        runtime_root=runtime,
+        timeout_seconds=5,
+        command_runner=fake_run,
+        sleep=lambda _seconds: None,
+        monotonic=lambda: 100.0,
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["started"] is True
+    assert readiness["attempts"] == 2
+    assert calls[1] == ["/usr/bin/systemctl", "start", "bonsai-df-runtime.service"]
+
+
+def test_guarded_dfhack_probe_fails_before_spawn_when_runtime_is_unavailable(tmp_path: Path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    client = runtime / "dfhack-run"
+    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    client.chmod(0o755)
+
+    result = run_guarded_probe(
+        [str(client), "version"],
+        runtime_root=runtime,
+        readiness_check=lambda **_kwargs: {
+            "ready": False,
+            "started": True,
+            "attempts": 3,
+            "error": "RPC unavailable",
+        },
+    )
+
+    assert result["exit_code"] == 126
+    assert result["runtime"] == {
+        "ready": False,
+        "started": True,
+        "attempts": 3,
+        "error": "RPC unavailable",
+        "required": True,
+    }
 
 
 def test_external_checkpoint_compacts_evidence_and_diff(tmp_path: Path):

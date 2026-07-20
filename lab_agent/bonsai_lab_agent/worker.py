@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .probe_guard import ensure_runtime_ready
 from .quality_gate import evaluate_python_quality
 
 
@@ -205,6 +206,7 @@ GENERATED_RUNTIME_PATHS = frozenset(
     {"errorlog.txt", "gamelog.txt", "stderr.log", "stdout.log"}
 )
 DF_RUNTIME_ROOT = Path("/srv/df-bonsai")
+SUPERVISED_DF_UNIT = "bonsai-df-runtime.service"
 
 
 def cleanup_generated_runtime_files(repo: Path) -> list[str]:
@@ -249,9 +251,30 @@ def df_runtime_process_ids(
     return result
 
 
+def supervised_df_runtime_process_ids(
+    proc_root: Path = Path("/proc"),
+    runtime_root: Path = DF_RUNTIME_ROOT,
+    service: str = SUPERVISED_DF_UNIT,
+) -> set[int]:
+    """Return managed dwarfort PIDs owned by the supervised systemd cgroup."""
+    protected: set[int] = set()
+    marker = f"/{service}"
+    for pid in df_runtime_process_ids(proc_root, runtime_root):
+        try:
+            cgroup = (proc_root / str(pid) / "cgroup").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except (FileNotFoundError, OSError, PermissionError):
+            continue
+        if any(line.rstrip().endswith(marker) for line in cgroup.splitlines()):
+            protected.add(pid)
+    return protected
+
+
 def reap_df_probe_processes(grace_seconds: float = 2.0) -> dict[str, Any]:
     """Terminate leaked DF probe executables, escalating to SIGKILL when required."""
-    targets = sorted(df_runtime_process_ids() - {os.getpid()})
+    protected = supervised_df_runtime_process_ids()
+    targets = sorted(df_runtime_process_ids() - protected - {os.getpid()})
     for pid in targets:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGTERM)
@@ -266,7 +289,7 @@ def reap_df_probe_processes(grace_seconds: float = 2.0) -> dict[str, Any]:
         survivors.append(pid)
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
-    return {"targets": targets, "sigkill": survivors}
+    return {"targets": targets, "sigkill": survivors, "protected": sorted(protected)}
 
 
 WIP_AUTO_PATHS = (
@@ -641,8 +664,10 @@ def trace_has_live_game_probe(trace_path: Path) -> bool:
                 result = json.loads(output_line.removeprefix("BONSAI_PROBE_RESULT "))
             except json.JSONDecodeError:
                 continue
-            if isinstance(result.get("exit"), int) and isinstance(
-                result.get("timed_out"), bool
+            if (
+                isinstance(result.get("exit"), int)
+                and isinstance(result.get("timed_out"), bool)
+                and result.get("runtime_ready") is True
             ):
                 return True
     return False
@@ -1315,6 +1340,19 @@ def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str
     repo, base_commit, branch = prepare_run(config, job)
     trace_path = repo.parent / "opencode-trace.jsonl"
     cross_job_handoff = restore_cross_job_wip(config, job, repo, trace_path)
+    runtime_progress = {"phase": "ensure_runtime_ready", "model": config.model}
+    api.heartbeat(job, runtime_progress)
+    api.worker_heartbeat("running", str(job["id"]), runtime_progress)
+    runtime_readiness = ensure_runtime_ready()
+    _trace_event(
+        trace_path,
+        {"type": "runtime_readiness", "phase": "ensure_runtime_ready", **runtime_readiness},
+    )
+    if runtime_readiness.get("ready") is not True:
+        raise RuntimeError(
+            "supervised Dwarf Fortress runtime is unavailable before LLM execution: "
+            + str(runtime_readiness.get("error") or runtime_readiness.get("output") or "unknown")[-4000:]
+        )
     raw_payload = job.get("payload", {})
     previous_cycle = raw_payload.get("previous_cycle") or {}
     compact_previous = {
@@ -1342,7 +1380,8 @@ live DF runtime, not this repository.
 Run at least one bounded executable probe through the trusted wrapper, for example:
 `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run status`.
 Never execute `dwarfort` or `dfhack-run` directly or through shell `timeout`; the game ignores SIGTERM
-and leaked earlier probes. Capture the wrapper's BONSAI_PROBE_RESULT, stdout/stderr, and extract field names,
+and leaked earlier probes. The wrapper ensures the supervised headless runtime is ready before connecting.
+Capture the wrapper's BONSAI_PROBE_RESULT, stdout/stderr, and extract field names,
 enum values, IDs, coordinates, ticks, or state transitions. If a game launch is blocked, the failed
 command and its precise blocker are evidence, but `ls`, `file`, or rereading VERSIONS.txt alone are not.
 
@@ -1363,6 +1402,7 @@ Prefer executable progress over abstractions: run one bounded probe against the 
 then turn its observed fields or failure mode into the smallest reusable bridge/probe/runner change.
 All real-runtime commands must use `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe`; never launch
 `dwarfort`, `dfhack-run`, or a shell `timeout` around them directly.
+The wrapper starts and checks the supervised headless runtime; do not build ad-hoc launch commands.
 If the previous candidate was rejected, repair its exact promotion error before starting new work.
 Do not satisfy the cycle with documentation alone. You MUST modify executable implementation, add or
 update a deterministic test under tests/ or evaluator_public/, and run it. Do not change knowledge/

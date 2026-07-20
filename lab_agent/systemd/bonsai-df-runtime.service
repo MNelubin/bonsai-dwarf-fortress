@@ -1,0 +1,32 @@
+[Unit]
+Description=Bonsai supervised headless Dwarf Fortress and DFHack runtime
+After=local-fs.target
+ConditionFileIsExecutable=/srv/df-bonsai/current/dfhack
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/srv/df-bonsai/current
+Environment=HOME=/srv/df-bonsai/runtime/home
+Environment=XDG_RUNTIME_DIR=/srv/df-bonsai/runtime/xdg
+Environment=DFHACK_HEADLESS=1
+Environment=DFHACK_DISABLE_CONSOLE=1
+Environment=SDL_AUDIODRIVER=dummy
+Environment=TERM=dumb
+ExecStartPre=/usr/bin/install -d -m 0750 /srv/df-bonsai/runtime/home /srv/df-bonsai/runtime/xdg
+ExecStart=/srv/df-bonsai/current/dfhack --exec
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=10
+SendSIGKILL=yes
+StandardInput=null
+StandardOutput=append:/srv/df-bonsai/runtime/runtime.log
+StandardError=append:/srv/df-bonsai/runtime/runtime.log
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

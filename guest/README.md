@@ -27,6 +27,8 @@ Staging does not activate a release. The active validated release is selected at
 - Release: `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2`.
 - Runtime account: `dfbot`.
 - Headless settings: `PRINT_MODE:TEXT`, `SOUND:NO`.
-- Validated RPC endpoint: loopback only; the smoke test used `127.0.0.1:5500`.
+- Supervised RPC endpoint: loopback only at `127.0.0.1:5000`.
 
-The smoke-test process is stopped after validation. A persistent runner and the agent-facing bridge are intentionally left for the next phase.
+`bonsai-df-runtime.service` owns the persistent headless DF+DFHack process. The agent never starts
+`dwarfort` directly: its trusted probe wrapper starts the service on demand, waits for RPC readiness,
+and then executes bounded `dfhack-run` commands.
