@@ -27,6 +27,7 @@ from bonsai_lab_agent.worker import (
     trace_phase_latest_input_tokens,
     trace_phase_tool_use_count,
     unique_fuzzy_edit_span,
+    unique_whitespace_edit_span,
     serializable_working_tree_paths,
     select_coding_context,
     supervised_df_runtime_process_ids,
@@ -663,6 +664,42 @@ def test_coding_graph_applies_exact_controller_validated_edits(tmp_path: Path):
 
     assert changed == ["bridge/client.py", "tests/test_client.py"]
     assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_coding_graph_applies_unique_whitespace_drift_without_weakening_tokens(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "client.py"
+    target.parent.mkdir()
+    target.write_text(
+        "def probe():\n    result = call(\n        \"lua source\",\n        timeout=10,\n    )\n    return result\n",
+        encoding="utf-8",
+    )
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "edits": [
+                {
+                    "path": "bridge/client.py",
+                    "old": 'result = call("lua source", timeout=10,)',
+                    "new": 'result = call("source", timeout=10,)',
+                },
+                {
+                    "path": "tests/test_client.py",
+                    "old": "",
+                    "new": "def test_transport():\n    assert 3 == 3\n",
+                },
+            ]
+        },
+    )
+
+    assert changed == ["bridge/client.py", "tests/test_client.py"]
+    assert 'result = call("source", timeout=10,)' in target.read_text(encoding="utf-8")
+
+
+def test_whitespace_match_rejects_ambiguous_token_sequences():
+    current = 'first = call("x")\nsecond = call("x")\n'
+    assert unique_whitespace_edit_span(current, 'call( "x" )') is None
 
 
 def test_coding_graph_rejects_protected_edit_without_partial_write(tmp_path: Path):

@@ -1159,6 +1159,24 @@ def objective_relevant_source_excerpt(
     return "".join(chunks)
 
 
+def unique_whitespace_edit_span(current: str, old: str) -> tuple[int, int] | None:
+    """Resolve one exact token sequence while tolerating formatting-only whitespace drift."""
+    if not 12 <= len(old) <= 8_000:
+        return None
+    tokens = re.findall(
+        r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|'''
+        r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|:=|->|[^\s]",
+        old,
+    )
+    if not tokens:
+        return None
+    pattern = r"\s*".join(re.escape(token) for token in tokens)
+    matches = list(re.finditer(pattern, current))
+    if len(matches) != 1:
+        return None
+    return matches[0].span()
+
+
 def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
     """Build a bounded, deterministic source packet for a tool-free coding node."""
     objective_text = json.dumps(objective, ensure_ascii=False)
@@ -1273,6 +1291,10 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
                 if occurrences == 0 and new and current.count(new) == 1:
                     continue  # Idempotent retry of an edit already present in restored WIP.
                 if occurrences == 0:
+                    whitespace_span = unique_whitespace_edit_span(current, old)
+                    if whitespace_span is not None:
+                        replacements.append((*whitespace_span, new, index))
+                        continue
                     fuzzy = unique_fuzzy_edit_span(current, old, new, path)
                     if fuzzy is not None:
                         start, end, _score = fuzzy
@@ -1544,6 +1566,7 @@ def run_coding_graph(
         }
         api.heartbeat(job, progress)
         api.worker_heartbeat("running", str(job["id"]), progress)
+        proposal: dict[str, Any] | None = None
         try:
             proposal = request_coding_graph_edits(
                 config, api, job, repo, objective, diagnostics, phase, started
@@ -1567,6 +1590,29 @@ def run_coding_graph(
         except Exception as exc:
             diagnostics = f"Proposal/application error: {exc!r}"
             decision = "repair" if working_tree_paths(repo) else "draft"
+            proposal_diagnostics: list[dict[str, Any]] = []
+            if isinstance(proposal, dict) and isinstance(proposal.get("edits"), list):
+                for edit in proposal["edits"][:20]:
+                    if not isinstance(edit, dict):
+                        continue
+                    path = edit.get("path")
+                    old = edit.get("old")
+                    new = edit.get("new")
+                    current = ""
+                    if isinstance(path, str) and (repo / path).is_file():
+                        current = (repo / path).read_text(encoding="utf-8", errors="replace")
+                    proposal_diagnostics.append(
+                        {
+                            "path": path,
+                            "old_chars": len(old) if isinstance(old, str) else None,
+                            "new_chars": len(new) if isinstance(new, str) else None,
+                            "exact_occurrences": current.count(old)
+                            if current and isinstance(old, str)
+                            else None,
+                            "old_excerpt": old[:500] if isinstance(old, str) else None,
+                            "new_excerpt": new[:500] if isinstance(new, str) else None,
+                        }
+                    )
             state = {
                 "schema_version": 1,
                 "phase": phase,
@@ -1574,6 +1620,7 @@ def run_coding_graph(
                 "decision": decision,
                 "changed_paths": serializable_working_tree_paths(repo),
                 "error": diagnostics[-4000:],
+                "proposal_diagnostics": proposal_diagnostics,
             }
         checkpoint_path = repo.parent / "checkpoint-coding-graph.json"
         _write_json_atomic(checkpoint_path, state)
