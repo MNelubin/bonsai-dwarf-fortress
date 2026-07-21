@@ -1177,6 +1177,42 @@ def unique_whitespace_edit_span(current: str, old: str) -> tuple[int, int] | Non
     return matches[0].span()
 
 
+def unique_minimal_delta_span(
+    current: str, old: str, new: str
+) -> tuple[int, int, str] | None:
+    """Transplant only a small old/new delta when its local anchors are unique."""
+    prefix_length = 0
+    prefix_limit = min(len(old), len(new))
+    while prefix_length < prefix_limit and old[prefix_length] == new[prefix_length]:
+        prefix_length += 1
+    suffix_length = 0
+    suffix_limit = min(len(old) - prefix_length, len(new) - prefix_length)
+    while (
+        suffix_length < suffix_limit
+        and old[len(old) - suffix_length - 1] == new[len(new) - suffix_length - 1]
+    ):
+        suffix_length += 1
+    if prefix_length < 12 or suffix_length < 12:
+        return None
+    old_end = len(old) - suffix_length
+    new_end = len(new) - suffix_length
+    old_delta = old[prefix_length:old_end]
+    new_delta = new[prefix_length:new_end]
+    if not 1 <= len(old_delta) <= 256 or old_delta == new_delta or len(new_delta) > 256:
+        return None
+    prefix = old[:prefix_length]
+    suffix = old[old_end:]
+    for anchor_size in (160, 120, 80, 60, 40, 28, 20, 12):
+        before = prefix[-anchor_size:]
+        after = suffix[:anchor_size]
+        needle = before + old_delta + after
+        positions = [match.start() for match in re.finditer(re.escape(needle), current)]
+        if len(positions) == 1:
+            start = positions[0] + len(before)
+            return start, start + len(old_delta), new_delta
+    return None
+
+
 def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
     """Build a bounded, deterministic source packet for a tool-free coding node."""
     objective_text = json.dumps(objective, ensure_ascii=False)
@@ -1294,6 +1330,11 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
                     whitespace_span = unique_whitespace_edit_span(current, old)
                     if whitespace_span is not None:
                         replacements.append((*whitespace_span, new, index))
+                        continue
+                    delta_span = unique_minimal_delta_span(current, old, new)
+                    if delta_span is not None:
+                        start, end, replacement = delta_span
+                        replacements.append((start, end, replacement, index))
                         continue
                     fuzzy = unique_fuzzy_edit_span(current, old, new, path)
                     if fuzzy is not None:

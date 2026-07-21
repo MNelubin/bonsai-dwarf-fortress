@@ -27,6 +27,7 @@ from bonsai_lab_agent.worker import (
     trace_phase_latest_input_tokens,
     trace_phase_tool_use_count,
     unique_fuzzy_edit_span,
+    unique_minimal_delta_span,
     unique_whitespace_edit_span,
     serializable_working_tree_paths,
     select_coding_context,
@@ -700,6 +701,54 @@ def test_coding_graph_applies_unique_whitespace_drift_without_weakening_tokens(t
 def test_whitespace_match_rejects_ambiguous_token_sequences():
     current = 'first = call("x")\nsecond = call("x")\n'
     assert unique_whitespace_edit_span(current, 'call( "x" )') is None
+
+
+def test_coding_graph_transplants_unique_small_delta_from_hallucinated_wrapper(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "probe.py"
+    target.parent.mkdir()
+    target.write_text(
+        "def probe_map_features():\n"
+        "    # Actual implementation intentionally differs from the proposal wrapper.\n"
+        "    result = _dfhack_run(\"lua require('bridge.core').map_features()\", timeout=10)\n"
+        "    return result if isinstance(result, list) else []\n",
+        encoding="utf-8",
+    )
+    old = """def probe_map_features(timeout=10):
+    \"\"\"Imagined wrapper.\"\"\"
+    try:
+        result = _dfhack_run(\"lua require('bridge.core').map_features()\", timeout=timeout)
+        return result
+    except Exception:
+        return []"""
+    new = old.replace("lua require", "require")
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "edits": [
+                {"path": "bridge/probe.py", "old": old, "new": new},
+                {
+                    "path": "tests/test_probe.py",
+                    "old": "",
+                    "new": "def test_probe_delta():\n    assert 4 == 4\n",
+                },
+            ]
+        },
+    )
+
+    updated = target.read_text(encoding="utf-8")
+    assert changed == ["bridge/probe.py", "tests/test_probe.py"]
+    assert "lua require" not in updated
+    assert "def probe_map_features():" in updated
+    assert "Actual implementation intentionally differs" in updated
+
+
+def test_minimal_delta_rejects_ambiguous_local_anchors():
+    old = 'result = _dfhack_run("lua require(\'bridge.core\').observe()")'
+    new = old.replace("lua require", "require")
+    current = old + "\n" + old + "\n"
+    assert unique_minimal_delta_span(current, old, new) is None
 
 
 def test_coding_graph_rejects_protected_edit_without_partial_write(tmp_path: Path):
