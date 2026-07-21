@@ -595,6 +595,52 @@ def test_coding_graph_context_selects_objective_source_symbol_and_test(tmp_path:
     assert "def _dfhack_run" in packet["game_runner/episode.py"]
 
 
+def test_coding_graph_context_keeps_named_symbols_from_large_file_middle(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    (repo / "bridge").mkdir()
+    filler = "".join(f"# unrelated filler {index:04d} {'x' * 60}\n" for index in range(420))
+    targets = """
+def probe_map_features():
+    return _dfhack_run("lua require('bridge.core').map_features()", timeout=10)
+
+def probe_tile_map(timeout=20):
+    return _dfhack_run("lua require('bridge.core').tile_map()", timeout=timeout)
+
+def probe_unit_skills(timeout=20):
+    return _dfhack_run("lua require('bridge.core').unit_skills()", timeout=timeout)
+"""
+    (repo / "bridge" / "probe.py").write_text(
+        "from game_runner.episode import _dfhack_run\n" + filler + targets + filler,
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "add large probe"],
+        check=True,
+        capture_output=True,
+    )
+
+    packet = select_coding_context(
+        repo,
+        {
+            "objective": "Repair bridge/probe.py",
+            "description": (
+                "Remove redundant lua from probe_map_features, probe_tile_map, "
+                "and probe_unit_skills."
+            ),
+        },
+    )
+
+    excerpt = packet["bridge/probe.py"]
+    assert len(excerpt) <= 18_000
+    assert "def probe_map_features" in excerpt
+    assert "def probe_tile_map" in excerpt
+    assert "def probe_unit_skills" in excerpt
+    assert "lua require('bridge.core').map_features()" in excerpt
+    assert "lua require('bridge.core').tile_map()" in excerpt
+    assert "lua require('bridge.core').unit_skills()" in excerpt
+
+
 def test_coding_graph_applies_exact_controller_validated_edits(tmp_path: Path):
     repo = init_repo(tmp_path)
     target = repo / "bridge" / "client.py"

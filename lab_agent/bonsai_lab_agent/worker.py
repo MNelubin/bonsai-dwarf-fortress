@@ -1079,6 +1079,86 @@ def unique_fuzzy_edit_span(
     return best[1], best[2], best[0]
 
 
+def objective_relevant_source_excerpt(
+    content: str, objective_text: str, limit: int
+) -> str:
+    """Keep exact source around objective-named symbols instead of blind head/tail slices."""
+    if len(content) <= limit:
+        return content
+    identifiers = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", objective_text))
+    definition_names = sorted(
+        name
+        for name in identifiers
+        if re.search(
+            rf"(?m)^[ \t]*(?:class|(?:async[ \t]+)?def)[ \t]+{re.escape(name)}\b",
+            content,
+        )
+    )
+    referenced_names = sorted(
+        name for name in identifiers if "_" in name and name in content
+    )
+    anchors: list[int] = []
+
+    def add_anchor(position: int) -> None:
+        if position >= 0 and all(abs(position - existing) > 200 for existing in anchors):
+            anchors.append(position)
+
+    for name in definition_names:
+        for match in re.finditer(
+            rf"(?m)^[ \t]*(?:class|(?:async[ \t]+)?def)[ \t]+{re.escape(name)}\b",
+            content,
+        ):
+            add_anchor(match.start())
+    for raw_snippet in re.findall(r"`([^`\r\n]{4,240})`", objective_text):
+        snippet = raw_snippet.replace(r'\"', '"').replace(r"\\", "\\")
+        start = 0
+        while len(anchors) < 24:
+            position = content.find(snippet, start)
+            if position < 0:
+                break
+            add_anchor(position)
+            start = position + max(1, len(snippet))
+    for name in referenced_names:
+        start = 0
+        while len(anchors) < 24:
+            position = content.find(name, start)
+            if position < 0:
+                break
+            add_anchor(position)
+            start = position + len(name)
+
+    if not anchors:
+        half = limit // 2
+        return content[:half] + "\n[... bounded context omitted ...]\n" + content[-half:]
+
+    ranges = [(0, min(2_000, len(content)))]
+    ranges.extend(
+        (max(0, anchor - 1_000), min(len(content), anchor + 3_500))
+        for anchor in sorted(anchors)
+    )
+    merged: list[list[int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1] + 120:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    chunks: list[str] = []
+    used = 0
+    marker = "\n[... non-objective source omitted ...]\n"
+    for start, end in merged:
+        allowance = limit - used - (len(marker) if chunks else 0)
+        if allowance <= 0:
+            break
+        chunk = content[start:end][:allowance]
+        if chunks:
+            chunks.append(marker)
+            used += len(marker)
+        chunks.append(chunk)
+        used += len(chunk)
+    return "".join(chunks)
+
+
 def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
     """Build a bounded, deterministic source packet for a tool-free coding node."""
     objective_text = json.dumps(objective, ensure_ascii=False)
@@ -1138,8 +1218,9 @@ def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, st
             break
         content = (repo / path).read_text(encoding="utf-8", errors="replace")
         if len(content) > CODING_CONTEXT_MAX_FILE_CHARS:
-            half = CODING_CONTEXT_MAX_FILE_CHARS // 2
-            content = content[:half] + "\n[... bounded context omitted ...]\n" + content[-half:]
+            content = objective_relevant_source_excerpt(
+                content, objective_text, CODING_CONTEXT_MAX_FILE_CHARS
+            )
         content = content[:remaining]
         if content:
             packet[path] = content
