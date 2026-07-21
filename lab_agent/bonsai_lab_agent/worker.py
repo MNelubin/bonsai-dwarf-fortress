@@ -51,11 +51,20 @@ class Config:
     opencode_bin: str
     opencode_config: Path
     ollama_url: str
+    model_api_style: str
+    model_api_url: str
+    model_reasoning_effort: str
     context_rollover_tokens: int
     phase_timeout: int
     coding_tool_budget: int
     max_continuations: int
     validation_repair_attempts: int
+
+    def __post_init__(self) -> None:
+        if self.model_api_style not in {"ollama", "openai"}:
+            raise ValueError("BONSAI_MODEL_API_STYLE must be ollama or openai")
+        if self.model_reasoning_effort not in {"low", "medium", "high"}:
+            raise ValueError("BONSAI_MODEL_REASONING_EFFORT must be low, medium, or high")
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -78,6 +87,14 @@ class Config:
                 os.environ.get("BONSAI_OPENCODE_CONFIG", "/etc/bonsai-agent/opencode.json")
             ),
             ollama_url=os.environ.get("BONSAI_OLLAMA_URL", "http://100.96.0.4:11434").rstrip("/"),
+            model_api_style=os.environ.get("BONSAI_MODEL_API_STYLE", "ollama").strip().lower(),
+            model_api_url=os.environ.get(
+                "BONSAI_MODEL_API_URL",
+                f"{os.environ.get('BONSAI_OLLAMA_URL', 'http://100.96.0.4:11434').rstrip('/')}/api/chat",
+            ).rstrip("/"),
+            model_reasoning_effort=os.environ.get(
+                "BONSAI_MODEL_REASONING_EFFORT", "high"
+            ).strip().lower(),
             context_rollover_tokens=int(
                 os.environ.get("BONSAI_CONTEXT_ROLLOVER_TOKENS", "55000")
             ),
@@ -1389,6 +1406,63 @@ def _coding_context_markdown(packet: dict[str, str]) -> str:
     )
 
 
+def provider_model_id(config: Config) -> str:
+    """Remove the OpenCode provider prefix while preserving namespaced model IDs."""
+    return config.model.split("/", 1)[1] if "/" in config.model else config.model
+
+
+def structured_model_request(
+    config: Config,
+    messages: list[dict[str, str]],
+    schema: dict[str, Any],
+    *,
+    schema_name: str,
+    ollama_num_ctx: int,
+    ollama_num_predict: int,
+    ollama_think: bool = False,
+) -> bytes:
+    """Build a provider-specific structured request without limiting K2 output tokens."""
+    if config.model_api_style == "openai":
+        payload: dict[str, Any] = {
+            "model": provider_model_id(config),
+            "stream": False,
+            "reasoning_effort": config.model_reasoning_effort,
+            "messages": messages,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": schema_name, "strict": True, "schema": schema},
+            },
+        }
+    else:
+        payload = {
+            "model": provider_model_id(config),
+            "stream": False,
+            "think": ollama_think,
+            "messages": messages,
+            "format": schema,
+            "options": {
+                "temperature": 0.1,
+                "num_ctx": ollama_num_ctx,
+                "num_predict": ollama_num_predict,
+            },
+        }
+    return json.dumps(payload).encode("utf-8")
+
+
+def model_response_content(config: Config, response_payload: dict[str, Any]) -> str:
+    """Extract final content from Ollama-native or OpenAI-compatible responses."""
+    if config.model_api_style == "openai":
+        choices = response_payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise RuntimeError("OpenAI-compatible response has no choices")
+        message = choices[0].get("message")
+    else:
+        message = response_payload.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        raise RuntimeError("model response has no message content")
+    return str(message["content"]).strip()
+
+
 def bounded_ollama_chat(
     config: Config,
     api: Api,
@@ -1400,7 +1474,7 @@ def bounded_ollama_chat(
     *,
     curl_bin: str = "/usr/bin/curl",
 ) -> bytes:
-    """Run an Ollama request in a killable process with a real wall-clock deadline."""
+    """Run a model request in a killable process with a real wall-clock deadline."""
     safe_phase = re.sub(r"[^a-zA-Z0-9_.-]+", "-", phase)[:80] or "ollama"
     request_path = run_root / f".{safe_phase}.request.json"
     response_path = run_root / f".{safe_phase}.response.json"
@@ -1425,7 +1499,7 @@ def bounded_ollama_chat(
                     "Content-Type: application/json",
                     "--data-binary",
                     f"@{request_path}",
-                    f"{config.ollama_url}/api/chat",
+                    getattr(config, "model_api_url", f"{config.ollama_url}/api/chat"),
                 ],
                 stdout=response_file,
                 stderr=stderr_file,
@@ -1438,7 +1512,7 @@ def bounded_ollama_chat(
                 if now - node_started >= node_timeout + 15:
                     stop_process_group(process)
                     raise TimeoutError(
-                        f"Ollama {phase} exceeded its {node_timeout}-second process deadline"
+                        f"model {phase} exceeded its {node_timeout}-second process deadline"
                     )
                 if now >= next_heartbeat:
                     progress = {
@@ -1456,10 +1530,10 @@ def bounded_ollama_chat(
         if return_code != 0:
             stderr = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
             raise RuntimeError(
-                f"Ollama {phase} request failed with curl exit {return_code}: {stderr}"
+                f"model {phase} request failed with curl exit {return_code}: {stderr}"
             )
         if response_path.stat().st_size > 4 * 1024 * 1024:
-            raise RuntimeError(f"Ollama {phase} response exceeded 4 MiB")
+            raise RuntimeError(f"model {phase} response exceeded 4 MiB")
         return response_path.read_bytes()
     finally:
         if process is not None and process.poll() is None:
@@ -1529,22 +1603,20 @@ Validator/application diagnostics:
 Bounded source packet:
 {_coding_context_markdown(context_packet)}
 """.strip()
-    request_body = json.dumps(
-        {
-            "model": config.model.removeprefix("ollama/"),
-            "stream": False,
-            "think": False,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a precise software patch generator inside a validated state graph.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "format": schema,
-            "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 6144},
-        }
-    ).encode("utf-8")
+    request_body = structured_model_request(
+        config,
+        [
+            {
+                "role": "system",
+                "content": "You are a precise software patch generator inside a validated state graph.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema,
+        schema_name="coding_graph_edits",
+        ollama_num_ctx=65536,
+        ollama_num_predict=6144,
+    )
     _trace_event(
         repo.parent / "opencode-trace.jsonl",
         {"type": "coding_graph_node_started", "phase": phase, "context_paths": list(context_packet)},
@@ -1559,9 +1631,7 @@ Bounded source packet:
         started,
     )
     response_payload = json.loads(raw)
-    content = response_payload.get("message", {}).get("content")
-    if not isinstance(content, str):
-        raise RuntimeError("coding graph response has no message content")
+    content = model_response_content(config, response_payload)
     payload = json.loads(content)
     _trace_event(
         repo.parent / "opencode-trace.jsonl",
@@ -1883,33 +1953,29 @@ Diff stat:
 Diff excerpt:
 {diff_excerpt}
 """.strip()
-    request_body = json.dumps(
-        {
-            "model": config.model.removeprefix("ollama/"),
-            "stream": False,
-            "think": False,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You write precise Git commit messages from supplied diffs.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "format": schema,
-            "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 512},
-        }
-    ).encode("utf-8")
+    request_body = structured_model_request(
+        config,
+        [
+            {
+                "role": "system",
+                "content": "You write precise Git commit messages from supplied diffs.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema,
+        schema_name="commit_description",
+        ollama_num_ctx=32768,
+        ollama_num_predict=512,
+    )
     request = urllib.request.Request(
-        f"{config.ollama_url}/api/chat",
+        config.model_api_url,
         method="POST",
         data=request_body,
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=120) as response:
         response_payload = json.loads(response.read(256 * 1024 + 1))
-    content = response_payload.get("message", {}).get("content")
-    if not isinstance(content, str):
-        raise RuntimeError("commit description response has no message content")
+    content = model_response_content(config, response_payload)
     return normalize_commit_description(json.loads(content), str(job["job_type"]))
 
 
@@ -1994,24 +2060,22 @@ Research trace:
 {trace_text}
 ---
 """.strip()
-    request_body = json.dumps(
-        {
-            "model": config.model.removeprefix("ollama/"),
-            "stream": False,
-            "think": False,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a precise technical archivist. Output only schema-valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "format": schema,
-            "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 4096},
-        }
-    ).encode("utf-8")
+    request_body = structured_model_request(
+        config,
+        [
+            {
+                "role": "system",
+                "content": "You are a precise technical archivist. Output only schema-valid JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema,
+        schema_name="discovery_bundle",
+        ollama_num_ctx=65536,
+        ollama_num_predict=4096,
+    )
     request = urllib.request.Request(
-        f"{config.ollama_url}/api/chat",
+        config.model_api_url,
         method="POST",
         data=request_body,
         headers={"Content-Type": "application/json"},
@@ -2043,9 +2107,7 @@ Research trace:
     if len(raw) > 2 * 1024 * 1024:
         raise RuntimeError("structured discovery response exceeded 2 MiB")
     response_payload = json.loads(raw)
-    content = response_payload.get("message", {}).get("content")
-    if not isinstance(content, str):
-        raise RuntimeError("Ollama structured discovery response has no message content")
+    content = model_response_content(config, response_payload)
     note_target = write_discovery_bundle(repo, json.loads(content))
     elapsed = round(time.monotonic() - started)
     api.heartbeat(job, {"phase": "discovery_structured_write", "model": config.model, "elapsed_seconds": elapsed})
@@ -2348,8 +2410,10 @@ Execution discipline is mandatory:
             "json",
             "--model",
             config.model,
-            harness_prompt,
         ]
+        if config.model_api_style == "openai":
+            command.extend(["--variant", config.model_reasoning_effort])
+        command.append(harness_prompt)
         with trace_path.open("a" if append else "w", encoding="utf-8") as trace:
             if append:
                 trace.write(

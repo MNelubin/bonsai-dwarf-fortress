@@ -1,0 +1,24 @@
+[Unit]
+Description=Bonsai K2 Think request policy gateway
+After=network-online.target tailscaled.service
+Wants=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/bonsai-agent/k2.env
+ExecStart=/opt/bonsai-lab-agent/venv/bin/bonsai-k2-proxy
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -20,7 +20,10 @@ from bonsai_lab_agent.worker import (
     harness_environment,
     has_executable_candidate_change,
     persist_cross_job_wip,
+    model_response_content,
+    provider_model_id,
     restore_cross_job_wip,
+    structured_model_request,
     trace_ended_with_degenerate_stop,
     trace_has_live_game_probe,
     trace_latest_input_tokens,
@@ -37,6 +40,39 @@ from bonsai_lab_agent.worker import (
     working_tree_paths,
     write_discovery_bundle,
 )
+
+
+def test_openai_structured_request_uses_high_reasoning_without_token_limit():
+    config = object.__new__(Config)
+    object.__setattr__(config, "model", "k2think/MBZUAI-IFM/K2-Think-v2")
+    object.__setattr__(config, "model_api_style", "openai")
+    object.__setattr__(config, "model_reasoning_effort", "high")
+    payload = json.loads(
+        structured_model_request(
+            config,
+            [{"role": "user", "content": "return JSON"}],
+            {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+            schema_name="canary",
+            ollama_num_ctx=1024,
+            ollama_num_predict=64,
+        )
+    )
+    assert payload["model"] == "MBZUAI-IFM/K2-Think-v2"
+    assert payload["reasoning_effort"] == "high"
+    assert payload["response_format"]["type"] == "json_schema"
+    assert not any("max" in key or "predict" in key for key in payload)
+    assert provider_model_id(config) == "MBZUAI-IFM/K2-Think-v2"
+
+
+def test_openai_response_content_is_separate_from_reasoning():
+    config = object.__new__(Config)
+    object.__setattr__(config, "model_api_style", "openai")
+    response = {
+        "choices": [
+            {"message": {"reasoning": "private reasoning", "content": "  {\"ok\": true}\n"}}
+        ]
+    }
+    assert model_response_content(config, response) == '{"ok": true}'
 
 
 class HeartbeatApi:
