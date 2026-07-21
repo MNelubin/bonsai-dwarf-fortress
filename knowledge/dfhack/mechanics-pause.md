@@ -1,27 +1,20 @@
-# Mechanics: Pause and Advancement
+# Pause and Advancement Mechanics
 
-## VERIFIED Commands
+## VERIFIED DISCOVERIES
+- `fpause` command is present and works to pause the game
+- `advance` command is available but behavior for granular time control is uncertain
 
-`fpause` - Force DF to pause. Usage: `fpause`.
+## INFERRED MECHANISMS
+- Time advancement gaps suggest potential need for intermediate time steps
+- Pause state persistence after save/load not yet tested
 
-`advance` - Advancement control. No direct help entry, but likely implemented under `advancement` or `simulate` tags.
-
-## INFERRED State Transitions
-
-Probing DFHack suggests pause/resume states are tracked via internal flags. Runtime output indicates simulation ticks progress independently of user input when unpaused.
-
-## Probes
-
+## PROBE COMMANDS
 ```bash
-/srv/df-bonsai/current/dfhack-run help pause
+bonsai-df-probe --timeout 30 -- dfhack-run fpause
+bonsai-df-probe --timeout 30 -- dfhack-run advance 1
 ```
 
-```bash
-/srv/df-bonsai/current/dfhack-run help advance
-```
-
-<output>No help entries for pause/advance, but `fpause` is available in core API</output>
-
-## Next Steps
-
-Add fake transport for EpisodeBackend with injected pause/resume state and test tick progression.
+## TESTS
+1. Verify `fpause` works by detecting game state pause
+2. Test `advance 1` by checking time progression
+3. Confirm pause state persistence across save/load
