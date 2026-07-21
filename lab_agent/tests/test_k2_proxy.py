@@ -1,7 +1,7 @@
 from bonsai_lab_agent.k2_proxy import TOKEN_LIMIT_FIELDS, transform_request
 
 
-def test_transform_request_strips_all_output_limits_and_forces_high_reasoning():
+def test_transform_request_strips_all_output_limits_and_preserves_low_reasoning():
     payload = {
         "model": "MBZUAI-IFM/K2-Think-v2",
         "messages": [{"role": "user", "content": "hello"}],
@@ -13,7 +13,7 @@ def test_transform_request_strips_all_output_limits_and_forces_high_reasoning():
         "maxTokens": 4,
     }
     transformed = transform_request(payload)
-    assert transformed["reasoning_effort"] == "high"
+    assert transformed["reasoning_effort"] == "low"
     assert transformed["stream"] is True
     assert all(field not in transformed for field in TOKEN_LIMIT_FIELDS)
     assert payload["max_tokens"] == 1

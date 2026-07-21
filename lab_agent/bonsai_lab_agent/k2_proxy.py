@@ -18,11 +18,11 @@ TOKEN_LIMIT_FIELDS = {
 
 
 def transform_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep high/medium reasoning and leave output length server-controlled."""
+    """Keep valid K2 reasoning effort and leave output length server-controlled."""
     transformed = dict(payload)
     for field in TOKEN_LIMIT_FIELDS:
         transformed.pop(field, None)
-    if transformed.get("reasoning_effort") not in {"high", "medium"}:
+    if transformed.get("reasoning_effort") not in {"high", "medium", "low"}:
         transformed["reasoning_effort"] = "high"
     messages = transformed.get("messages")
     if isinstance(messages, list):

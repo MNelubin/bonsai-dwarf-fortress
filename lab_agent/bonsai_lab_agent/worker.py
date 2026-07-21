@@ -1721,7 +1721,7 @@ def coding_graph_reasoning_effort(
 ) -> str:
     """Keep K2 v2 from spending its entire response budget on hidden reasoning."""
     if config.model_api_style == "openai" and "K2-Think-v2" in provider_model_id(config):
-        return "medium"
+        return "low"
     if decision == "repair" or attempt > 1 or "finish_reason='length'" in diagnostics:
         return "medium"
     return config.model_reasoning_effort

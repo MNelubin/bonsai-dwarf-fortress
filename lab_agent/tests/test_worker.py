@@ -51,8 +51,8 @@ def test_k2_coding_graph_never_uses_high_reasoning_for_large_patch_prompts():
     object.__setattr__(config, "model_api_style", "openai")
     object.__setattr__(config, "model_reasoning_effort", "high")
 
-    assert coding_graph_reasoning_effort(config, "draft", 1, "") == "medium"
-    assert coding_graph_reasoning_effort(config, "repair", 1, "") == "medium"
+    assert coding_graph_reasoning_effort(config, "draft", 1, "") == "low"
+    assert coding_graph_reasoning_effort(config, "repair", 1, "") == "low"
     assert (
         coding_graph_reasoning_effort(
             config,
@@ -60,7 +60,7 @@ def test_k2_coding_graph_never_uses_high_reasoning_for_large_patch_prompts():
             2,
             "finish_reason='length'; no final content",
         )
-        == "medium"
+        == "low"
     )
 
 
