@@ -3,12 +3,16 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from bonsai_lab_agent.quality_gate import evaluate_python_quality
 from bonsai_lab_agent.probe_guard import ensure_runtime_ready, run_guarded_probe
 
 from bonsai_lab_agent.worker import (
     Config,
+    apply_coding_graph_edits,
     cleanup_generated_runtime_files,
+    coding_graph_decision,
     df_runtime_process_ids,
     discovery_needs_synthesis,
     compact_phase_checkpoint,
@@ -22,6 +26,7 @@ from bonsai_lab_agent.worker import (
     trace_phase_latest_input_tokens,
     trace_phase_tool_use_count,
     serializable_working_tree_paths,
+    select_coding_context,
     supervised_df_runtime_process_ids,
     validate_coding_candidate,
     working_tree_fingerprint,
@@ -509,6 +514,94 @@ def test_harness_owned_validation_detects_edits_after_old_test_output(tmp_path: 
     broken.write_text("VALUE = 1\n", encoding="utf-8")
     passed = validate_coding_candidate(repo)
     assert passed["ok"] is True
+
+
+def test_coding_graph_context_selects_objective_source_symbol_and_test(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    (repo / "game_runner").mkdir()
+    (repo / "game_runner" / "episode.py").write_text(
+        "def _dfhack_run(command):\n    return command\n", encoding="utf-8"
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_episode.py").write_text(
+        "from game_runner.episode import _dfhack_run\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "add episode"],
+        check=True,
+        capture_output=True,
+    )
+
+    packet = select_coding_context(
+        repo,
+        {
+            "objective": "Repair `game_runner/episode.py` and `_dfhack_run` with a regression test"
+        },
+    )
+
+    assert "game_runner/episode.py" in packet
+    assert "tests/test_episode.py" in packet
+    assert "def _dfhack_run" in packet["game_runner/episode.py"]
+
+
+def test_coding_graph_applies_exact_controller_validated_edits(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "client.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "edits": [
+                {"path": "bridge/client.py", "old": "VALUE = 1", "new": "VALUE = 2"},
+                {
+                    "path": "tests/test_client.py",
+                    "old": "",
+                    "new": "from bridge.client import VALUE\n\ndef test_value():\n    assert VALUE == 2\n",
+                },
+            ]
+        },
+    )
+
+    assert changed == ["bridge/client.py", "tests/test_client.py"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_coding_graph_rejects_protected_edit_without_partial_write(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "client.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsafe path"):
+        apply_coding_graph_edits(
+            repo,
+            {
+                "edits": [
+                    {"path": "bridge/client.py", "old": "VALUE = 1", "new": "VALUE = 2"},
+                    {"path": "control_plane/app.py", "old": "", "new": "UNSAFE = True\n"},
+                ]
+            },
+        )
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (repo / "control_plane" / "app.py").exists()
+
+
+def test_coding_graph_routes_from_artifacts_and_validation(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    assert coding_graph_decision(repo, None) == "draft"
+    (repo / "bridge").mkdir()
+    (repo / "bridge" / "client.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert coding_graph_decision(repo, {"ok": True}) == "repair"
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_client.py").write_text(
+        "def test_value():\n    assert 2 == 2\n", encoding="utf-8"
+    )
+    assert coding_graph_decision(repo, {"ok": False}) == "repair"
+    assert coding_graph_decision(repo, {"ok": True}) == "promote"
 
 
 class WipConfigStub:

@@ -22,6 +22,10 @@ from .probe_guard import ensure_runtime_ready
 from .quality_gate import evaluate_python_quality
 
 
+class GraphBlockedError(RuntimeError):
+    """A bounded graph reached a terminal node and must not retry the same job."""
+
+
 GUARDED_BASH_PERMISSIONS = {
     "*": "allow",
     "*dwarfort*": "deny",
@@ -161,11 +165,11 @@ class Api:
             {"lease_token": job["lease_token"]},
         )
 
-    def fail(self, job: dict[str, Any], error: str) -> None:
+    def fail(self, job: dict[str, Any], error: str, retryable: bool = True) -> None:
         self.request(
             "POST",
             f"/api/v1/jobs/{job['id']}/fail",
-            {"error": error[-20_000:], "retryable": True},
+            {"error": error[-20_000:], "retryable": retryable},
             {"lease_token": job["lease_token"]},
         )
 
@@ -966,6 +970,438 @@ def validate_coding_candidate(repo: Path) -> dict[str, Any]:
     }
 
 
+CODING_CONTEXT_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])((?:bridge|game_runner|player|skills|curricula|tests|"
+    r"evaluator_public)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\."
+    r"(?:py|lua|md|json|toml|yaml|yml))"
+)
+CODING_CONTEXT_SUFFIXES = frozenset({".py", ".lua", ".md", ".json", ".toml", ".yaml", ".yml"})
+CODING_GRAPH_ROOTS = (
+    "bridge/", "game_runner/", "player/", "skills/", "curricula/", "tests/", "evaluator_public/"
+)
+CODING_CONTEXT_MAX_FILE_CHARS = 18_000
+CODING_CONTEXT_MAX_CHARS = 60_000
+
+
+def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
+    """Build a bounded, deterministic source packet for a tool-free coding node."""
+    objective_text = json.dumps(objective, ensure_ascii=False)
+    tracked = set(
+        subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files"], text=True, errors="replace"
+        ).splitlines()
+    )
+    selected: list[str] = []
+
+    def add(path: str) -> None:
+        target = repo / path
+        if (
+            path not in selected
+            and path in tracked | working_tree_paths(repo)
+            and target.is_file()
+            and not target.is_symlink()
+            and target.suffix.lower() in CODING_CONTEXT_SUFFIXES
+        ):
+            selected.append(path)
+
+    for path in serializable_working_tree_paths(repo):
+        add(path)
+    for match in CODING_CONTEXT_PATH.finditer(objective_text):
+        add(match.group(1))
+
+    symbols = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]{3,})`", objective_text))
+    symbols.update(re.findall(r"\b(_[A-Za-z][A-Za-z0-9_]{3,})\b", objective_text))
+    for symbol in sorted(symbols)[:12]:
+        matches = subprocess.run(
+            ["git", "-C", str(repo), "grep", "-l", "-F", "--", symbol],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        if matches.returncode not in {0, 1}:
+            continue
+        for path in matches.stdout.splitlines()[:6]:
+            if path.startswith(WIP_AUTO_PATHS):
+                add(path)
+
+    stems = {PurePosixPath(path).stem.removeprefix("test_") for path in selected}
+    for path in sorted(tracked):
+        if not path.startswith(("tests/", "evaluator_public/")):
+            continue
+        if any(stem and stem in PurePosixPath(path).stem for stem in stems):
+            add(path)
+    add("knowledge/INDEX.md")
+
+    packet: dict[str, str] = {}
+    remaining = CODING_CONTEXT_MAX_CHARS
+    for path in selected:
+        if remaining <= 0:
+            break
+        content = (repo / path).read_text(encoding="utf-8", errors="replace")
+        if len(content) > CODING_CONTEXT_MAX_FILE_CHARS:
+            half = CODING_CONTEXT_MAX_FILE_CHARS // 2
+            content = content[:half] + "\n[... bounded context omitted ...]\n" + content[-half:]
+        content = content[:remaining]
+        if content:
+            packet[path] = content
+            remaining -= len(content)
+    return packet
+
+
+def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
+    """Validate exact replacements first, then atomically materialize the graph proposal."""
+    edits = payload.get("edits")
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
+        raise ValueError("coding graph must return between 1 and 20 exact edits")
+    staged: dict[str, str] = {}
+    changed: set[str] = set()
+    for index, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise ValueError(f"edit {index} is not an object")
+        path = edit.get("path")
+        old = edit.get("old")
+        new = edit.get("new")
+        if not all(isinstance(value, str) for value in (path, old, new)):
+            raise ValueError(f"edit {index} path/old/new must be strings")
+        assert isinstance(path, str) and isinstance(old, str) and isinstance(new, str)
+        if (
+            not _safe_wip_path(path, "coding_cycle")
+            or not path.startswith(CODING_GRAPH_ROOTS)
+            or Path(path).suffix.lower() not in CODING_CONTEXT_SUFFIXES
+        ):
+            raise ValueError(f"edit {index} has unsafe path: {path}")
+        target = repo / path
+        if target.is_symlink():
+            raise ValueError(f"edit {index} targets a symlink: {path}")
+        current = staged.get(path)
+        if current is None:
+            current = target.read_text(encoding="utf-8") if target.is_file() else ""
+        if old == "":
+            if current != "" or target.exists():
+                raise ValueError(f"edit {index} empty old is only valid for a new file: {path}")
+            updated = new
+        else:
+            occurrences = current.count(old)
+            if occurrences != 1:
+                raise ValueError(
+                    f"edit {index} old text occurs {occurrences} times instead of once: {path}"
+                )
+            updated = current.replace(old, new, 1)
+        if len(updated.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValueError(f"edit {index} would exceed the 2 MiB file limit: {path}")
+        staged[path] = updated
+        if updated != current:
+            changed.add(path)
+    if not changed:
+        raise ValueError("coding graph proposal does not change any file")
+    for path, content in staged.items():
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    return sorted(changed)
+
+
+def coding_graph_decision(repo: Path, validation: dict[str, Any] | None) -> str:
+    """Route solely from durable artifacts and validator output, never chat wording."""
+    if (
+        has_executable_candidate_change(repo)
+        and has_public_test_change(repo)
+        and validation is not None
+        and validation.get("ok") is True
+    ):
+        return "promote"
+    return "draft" if not working_tree_paths(repo) else "repair"
+
+
+def _coding_context_markdown(packet: dict[str, str]) -> str:
+    return "\n\n".join(
+        f"--- FILE {path} ---\n{content}\n--- END FILE {path} ---"
+        for path, content in packet.items()
+    )
+
+
+def request_coding_graph_edits(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    objective: dict[str, Any],
+    diagnostics: str,
+    phase: str,
+    started: float,
+) -> dict[str, Any]:
+    """Run one tool-free model node whose only output is exact controller-applied edits."""
+    context_packet = select_coding_context(repo, objective)
+    diff_stat, diff_excerpt = working_tree_diff(repo)
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "edits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "old": {"type": "string"},
+                        "new": {"type": "string"},
+                    },
+                    "required": ["path", "old", "new"],
+                },
+            },
+        },
+        "required": ["summary", "edits"],
+    }
+    prompt = f"""
+You are the PATCH node in a deterministic coding graph. You have no tools. Produce the smallest
+correct implementation and deterministic public test for the objective using only the supplied source
+packet, current diff, and validator diagnostics. Return schema-valid JSON only.
+
+Each edit is an exact replacement: `old` must be copied byte-for-byte from the current file and occur
+exactly once; `new` replaces it. Use old="" only to create a new file. You may return multiple sequential
+edits to one file. Paths are limited to bridge/, game_runner/, player/, skills/, curricula/, tests/, and
+evaluator_public/. Never edit knowledge/, infrastructure, agent/controller code, or generated files.
+Do not return prose instead of edits. Do not weaken tests, add placeholders, swallow errors, or invent
+DFHack APIs. Preserve existing public interfaces unless the objective explicitly changes them.
+
+Objective:
+{json.dumps(objective, ensure_ascii=False)}
+
+Current diff stat:
+{diff_stat[-4000:] or "(clean)"}
+
+Current diff excerpt:
+{diff_excerpt[:20_000] or "(clean)"}
+
+Validator/application diagnostics:
+{diagnostics[-24_000:] or "No candidate exists yet."}
+
+Bounded source packet:
+{_coding_context_markdown(context_packet)}
+""".strip()
+    request_body = json.dumps(
+        {
+            "model": config.model.removeprefix("ollama/"),
+            "stream": False,
+            "think": False,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a precise software patch generator inside a validated state graph.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "format": schema,
+            "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 6144},
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{config.ollama_url}/api/chat",
+        method="POST",
+        data=request_body,
+        headers={"Content-Type": "application/json"},
+    )
+
+    def fetch() -> bytes:
+        with urllib.request.urlopen(request, timeout=max(300, config.phase_timeout)) as response:
+            return response.read(4 * 1024 * 1024 + 1)
+
+    _trace_event(
+        repo.parent / "opencode-trace.jsonl",
+        {"type": "coding_graph_node_started", "phase": phase, "context_paths": list(context_packet)},
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fetch)
+        while True:
+            try:
+                raw = future.result(timeout=25)
+                break
+            except FutureTimeout:
+                elapsed = round(time.monotonic() - started)
+                progress = {"phase": phase, "model": config.model, "elapsed_seconds": elapsed}
+                api.heartbeat(job, progress)
+                api.worker_heartbeat("running", str(job["id"]), progress)
+    if len(raw) > 4 * 1024 * 1024:
+        raise RuntimeError("coding graph response exceeded 4 MiB")
+    response_payload = json.loads(raw)
+    content = response_payload.get("message", {}).get("content")
+    if not isinstance(content, str):
+        raise RuntimeError("coding graph response has no message content")
+    payload = json.loads(content)
+    _trace_event(
+        repo.parent / "opencode-trace.jsonl",
+        {
+            "type": "coding_graph_node_completed",
+            "phase": phase,
+            "summary": str(payload.get("summary") or "")[:1000],
+            "proposed_paths": [
+                edit.get("path") for edit in payload.get("edits", []) if isinstance(edit, dict)
+            ],
+        },
+    )
+    return payload
+
+
+def run_coding_graph(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    base_commit: str,
+    objective: dict[str, Any],
+    previous_error: str,
+    trace_path: Path,
+    started: float,
+) -> tuple[str, str]:
+    """Execute bounded draft/apply/validate/repair nodes with durable routing state."""
+    diagnostics = previous_error[-12_000:]
+    validation: dict[str, Any] | None = None
+    if working_tree_paths(repo):
+        validation = validate_coding_candidate(repo)
+    decision = coding_graph_decision(repo, validation)
+    for attempt in range(1, 4):
+        if decision == "promote":
+            return "coding_graph_promote", "validated"
+        phase = f"coding_graph_{decision}_{attempt}"
+        progress = {
+            "phase": phase,
+            "model": config.model,
+            "attempt": attempt,
+            "changed_paths": serializable_working_tree_paths(repo),
+        }
+        api.heartbeat(job, progress)
+        api.worker_heartbeat("running", str(job["id"]), progress)
+        try:
+            proposal = request_coding_graph_edits(
+                config, api, job, repo, objective, diagnostics, phase, started
+            )
+            applied_paths = apply_coding_graph_edits(repo, proposal)
+            persist_cross_job_wip(
+                config, job, repo, base_commit, phase, "graph_edit_applied", trace_path
+            )
+            validation = validate_coding_candidate(repo)
+            diagnostics = json.dumps(validation, ensure_ascii=False)[-24_000:]
+            decision = coding_graph_decision(repo, validation)
+            state = {
+                "schema_version": 1,
+                "phase": phase,
+                "attempt": attempt,
+                "decision": decision,
+                "applied_paths": applied_paths,
+                "changed_paths": serializable_working_tree_paths(repo),
+                "validation": validation,
+            }
+        except Exception as exc:
+            diagnostics = f"Proposal/application error: {exc!r}"
+            decision = "repair" if working_tree_paths(repo) else "draft"
+            state = {
+                "schema_version": 1,
+                "phase": phase,
+                "attempt": attempt,
+                "decision": decision,
+                "changed_paths": serializable_working_tree_paths(repo),
+                "error": diagnostics[-4000:],
+            }
+        checkpoint_path = repo.parent / "checkpoint-coding-graph.json"
+        _write_json_atomic(checkpoint_path, state)
+        _trace_event(trace_path, {"type": "coding_graph_transition", **state})
+        if decision == "promote":
+            return phase, "validated"
+    raise GraphBlockedError(
+        "coding graph reached cooldown after three bounded proposals; last diagnostics: "
+        + diagnostics[-6000:]
+    )
+
+
+def finalize_graph_candidate(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    base_commit: str,
+    branch: str,
+    trace_path: Path,
+    started: float,
+    last_phase: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Commit, bundle, and upload a candidate produced by the deterministic graph."""
+    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
+    status = run("git status --porcelain", repo, 30)["output"].strip()
+    if status:
+        persist_cross_job_wip(
+            config, job, repo, base_commit, last_phase, "candidate_ready", trace_path
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+        try:
+            commit_title, commit_body = generate_commit_description(config, job, repo)
+        except Exception as exc:
+            print(f"commit description fallback: {exc}", flush=True)
+            commit_title, commit_body = normalize_commit_description({}, str(job["job_type"]))
+        trailers = f"Bonsai-Job-Type: {job['job_type']}\nBonsai-Job-ID: {job['id']}"
+        subprocess.run(
+            [
+                "git", "-C", str(repo), "commit", "-m", commit_title,
+                "-m", commit_body, "-m", trailers,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    candidate_commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    changed = candidate_commit != base_commit
+    changed_paths = (
+        subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{base_commit}..{candidate_commit}"],
+            text=True,
+        ).splitlines()
+        if changed
+        else []
+    )
+    artifacts: list[str] = []
+    if changed:
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", f"refs/heads/{branch}", candidate_commit],
+            check=True,
+        )
+        config.outbox_dir.mkdir(parents=True, exist_ok=True)
+        bundle = config.outbox_dir / f"{job['id']}.bundle"
+        subprocess.run(
+            ["git", "-C", str(repo), "bundle", "create", str(bundle), f"refs/heads/{branch}"],
+            check=True,
+        )
+        artifacts.append(api.upload(str(job["id"]), bundle, "application/x-git-bundle"))
+    checkpoint_files = sorted(repo.parent.glob("checkpoint-*.json"))
+    for checkpoint_file in checkpoint_files:
+        artifacts.append(api.upload(str(job["id"]), checkpoint_file, "application/json"))
+    artifacts.append(api.upload(str(job["id"]), trace_path, "application/x-ndjson"))
+    summary = trace_text[-4000:].strip() or "Coding graph completed without textual summary"
+    return (
+        {
+            "summary": summary,
+            "job_type": job["job_type"],
+            "harness": "coding_graph",
+            "model": config.model,
+            "base_commit": base_commit,
+            "candidate_commit": candidate_commit,
+            "branch": branch,
+            "changed": changed,
+            "changed_paths": changed_paths,
+            "candidate_requested": changed,
+            "external_checkpoints": [path.name for path in checkpoint_files],
+            "duration_seconds": round(time.monotonic() - started, 2),
+        },
+        artifacts,
+    )
+
+
 def trace_has_test_execution(trace_path: Path) -> bool:
     """Detect an actual public test command, not merely reading a test file."""
     if not trace_path.is_file():
@@ -1700,6 +2136,41 @@ Execution discipline is mandatory:
             raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
         return "completed"
 
+    if not discovery_mode:
+        last_phase, _last_reason = run_coding_graph(
+            config,
+            api,
+            job,
+            repo,
+            base_commit,
+            objective_payload,
+            previous_error,
+            trace_path,
+            started,
+        )
+        cleanup_generated_runtime_files(repo)
+        if not has_executable_candidate_change(repo):
+            raise GraphBlockedError("coding graph ended without an executable implementation change")
+        if not has_public_test_change(repo):
+            raise GraphBlockedError("coding graph ended without a public test change")
+        final_validation = validate_coding_candidate(repo)
+        if not final_validation["ok"]:
+            raise GraphBlockedError(
+                "coding graph promotion recheck failed: "
+                + json.dumps(final_validation, ensure_ascii=False)[-6000:]
+            )
+        return finalize_graph_candidate(
+            config,
+            api,
+            job,
+            repo,
+            base_commit,
+            branch,
+            trace_path,
+            started,
+            last_phase,
+        )
+
     discovery_tool_budget = min(
         24,
         max(8, int((job.get("constraints") or {}).get("discovery_tool_budget", 16))),
@@ -2014,7 +2485,7 @@ def main() -> None:
                 print(f"failed to report worker status: {heartbeat_exc}", flush=True)
             if job is not None:
                 try:
-                    api.fail(job, repr(exc))
+                    api.fail(job, repr(exc), retryable=not isinstance(exc, GraphBlockedError))
                 except Exception as report_exc:
                     print(f"failed to report error: {report_exc}", flush=True)
             time.sleep(config.poll_seconds)
