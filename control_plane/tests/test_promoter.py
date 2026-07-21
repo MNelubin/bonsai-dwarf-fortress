@@ -3,7 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from bonsai_control.promoter import GateRejected, inspect_candidate
+from bonsai_control.promoter import (
+    AUTO_COMPLETE_MARKER,
+    GateRejected,
+    inspect_candidate,
+    should_auto_complete_milestone,
+)
+
+
+def test_only_marked_coding_milestone_auto_completes():
+    description = f"Finish the bounded repair. {AUTO_COMPLETE_MARKER}"
+    assert should_auto_complete_milestone("coding_cycle", description) is True
+    assert should_auto_complete_milestone("discovery_cycle", description) is False
+    assert should_auto_complete_milestone("coding_cycle", "ordinary iterative objective") is False
 
 
 def git(repo: Path, *args: str) -> str:
@@ -39,7 +51,7 @@ def candidate_bundle(
     git(repo, "add", ".")
     git(repo, "commit", "-m", "candidate")
     candidate = git(repo, "rev-parse", "HEAD")
-    git(repo, "branch", f"agent/test", candidate)
+    git(repo, "branch", "agent/test", candidate)
     bundle = tmp_path / "candidate.bundle"
     git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
     return repo, base, candidate, bundle

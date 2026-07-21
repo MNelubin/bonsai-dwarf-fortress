@@ -30,6 +30,7 @@ SECRET_PATTERNS = (
     re.compile(rb"postgres(?:ql)?://[^\s:/]+:[^\s@]+@"),
 )
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+AUTO_COMPLETE_MARKER = "[AUTO_COMPLETE_ON_CODING_PROMOTION]"
 
 
 class GateRejected(RuntimeError):
@@ -47,6 +48,10 @@ class Candidate:
     branch_name: str
     bundle_path: Path
     trace_sha256: str
+
+
+def should_auto_complete_milestone(job_type: str, description: str) -> bool:
+    return job_type == "coding_cycle" and AUTO_COMPLETE_MARKER in description
 
 
 def _run(command: list[str], cwd: Path | None = None, timeout: int = 120) -> str:
@@ -281,6 +286,7 @@ def inspect_candidate(
             public_targets = [
                 name for name in ("tests", "evaluator_public") if (repo / name).is_dir()
             ]
+            public_test: dict[str, Any]
             if not public_targets:
                 public_test = {
                     "exit_code": 2,
@@ -370,7 +376,7 @@ def _next_candidate() -> Candidate | None:
             "SELECT current_baseline_commit FROM bonsai.system_state WHERE singleton = true"
         ).fetchone()["current_baseline_commit"]
         if row["base_commit"] != baseline:
-            report = {
+            report: dict[str, Any] = {
                 "gate_mode": "bootstrap_static_v1",
                 "allowed": False,
                 "reasons": ["candidate base is not the current trusted baseline"],
@@ -489,6 +495,72 @@ def _promote(candidate: Candidate, report: dict[str, Any]) -> None:
             "UPDATE bonsai.jobs SET state = 'completed', updated_at = now() WHERE id = %s",
             (candidate.job_id,),
         )
+        objective = connection.execute(
+            """
+            SELECT o.id, o.title, o.description
+            FROM bonsai.objectives o
+            JOIN bonsai.jobs j ON j.objective_id = o.id
+            WHERE j.id = %s
+            FOR UPDATE OF o
+            """,
+            (candidate.job_id,),
+        ).fetchone()
+        if objective is not None and should_auto_complete_milestone(
+            candidate.job_type, objective["description"]
+        ):
+            connection.execute(
+                """
+                UPDATE bonsai.objectives
+                SET status = 'completed', updated_at = now()
+                WHERE id = %s AND status = 'active'
+                """,
+                (objective["id"],),
+            )
+            next_objective = connection.execute(
+                """
+                SELECT id, title
+                FROM bonsai.objectives
+                WHERE parent_id = %s AND status = 'paused'
+                ORDER BY priority DESC, created_at
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+                """,
+                (objective["id"],),
+            ).fetchone()
+            transition: dict[str, Any] = {
+                "completed_objective_id": str(objective["id"]),
+                "completed_title": objective["title"],
+            }
+            _event(
+                connection,
+                "objective.completed",
+                "objective",
+                str(objective["id"]),
+                {"job_id": candidate.job_id, "commit": candidate.candidate_commit},
+            )
+            if next_objective is not None:
+                connection.execute(
+                    """
+                    UPDATE bonsai.objectives
+                    SET status = 'active', last_job_at = NULL, updated_at = now()
+                    WHERE id = %s AND status = 'paused'
+                    """,
+                    (next_objective["id"],),
+                )
+                transition.update(
+                    {
+                        "activated_objective_id": str(next_objective["id"]),
+                        "activated_title": next_objective["title"],
+                    }
+                )
+                _event(
+                    connection,
+                    "objective.activated",
+                    "objective",
+                    str(next_objective["id"]),
+                    {"completed_parent_id": str(objective["id"])},
+                )
+            report = {**report, "objective_transition": transition}
         connection.execute(
             """
             UPDATE bonsai.git_changes

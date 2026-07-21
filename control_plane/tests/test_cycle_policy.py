@@ -9,6 +9,7 @@ def decide(**overrides):
         last_job_changed=True,
         promoted_coding_since_discovery=1,
         consecutive_coding_failures=0,
+        discovery_promotions_since_coding=0,
     )
     values.update(overrides)
     return choose_cycle(**values)
@@ -40,6 +41,16 @@ def test_two_failed_coding_graphs_branch_to_targeted_discovery():
     decision = decide(last_job_state="failed", consecutive_coding_failures=2)
     assert decision.job_type == "discovery_cycle"
     assert "blocked" in decision.reason
+
+
+def test_targeted_discovery_cannot_repeat_without_promoted_code():
+    decision = decide(
+        last_job_state="failed",
+        consecutive_coding_failures=4,
+        discovery_promotions_since_coding=1,
+    )
+    assert decision.job_type == "coding_cycle"
+    assert "already ran" in decision.reason
 
 
 def test_one_failed_coding_graph_gets_one_wip_repair_retry():

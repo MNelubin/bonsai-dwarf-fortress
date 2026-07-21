@@ -120,6 +120,29 @@ def tick() -> None:
                 """,
                 (objective["id"], last_discovery_at),
             ).fetchone()["count"]
+        last_coding_at = connection.execute(
+            """
+            SELECT max(g.promoted_at) AS promoted_at
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            WHERE j.objective_id = %s
+              AND j.job_type = 'coding_cycle'
+              AND g.promotion_state = 'promoted'
+            """,
+            (objective["id"],),
+        ).fetchone()["promoted_at"]
+        discovery_promotions_since_coding = connection.execute(
+            """
+            SELECT count(*) AS count
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            WHERE j.objective_id = %s
+              AND j.job_type = 'discovery_cycle'
+              AND g.promotion_state = 'promoted'
+              AND g.promoted_at > COALESCE(%s::timestamptz, '-infinity'::timestamptz)
+            """,
+            (objective["id"], last_coding_at),
+        ).fetchone()["count"]
         recent_coding_states = connection.execute(
             """
             SELECT state
@@ -144,6 +167,7 @@ def tick() -> None:
             last_job_changed=(previous["result"] or {}).get("changed") if previous else None,
             promoted_coding_since_discovery=promoted_coding_since_discovery,
             consecutive_coding_failures=consecutive_coding_failures,
+            discovery_promotions_since_coding=discovery_promotions_since_coding,
         )
         constraints = (
             DISCOVERY_CONSTRAINTS if decision.job_type == "discovery_cycle" else CODING_CONSTRAINTS
@@ -170,6 +194,7 @@ def tick() -> None:
                             "reason": decision.reason,
                             "promoted_coding_since_discovery": promoted_coding_since_discovery,
                             "consecutive_coding_failures": consecutive_coding_failures,
+                            "discovery_promotions_since_coding": discovery_promotions_since_coding,
                         },
                     }
                 ),
