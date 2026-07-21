@@ -17,6 +17,7 @@ from bonsai_lab_agent.worker import (
     df_runtime_process_ids,
     discovery_needs_synthesis,
     compact_phase_checkpoint,
+    compact_discovery_trace,
     harness_environment,
     has_executable_candidate_change,
     persist_cross_job_wip,
@@ -226,6 +227,42 @@ def test_discovery_synthesis_uses_medium_reasoning_without_output_limit(
 
     assert captured["reasoning_effort"] == "medium"
     assert target == "dfhack/probe-episode-backend.md"
+
+
+def test_discovery_trace_compaction_deduplicates_large_tool_metadata(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    huge_output = "x" * 100_000 + "\nBONSAI_PROBE_RESULT {\"exit\":0}\n"
+    events = [
+        {
+            "type": "runtime_readiness",
+            "ready": True,
+            "output": "DFHack 53.15-r2 on DF 53.15",
+        },
+        {
+            "type": "tool_use",
+            "part": {
+                "tool": "bash",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "bonsai-df-probe help lua"},
+                    "output": huge_output,
+                    "metadata": {"output": huge_output},
+                },
+            },
+        },
+        {"type": "text", "part": {"text": "VERIFIED focused conclusion"}},
+    ]
+    trace.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+
+    compact = compact_discovery_trace(trace)
+    assert len(compact) <= 24_000
+    assert "BONSAI_PROBE_RESULT" in compact
+    assert "VERIFIED focused conclusion" in compact
+    assert compact.count("BONSAI_PROBE_RESULT") == 1
+    assert len(compact) < len(trace.read_text(encoding="utf-8")) // 10
 
 
 def init_repo(tmp_path: Path) -> Path:

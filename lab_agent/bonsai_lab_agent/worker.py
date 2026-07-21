@@ -2054,6 +2054,69 @@ Diff excerpt:
 
 
 DISCOVERY_NOTE_PATH = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}\.md$")
+DISCOVERY_TRACE_MAX_CHARS = 24_000
+
+
+def compact_discovery_trace(
+    trace_path: Path, max_chars: int = DISCOVERY_TRACE_MAX_CHARS
+) -> str:
+    """Keep bounded research evidence without duplicated OpenCode tool metadata."""
+    compact_lines: list[str] = []
+    for raw_line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        compact: dict[str, Any] | None = None
+        if event_type == "tool_use":
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+            state = part.get("state")
+            if not isinstance(state, dict):
+                continue
+            raw_input = state.get("input")
+            input_text = json.dumps(raw_input, ensure_ascii=False, default=str)[:2000]
+            output = state.get("output")
+            compact = {
+                "type": "tool_use",
+                "tool": part.get("tool"),
+                "status": state.get("status"),
+                "input": input_text,
+                "output": str(output or "")[-5000:],
+            }
+        elif event_type == "text":
+            part = event.get("part")
+            text = part.get("text") if isinstance(part, dict) else ""
+            if isinstance(text, str) and text.strip():
+                compact = {"type": "text", "text": text[-3000:]}
+        elif event_type in {
+            "runtime_readiness",
+            "harness_warning",
+            "controlled_stop",
+            "external_compaction",
+        }:
+            compact = dict(event)
+            if isinstance(compact.get("output"), str):
+                compact["output"] = compact["output"][-3000:]
+        if compact is not None:
+            compact_lines.append(json.dumps(compact, ensure_ascii=False, default=str))
+
+    selected: list[str] = []
+    used = 0
+    for line in reversed(compact_lines):
+        line_size = len(line) + 1
+        if selected and used + line_size > max_chars:
+            break
+        if not selected and line_size > max_chars:
+            line = line[-max_chars:]
+            line_size = len(line)
+        selected.append(line)
+        used += line_size
+    return "\n".join(reversed(selected))
 
 
 def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
@@ -2091,10 +2154,10 @@ def synthesize_discovery(
     trace_path: Path,
     started: float,
 ) -> str:
-    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")[-80_000:]
+    trace_text = compact_discovery_trace(trace_path)
     index_path = repo / "knowledge" / "INDEX.md"
     existing_index = (
-        index_path.read_text(encoding="utf-8", errors="replace")[:20_000]
+        index_path.read_text(encoding="utf-8", errors="replace")[:10_000]
         if index_path.is_file()
         else "(none)"
     )
