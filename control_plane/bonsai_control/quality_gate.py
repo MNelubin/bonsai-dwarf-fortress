@@ -92,6 +92,16 @@ def _ast_diagnostics(path: str, content: str, added_lines: set[int]) -> list[dic
     except SyntaxError:
         return diagnostics
 
+    protocol_ranges = [
+        (node.lineno, getattr(node, "end_lineno", node.lineno) or node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        and any(
+            (isinstance(base, ast.Name) and base.id == "Protocol")
+            or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
+            for base in node.bases
+        )
+    ]
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             end_line = getattr(node, "end_lineno", node.lineno) or node.lineno
@@ -104,7 +114,15 @@ def _ast_diagnostics(path: str, content: str, added_lines: set[int]) -> list[dic
                 or (isinstance(decorator, ast.Attribute) and decorator.attr == "abstractmethod")
                 for decorator in node.decorator_list
             )
-            if body and all(_is_placeholder_statement(statement) for statement in body) and not abstract:
+            protocol_declaration = any(
+                start <= node.lineno <= end for start, end in protocol_ranges
+            )
+            if (
+                body
+                and all(_is_placeholder_statement(statement) for statement in body)
+                and not abstract
+                and not protocol_declaration
+            ):
                 diagnostics.append(
                     {
                         "tool": "anti_slop",

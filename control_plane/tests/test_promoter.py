@@ -160,3 +160,24 @@ def test_trusted_gate_rejects_literal_true_test(tmp_path: Path):
     with pytest.raises(GateRejected) as rejected:
         inspect_candidate(repo, bundle, base, candidate, tmp_path / "eval")
     assert any("SLOP002" in reason for reason in rejected.value.report["reasons"])
+
+
+def test_trusted_gate_allows_typing_protocol_declarations(tmp_path: Path):
+    repo, base, candidate, bundle = candidate_bundle(tmp_path, "bridge/backend.py")
+    (repo / "bridge" / "backend.py").write_text(
+        "from typing import Protocol\n\n"
+        "class Backend(Protocol):\n"
+        "    def observe(self) -> dict:\n"
+        "        ...\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "--amend", "--no-edit")
+    candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "-f", "agent/test", candidate)
+    bundle.unlink()
+    git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
+
+    report = inspect_candidate(repo, bundle, base, candidate, tmp_path / "eval")
+    assert report["allowed"] is True
+    assert report["checks"]["python_quality"]["ok"] is True
