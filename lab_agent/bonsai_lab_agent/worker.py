@@ -1728,7 +1728,7 @@ def coding_graph_reasoning_effort(
 
 
 def coding_validation_safe_for_handoff(validation: dict[str, Any]) -> bool:
-    """Persist only syntactically valid, quality-clean coding WIP across jobs."""
+    """Persist syntax-valid bounded WIP so later jobs can repair tests and typing."""
     commands = {
         str(command.get("name")): int(command.get("exit_code", 1))
         for command in validation.get("commands", [])
@@ -1737,7 +1737,14 @@ def coding_validation_safe_for_handoff(validation: dict[str, Any]) -> bool:
     if commands.get("git_diff_check") != 0 or commands.get("py_compile") != 0:
         return False
     quality = validation.get("quality")
-    return isinstance(quality, dict) and quality.get("ok") is True
+    if not isinstance(quality, dict):
+        return False
+    severe_codes = {
+        str(item.get("code"))
+        for item in quality.get("diagnostics", [])
+        if isinstance(item, dict)
+    }
+    return severe_codes.isdisjoint({"SLOP010", "SLOP011"})
 
 
 def run_coding_graph(
@@ -1795,7 +1802,7 @@ def run_coding_graph(
                     {
                         "type": "cross_job_wip_rejected",
                         "phase": phase,
-                        "reason": "syntax_or_quality_gate_failed",
+                        "reason": "syntax_or_size_gate_failed",
                         "changed_paths": serializable_working_tree_paths(repo),
                     },
                 )
@@ -3065,7 +3072,7 @@ def main() -> None:
                             )
                         else:
                             print(
-                                "discarded unsafe cross-job WIP after syntax/quality failure",
+                                "discarded unsafe cross-job WIP after syntax/size failure",
                                 flush=True,
                             )
                     except Exception as wip_exc:
