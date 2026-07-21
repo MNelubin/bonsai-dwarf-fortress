@@ -202,6 +202,71 @@ def serializable_working_tree_paths(repo: Path) -> list[str]:
     return sorted(working_tree_paths(repo))
 
 
+def working_tree_fingerprint(repo: Path, prefixes: tuple[str, ...] = ()) -> str:
+    """Hash the current candidate content so phase watchdogs can detect real edits."""
+    digest = hashlib.sha256()
+    for relative in serializable_working_tree_paths(repo):
+        if prefixes and not relative.startswith(prefixes):
+            continue
+        digest.update(relative.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        target = repo / relative
+        if target.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(target).encode("utf-8", errors="surrogateescape"))
+        elif target.is_file():
+            digest.update(b"file\0")
+            with target.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        else:
+            digest.update(b"missing\0")
+    return digest.hexdigest()
+
+
+def working_tree_diff(repo: Path) -> tuple[str, str]:
+    """Return stat and patch text including untracked files without staging them."""
+    untracked = [
+        path
+        for path in subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
+            text=True,
+        ).splitlines()
+        if path and path not in GENERATED_RUNTIME_PATHS
+    ]
+    if untracked:
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "--intent-to-add", "--", *untracked],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    try:
+        diff_stat = subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--stat", "HEAD"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        diff_excerpt = subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--unified=2", "--no-ext-diff", "HEAD"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    finally:
+        if untracked:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "--mixed", "HEAD", "--", *untracked],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+    return diff_stat, diff_excerpt
+
+
 GENERATED_RUNTIME_PATHS = frozenset(
     {"errorlog.txt", "gamelog.txt", "stderr.log", "stdout.log"}
 )
@@ -635,14 +700,20 @@ def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
     )
 
 
-def trace_has_live_game_probe(trace_path: Path) -> bool:
-    """Require a completed trusted-wrapper result, not merely a launched command."""
+def trace_has_live_game_probe(trace_path: Path, phase: str | None = None) -> bool:
+    """Require a completed trusted-wrapper result, optionally within one phase."""
     if not trace_path.is_file():
         return False
+    current_phase = "opencode"
     for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if event.get("type") == "harness_phase":
+            current_phase = str(event.get("phase") or "")
+            continue
+        if phase is not None and current_phase != phase:
             continue
         if event.get("type") != "tool_use":
             continue
@@ -775,15 +846,14 @@ def compact_phase_checkpoint(
         )
 
     changed = serializable_working_tree_paths(repo)
-    diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
-    diff_excerpt = run("git diff --unified=2 --no-ext-diff", repo, 30)["output"][:14000]
+    diff_stat, diff_excerpt = working_tree_diff(repo)
     return {
         "from_phase": phase,
         "stop_reason": reason,
         "previous_gate_error": previous_error[-4000:],
         "changed_paths": changed,
-        "diff_stat": diff_stat,
-        "diff_excerpt": diff_excerpt,
+        "diff_stat": diff_stat[-4000:],
+        "diff_excerpt": diff_excerpt[:14000],
         "todo": todo,
         "recent_evidence": evidence[-8:],
         "live_probe_observed": trace_has_live_game_probe(trace_path),
@@ -1466,12 +1536,16 @@ Execution discipline is mandatory:
         max_tool_uses: int | None = None,
         phase_timeout: int | None = None,
         implementation_only: bool = False,
+        progress_deadline_tools: int | None = None,
+        progress_prefixes: tuple[str, ...] = (),
+        probe_deadline_tools: int | None = None,
     ) -> str:
         nonlocal last_heartbeat
         budget_exhausted = False
         controlled_stop_reason: str | None = None
         phase_started = time.monotonic()
         effective_phase_timeout = phase_timeout or config.phase_timeout
+        initial_fingerprint = working_tree_fingerprint(repo, progress_prefixes)
         command = [
             config.opencode_bin,
             "run",
@@ -1546,9 +1620,32 @@ Execution discipline is mandatory:
                         controlled_stop_reason = "context_rollover"
                         stop_process_group(process)
                         break
-                    if max_tool_uses is not None and trace_path.exists():
+                    if trace_path.exists():
                         tool_uses = trace_phase_tool_use_count(trace_path, phase)
-                        if tool_uses >= max_tool_uses:
+                        if (
+                            probe_deadline_tools is not None
+                            and tool_uses >= probe_deadline_tools
+                            and not trace_has_live_game_probe(trace_path, phase)
+                        ):
+                            budget_exhausted = True
+                            controlled_stop_reason = "probe_deadline"
+                            stop_process_group(process)
+                            break
+                        if (
+                            progress_deadline_tools is not None
+                            and tool_uses >= progress_deadline_tools
+                            and working_tree_fingerprint(repo, progress_prefixes)
+                            == initial_fingerprint
+                        ):
+                            budget_exhausted = True
+                            controlled_stop_reason = (
+                                "public_test_deadline"
+                                if progress_prefixes
+                                else "edit_deadline"
+                            )
+                            stop_process_group(process)
+                            break
+                        if max_tool_uses is not None and tool_uses >= max_tool_uses:
                             budget_exhausted = True
                             controlled_stop_reason = "tool_budget"
                             stop_process_group(process)
@@ -1613,6 +1710,8 @@ Execution discipline is mandatory:
         "opencode",
         append=trace_path.exists(),
         max_tool_uses=discovery_tool_budget if discovery_mode else config.coding_tool_budget,
+        progress_deadline_tools=None if discovery_mode else 8,
+        probe_deadline_tools=3,
     )
 
     if not trace_has_live_game_probe(trace_path):
@@ -1623,8 +1722,8 @@ research. The deterministic checkpoint below is the complete handoff from the pr
 
 Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
 
-Your first tool call must use the trusted wrapper exactly in this form:
-`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run <command>`.
+Your first tool call must run this exact safe readiness probe:
+`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help`.
 Do not invoke `dwarfort`, `dfhack-run`, or shell `timeout` directly. Preserve BONSAI_PROBE_RESULT,
 stdout/stderr, and any concrete fields or blocker. In coding mode, leave useful evidence in the working
 tree only when it directly supports executable implementation. Do not commit.
@@ -1634,9 +1733,10 @@ tree only when it directly supports executable implementation. Do not commit.
             probe_recovery_prompt,
             last_phase,
             append=True,
-            max_tool_uses=8,
+            max_tool_uses=3,
             phase_timeout=min(240, config.phase_timeout),
             implementation_only=True,
+            probe_deadline_tools=1,
         )
 
     if not trace_has_live_game_probe(trace_path):
@@ -1685,6 +1785,7 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
                 max_tool_uses=config.coding_tool_budget,
                 phase_timeout=min(240, config.phase_timeout),
                 implementation_only=True,
+                progress_deadline_tools=8,
             )
             if (
                 working_tree_paths(repo)
@@ -1729,6 +1830,8 @@ tests. Do not make unrelated changes and do not commit.
                 append=True,
                 max_tool_uses=config.coding_tool_budget,
                 implementation_only=True,
+                progress_deadline_tools=6,
+                progress_prefixes=("tests/", "evaluator_public/") if not has_public_test_change(repo) else (),
             )
             validation = validate_coding_candidate(repo)
             with trace_path.open("a", encoding="utf-8") as trace:

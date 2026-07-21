@@ -24,6 +24,7 @@ from bonsai_lab_agent.worker import (
     serializable_working_tree_paths,
     supervised_df_runtime_process_ids,
     validate_coding_candidate,
+    working_tree_fingerprint,
     working_tree_paths,
     write_discovery_bundle,
 )
@@ -174,6 +175,33 @@ def test_live_probe_rejects_wrapper_when_runtime_never_became_ready(tmp_path: Pa
     assert trace_has_live_game_probe(trace) is False
 
 
+def test_live_probe_can_be_required_in_the_current_phase(tmp_path: Path):
+    trace = tmp_path / "trace.jsonl"
+    result = 'BONSAI_PROBE_RESULT {"exit":0,"timed_out":false,"runtime_ready":true}'
+    write_trace(
+        trace,
+        [
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "bash",
+                    "state": {
+                        "status": "completed",
+                        "input": {"command": "bonsai-df-probe -- dfhack-run help"},
+                        "metadata": {"output": result},
+                    },
+                },
+            },
+            {"type": "harness_phase", "phase": "implementation_continuation_1"},
+            {"type": "tool_use", "part": {"tool": "read", "state": {"status": "completed"}}},
+        ],
+    )
+
+    assert trace_has_live_game_probe(trace) is True
+    assert trace_has_live_game_probe(trace, "opencode") is True
+    assert trace_has_live_game_probe(trace, "implementation_continuation_1") is False
+
+
 def test_context_and_degenerate_stop_classifiers(tmp_path: Path):
     trace = tmp_path / "trace.jsonl"
     write_trace(
@@ -257,6 +285,24 @@ def test_recovery_prompt_paths_are_stable_and_json_serializable(tmp_path: Path):
 
     assert changed == ["README.md", "new_test.py"]
     assert json.loads(json.dumps(changed)) == changed
+
+
+def test_working_tree_fingerprint_detects_edits_and_scoped_test_progress(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    bridge = repo / "bridge.py"
+    bridge.write_text("VALUE = 1\n", encoding="utf-8")
+    all_before = working_tree_fingerprint(repo)
+    tests_before = working_tree_fingerprint(repo, ("tests/", "evaluator_public/"))
+
+    bridge.write_text("VALUE = 2\n", encoding="utf-8")
+    assert working_tree_fingerprint(repo) != all_before
+    assert working_tree_fingerprint(repo, ("tests/", "evaluator_public/")) == tests_before
+
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_bridge.py").write_text(
+        "def test_bridge():\n    assert True\n", encoding="utf-8"
+    )
+    assert working_tree_fingerprint(repo, ("tests/", "evaluator_public/")) != tests_before
 
 
 def test_generated_df_logs_are_not_candidate_changes_and_are_cleaned(tmp_path: Path):
@@ -442,6 +488,8 @@ def test_external_checkpoint_compacts_evidence_and_diff(tmp_path: Path):
     assert checkpoint["changed_paths"] == ["bridge.py"]
     assert checkpoint["stop_reason"] == "context_rollover"
     assert checkpoint["previous_gate_error"] == "gate failed"
+    assert "bridge.py" in checkpoint["diff_stat"]
+    assert "+VALUE = 1" in checkpoint["diff_excerpt"]
     assert checkpoint["latest_phase_input_tokens"] == 55000
     assert checkpoint["recent_evidence"][-1]["output"] == "Could not connect"
 
