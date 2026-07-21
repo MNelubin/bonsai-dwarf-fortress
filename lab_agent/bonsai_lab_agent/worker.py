@@ -1713,6 +1713,20 @@ Bounded source packet:
     return payload
 
 
+def coding_graph_reasoning_effort(
+    config: Config,
+    decision: str,
+    attempt: int,
+    diagnostics: str,
+) -> str:
+    """Keep K2 v2 from spending its entire response budget on hidden reasoning."""
+    if config.model_api_style == "openai" and "K2-Think-v2" in provider_model_id(config):
+        return "medium"
+    if decision == "repair" or attempt > 1 or "finish_reason='length'" in diagnostics:
+        return "medium"
+    return config.model_reasoning_effort
+
+
 def run_coding_graph(
     config: Config,
     api: Api,
@@ -1754,7 +1768,7 @@ def run_coding_graph(
                 diagnostics,
                 phase,
                 started,
-                "high" if decision == "draft" else "medium",
+                coding_graph_reasoning_effort(config, decision, attempt, diagnostics),
             )
             applied_paths = apply_coding_graph_edits(repo, proposal)
             persist_cross_job_wip(

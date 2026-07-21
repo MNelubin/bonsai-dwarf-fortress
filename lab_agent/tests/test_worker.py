@@ -14,6 +14,7 @@ from bonsai_lab_agent.worker import (
     bounded_ollama_chat,
     cleanup_generated_runtime_files,
     coding_graph_decision,
+    coding_graph_reasoning_effort,
     df_runtime_process_ids,
     discovery_needs_synthesis,
     compact_phase_checkpoint,
@@ -42,6 +43,36 @@ from bonsai_lab_agent.worker import (
     working_tree_paths,
     write_discovery_bundle,
 )
+
+
+def test_k2_coding_graph_never_uses_high_reasoning_for_large_patch_prompts():
+    config = object.__new__(Config)
+    object.__setattr__(config, "model", "k2think/MBZUAI-IFM/K2-Think-v2")
+    object.__setattr__(config, "model_api_style", "openai")
+    object.__setattr__(config, "model_reasoning_effort", "high")
+
+    assert coding_graph_reasoning_effort(config, "draft", 1, "") == "medium"
+    assert coding_graph_reasoning_effort(config, "repair", 1, "") == "medium"
+    assert (
+        coding_graph_reasoning_effort(
+            config,
+            "draft",
+            2,
+            "finish_reason='length'; no final content",
+        )
+        == "medium"
+    )
+
+
+def test_other_openai_models_can_use_high_only_for_the_first_clean_draft():
+    config = object.__new__(Config)
+    object.__setattr__(config, "model", "provider/other-model")
+    object.__setattr__(config, "model_api_style", "openai")
+    object.__setattr__(config, "model_reasoning_effort", "high")
+
+    assert coding_graph_reasoning_effort(config, "draft", 1, "") == "high"
+    assert coding_graph_reasoning_effort(config, "repair", 1, "") == "medium"
+    assert coding_graph_reasoning_effort(config, "draft", 2, "") == "medium"
 
 
 def test_openai_structured_request_uses_high_reasoning_without_token_limit():
