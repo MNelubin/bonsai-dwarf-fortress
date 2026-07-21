@@ -64,6 +64,26 @@ def test_openai_structured_request_uses_high_reasoning_without_token_limit():
     assert provider_model_id(config) == "MBZUAI-IFM/K2-Think-v2"
 
 
+def test_openai_structured_request_can_lower_only_repair_reasoning_without_token_limit():
+    config = object.__new__(Config)
+    object.__setattr__(config, "model", "k2think/MBZUAI-IFM/K2-Think-v2")
+    object.__setattr__(config, "model_api_style", "openai")
+    object.__setattr__(config, "model_reasoning_effort", "high")
+    payload = json.loads(
+        structured_model_request(
+            config,
+            [{"role": "user", "content": "repair"}],
+            {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+            schema_name="repair",
+            ollama_num_ctx=1024,
+            ollama_num_predict=64,
+            reasoning_effort="medium",
+        )
+    )
+    assert payload["reasoning_effort"] == "medium"
+    assert not any("max" in key or "predict" in key for key in payload)
+
+
 def test_openai_response_content_is_separate_from_reasoning():
     config = object.__new__(Config)
     object.__setattr__(config, "model_api_style", "openai")

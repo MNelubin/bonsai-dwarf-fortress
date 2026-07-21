@@ -18,11 +18,12 @@ TOKEN_LIMIT_FIELDS = {
 
 
 def transform_request(payload: dict[str, Any]) -> dict[str, Any]:
-    """Force K2's evaluated reasoning mode and leave output length server-controlled."""
+    """Keep high/medium reasoning and leave output length server-controlled."""
     transformed = dict(payload)
     for field in TOKEN_LIMIT_FIELDS:
         transformed.pop(field, None)
-    transformed["reasoning_effort"] = "high"
+    if transformed.get("reasoning_effort") not in {"high", "medium"}:
+        transformed["reasoning_effort"] = "high"
     messages = transformed.get("messages")
     if isinstance(messages, list):
         normalized_messages: list[Any] = []

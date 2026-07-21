@@ -1458,13 +1458,14 @@ def structured_model_request(
     ollama_num_ctx: int,
     ollama_num_predict: int,
     ollama_think: bool = False,
+    reasoning_effort: str | None = None,
 ) -> bytes:
     """Build a provider-specific structured request without limiting K2 output tokens."""
     if config.model_api_style == "openai":
         payload: dict[str, Any] = {
             "model": provider_model_id(config),
             "stream": False,
-            "reasoning_effort": config.model_reasoning_effort,
+            "reasoning_effort": reasoning_effort or config.model_reasoning_effort,
             "messages": messages,
             "response_format": {
                 "type": "json_schema",
@@ -1602,6 +1603,7 @@ def request_coding_graph_edits(
     diagnostics: str,
     phase: str,
     started: float,
+    reasoning_effort: str,
 ) -> dict[str, Any]:
     """Run one tool-free model node whose only output is exact controller-applied edits."""
     context_packet = select_coding_context(repo, objective)
@@ -1667,10 +1669,16 @@ Bounded source packet:
         schema_name="coding_graph_edits",
         ollama_num_ctx=65536,
         ollama_num_predict=6144,
+        reasoning_effort=reasoning_effort,
     )
     _trace_event(
         repo.parent / "opencode-trace.jsonl",
-        {"type": "coding_graph_node_started", "phase": phase, "context_paths": list(context_packet)},
+        {
+            "type": "coding_graph_node_started",
+            "phase": phase,
+            "reasoning_effort": reasoning_effort,
+            "context_paths": list(context_packet),
+        },
     )
     raw = bounded_ollama_chat(
         config,
@@ -1731,7 +1739,15 @@ def run_coding_graph(
         proposal: dict[str, Any] | None = None
         try:
             proposal = request_coding_graph_edits(
-                config, api, job, repo, objective, diagnostics, phase, started
+                config,
+                api,
+                job,
+                repo,
+                objective,
+                diagnostics,
+                phase,
+                started,
+                "high" if decision == "draft" else "medium",
             )
             applied_paths = apply_coding_graph_edits(repo, proposal)
             persist_cross_job_wip(

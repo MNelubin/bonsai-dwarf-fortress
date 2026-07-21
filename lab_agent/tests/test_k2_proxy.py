@@ -19,6 +19,19 @@ def test_transform_request_strips_all_output_limits_and_forces_high_reasoning():
     assert payload["max_tokens"] == 1
 
 
+def test_transform_request_preserves_explicit_medium_for_bounded_repair():
+    transformed = transform_request(
+        {
+            "model": "MBZUAI-IFM/K2-Think-v2",
+            "messages": [{"role": "user", "content": "repair this validated diff"}],
+            "reasoning_effort": "medium",
+            "max_tokens": 1,
+        }
+    )
+    assert transformed["reasoning_effort"] == "medium"
+    assert all(field not in transformed for field in TOKEN_LIMIT_FIELDS)
+
+
 def test_transform_request_preserves_tools_and_response_format():
     payload = {
         "model": "MBZUAI-IFM/K2-Think-v2",
