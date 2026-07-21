@@ -1,39 +1,40 @@
 -- bridge/contract.lua
--- Minimal deterministic Bridge contract implementation.
+-- Thin adapter over bridge.core for the public contract.
 
+local core = require('bridge.core')
 local M = {}
 
--- Reset the internal state.
+-- reset: delegate to core.reset, returning nil.
 function M.reset()
-    return {status = "reset"}
+    core.reset()
+    return
 end
 
--- Observe the current state. Deterministic placeholder.
+-- observe: delegate to core.observe, returning the observation table.
 function M.observe()
-    return {
-        status = "ok",
-        timestamp = 0,
-        state = "idle"
-    }
+    return core.observe()
 end
 
--- Act based on a JSON action description.
+-- act: validate input is a table, then delegate to core.act.
 function M.act(action)
-    return {status = "ok", performed = action}
+    if type(action) ~= "table" then
+        return { ok = false, message = "act requires a table" }
+    end
+    local command = action.command or action.name
+    if not command then
+        return { ok = false, message = "act requires a 'command' field" }
+    end
+    local args = action.args
+    -- core.act expects fields name and args; forward unchanged.
+    return core.act({ name = command, args = args })
 end
 
--- Advance the simulation.
-function M.advance(step)
-    return {status = "ok", advanced = step}
+-- advance: validate positive integer, then delegate to core.advance.
+function M.advance(ticks)
+    if type(ticks) ~= "number" or ticks < 1 then
+        return { ok = false, message = "advance requires a positive integer" }
+    end
+    return core.advance(ticks)
 end
-
--- Register the API functions with the DFHack bridge.
-local bridge = require "bridge"
-bridge.register{
-    reset = M.reset,
-    observe = M.observe,
-    act = M.act,
-    advance = M.advance,
-}
 
 return M
