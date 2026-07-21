@@ -1,0 +1,8 @@
+{
+    "cpu_metrics": {
+        "average_30day_load": 0.45,
+        "peak_load": 0.78,
+        "idle_time": "12h 34m",
+        "failure_rate": "5%"
+    }
+}
