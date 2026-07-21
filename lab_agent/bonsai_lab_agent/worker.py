@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -197,7 +198,7 @@ def working_tree_paths(repo: Path) -> set[str]:
         paths.update(
             line
             for line in subprocess.check_output(command, text=True).splitlines()
-            if line and line not in GENERATED_RUNTIME_PATHS
+            if line and not is_generated_runtime_path(line)
         )
     return paths
 
@@ -237,7 +238,7 @@ def working_tree_diff(repo: Path) -> tuple[str, str]:
             ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
             text=True,
         ).splitlines()
-        if path and path not in GENERATED_RUNTIME_PATHS
+        if path and not is_generated_runtime_path(path)
     ]
     if untracked:
         subprocess.run(
@@ -275,12 +276,20 @@ def working_tree_diff(repo: Path) -> tuple[str, str]:
 GENERATED_RUNTIME_PATHS = frozenset(
     {"errorlog.txt", "gamelog.txt", "stderr.log", "stdout.log"}
 )
+GENERATED_RUNTIME_DIRS = frozenset({".mypy_cache", ".pytest_cache", ".ruff_cache"})
 DF_RUNTIME_ROOT = Path("/srv/df-bonsai")
 SUPERVISED_DF_UNIT = "bonsai-df-runtime.service"
 
 
+def is_generated_runtime_path(relative: str) -> bool:
+    return relative in GENERATED_RUNTIME_PATHS or any(
+        relative == directory or relative.startswith(f"{directory}/")
+        for directory in GENERATED_RUNTIME_DIRS
+    )
+
+
 def cleanup_generated_runtime_files(repo: Path) -> list[str]:
-    """Remove only untracked DF logs generated in an agent repository."""
+    """Remove only known untracked validator/DF artifacts in a disposable run clone."""
     removed: list[str] = []
     for relative in sorted(GENERATED_RUNTIME_PATHS):
         target = repo / relative
@@ -294,6 +303,17 @@ def cleanup_generated_runtime_files(repo: Path) -> list[str]:
         if tracked:
             continue
         target.unlink()
+        removed.append(relative)
+    for relative in sorted(GENERATED_RUNTIME_DIRS):
+        target = repo / relative
+        if not target.is_dir() or target.is_symlink():
+            continue
+        tracked_files = subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "--", relative], text=True
+        ).strip()
+        if tracked_files:
+            continue
+        shutil.rmtree(target)
         removed.append(relative)
     return removed
 
@@ -406,9 +426,15 @@ def _safe_wip_path(path: str, job_type: str) -> bool:
 
 def _wip_files(config: Config, job: dict[str, Any]) -> tuple[Path, Path] | None:
     objective_id = str(job.get("objective_id") or "")
-    if OBJECTIVE_ID.fullmatch(objective_id) is None:
+    job_type = str(job.get("job_type") or "")
+    if OBJECTIVE_ID.fullmatch(objective_id) is None or job_type not in {
+        "coding_cycle",
+        "discovery_cycle",
+        "research_cycle",
+    }:
         return None
-    return config.wip_dir / f"{objective_id}.patch", config.wip_dir / f"{objective_id}.json"
+    stem = f"{objective_id}.{job_type}"
+    return config.wip_dir / f"{stem}.patch", config.wip_dir / f"{stem}.json"
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
