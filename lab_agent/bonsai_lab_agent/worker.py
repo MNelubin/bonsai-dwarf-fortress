@@ -1733,7 +1733,7 @@ tree only when it directly supports executable implementation. Do not commit.
             probe_recovery_prompt,
             last_phase,
             append=True,
-            max_tool_uses=3,
+            max_tool_uses=1,
             phase_timeout=min(240, config.phase_timeout),
             implementation_only=True,
             probe_deadline_tools=1,
@@ -1775,7 +1775,8 @@ Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
 Continue from the existing working tree. If it is clean, implement the smallest executable improvement
 supported by the recorded evidence now. If it contains a partial diff, finish that diff instead of replacing
 it. Modify executable code and a deterministic public test. Run focused verification, check git status, and
-leave changes uncommitted. You have a fresh tool budget; spend it on edits and validation, not rediscovery.
+leave changes uncommitted. Your FIRST tool call must edit or write a candidate file; all required task evidence
+and exact target paths are already present above. Do not spend that call on status, reading, grep, or discovery.
 """.strip()
             last_phase = continuation_phase
             last_reason = run_harness(
@@ -1785,7 +1786,7 @@ leave changes uncommitted. You have a fresh tool budget; spend it on edits and v
                 max_tool_uses=config.coding_tool_budget,
                 phase_timeout=min(240, config.phase_timeout),
                 implementation_only=True,
-                progress_deadline_tools=8,
+                progress_deadline_tools=1,
             )
             if (
                 working_tree_paths(repo)
@@ -1821,7 +1822,8 @@ Validation: {validation_output}
 Public test changed: {has_public_test_change(repo)}
 
 Fix syntax or test failures, add/update a deterministic public test if missing, and rerun the relevant
-tests. Do not make unrelated changes and do not commit.
+tests. Your FIRST tool call must edit the candidate or its public test. Do not make unrelated changes and
+do not commit.
 """.strip()
             last_phase = f"validation_repair_{repair_index + 1}"
             last_reason = run_harness(
@@ -1830,7 +1832,7 @@ tests. Do not make unrelated changes and do not commit.
                 append=True,
                 max_tool_uses=config.coding_tool_budget,
                 implementation_only=True,
-                progress_deadline_tools=6,
+                progress_deadline_tools=1,
                 progress_prefixes=("tests/", "evaluator_public/") if not has_public_test_change(repo) else (),
             )
             validation = validate_coding_candidate(repo)
