@@ -11,6 +11,7 @@ from bonsai_lab_agent.probe_guard import ensure_runtime_ready, run_guarded_probe
 from bonsai_lab_agent.worker import (
     Config,
     apply_coding_graph_edits,
+    bounded_ollama_chat,
     cleanup_generated_runtime_files,
     coding_graph_decision,
     df_runtime_process_ids,
@@ -34,6 +35,47 @@ from bonsai_lab_agent.worker import (
     working_tree_paths,
     write_discovery_bundle,
 )
+
+
+class HeartbeatApi:
+    def heartbeat(self, job: dict[str, object], progress: dict[str, object]) -> None:
+        pass
+
+    def worker_heartbeat(self, status: str, job_id: str, progress: dict[str, object]) -> None:
+        pass
+
+
+def test_bounded_ollama_chat_kills_a_process_past_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_curl = tmp_path / "fake-curl"
+    fake_curl.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    config = object.__new__(Config)
+    object.__setattr__(config, "phase_timeout", 0)
+    object.__setattr__(config, "model", "ollama/test")
+    object.__setattr__(config, "ollama_url", "http://127.0.0.1:1")
+    clock = {"value": 0.0}
+
+    def monotonic() -> float:
+        clock["value"] += 70.0
+        return clock["value"]
+
+    monkeypatch.setattr("bonsai_lab_agent.worker.time.monotonic", monotonic)
+    monkeypatch.setattr("bonsai_lab_agent.worker.time.sleep", lambda _seconds: None)
+    with pytest.raises(TimeoutError, match="process deadline"):
+        bounded_ollama_chat(
+            config,
+            HeartbeatApi(),  # type: ignore[arg-type]
+            {"id": "job"},
+            tmp_path,
+            "coding_graph_draft_1",
+            b"{}",
+            0.0,
+            curl_bin=str(fake_curl),
+        )
+    assert not list(tmp_path.glob(".*.json"))
+    assert not list(tmp_path.glob(".*.log"))
 
 
 def init_repo(tmp_path: Path) -> Path:

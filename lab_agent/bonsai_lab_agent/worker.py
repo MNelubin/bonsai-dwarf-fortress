@@ -1245,6 +1245,86 @@ def _coding_context_markdown(packet: dict[str, str]) -> str:
     )
 
 
+def bounded_ollama_chat(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    run_root: Path,
+    phase: str,
+    request_body: bytes,
+    job_started: float,
+    *,
+    curl_bin: str = "/usr/bin/curl",
+) -> bytes:
+    """Run an Ollama request in a killable process with a real wall-clock deadline."""
+    safe_phase = re.sub(r"[^a-zA-Z0-9_.-]+", "-", phase)[:80] or "ollama"
+    request_path = run_root / f".{safe_phase}.request.json"
+    response_path = run_root / f".{safe_phase}.response.json"
+    stderr_path = run_root / f".{safe_phase}.stderr.log"
+    node_timeout = min(max(120, config.phase_timeout), 900)
+    request_path.write_bytes(request_body)
+    node_started = time.monotonic()
+    process: subprocess.Popen[str] | None = None
+    try:
+        with response_path.open("wb") as response_file, stderr_path.open("wb") as stderr_file:
+            process = subprocess.Popen(
+                [
+                    curl_bin,
+                    "--fail-with-body",
+                    "--silent",
+                    "--show-error",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    str(node_timeout),
+                    "--header",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    f"@{request_path}",
+                    f"{config.ollama_url}/api/chat",
+                ],
+                stdout=response_file,
+                stderr=stderr_file,
+                text=True,
+                start_new_session=True,
+            )
+            next_heartbeat = node_started + 25
+            while process.poll() is None:
+                now = time.monotonic()
+                if now - node_started >= node_timeout + 15:
+                    stop_process_group(process)
+                    raise TimeoutError(
+                        f"Ollama {phase} exceeded its {node_timeout}-second process deadline"
+                    )
+                if now >= next_heartbeat:
+                    progress = {
+                        "phase": phase,
+                        "model": config.model,
+                        "elapsed_seconds": round(now - job_started),
+                        "node_elapsed_seconds": round(now - node_started),
+                        "node_deadline_seconds": node_timeout,
+                    }
+                    api.heartbeat(job, progress)
+                    api.worker_heartbeat("running", str(job["id"]), progress)
+                    next_heartbeat = now + 25
+                time.sleep(1)
+        return_code = process.returncode
+        if return_code != 0:
+            stderr = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            raise RuntimeError(
+                f"Ollama {phase} request failed with curl exit {return_code}: {stderr}"
+            )
+        if response_path.stat().st_size > 4 * 1024 * 1024:
+            raise RuntimeError(f"Ollama {phase} response exceeded 4 MiB")
+        return response_path.read_bytes()
+    finally:
+        if process is not None and process.poll() is None:
+            stop_process_group(process)
+        request_path.unlink(missing_ok=True)
+        response_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
+
+
 def request_coding_graph_edits(
     config: Config,
     api: Api,
@@ -1321,34 +1401,19 @@ Bounded source packet:
             "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 6144},
         }
     ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{config.ollama_url}/api/chat",
-        method="POST",
-        data=request_body,
-        headers={"Content-Type": "application/json"},
-    )
-
-    def fetch() -> bytes:
-        with urllib.request.urlopen(request, timeout=max(300, config.phase_timeout)) as response:
-            return response.read(4 * 1024 * 1024 + 1)
-
     _trace_event(
         repo.parent / "opencode-trace.jsonl",
         {"type": "coding_graph_node_started", "phase": phase, "context_paths": list(context_packet)},
     )
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fetch)
-        while True:
-            try:
-                raw = future.result(timeout=25)
-                break
-            except FutureTimeout:
-                elapsed = round(time.monotonic() - started)
-                progress = {"phase": phase, "model": config.model, "elapsed_seconds": elapsed}
-                api.heartbeat(job, progress)
-                api.worker_heartbeat("running", str(job["id"]), progress)
-    if len(raw) > 4 * 1024 * 1024:
-        raise RuntimeError("coding graph response exceeded 4 MiB")
+    raw = bounded_ollama_chat(
+        config,
+        api,
+        job,
+        repo.parent,
+        phase,
+        request_body,
+        started,
+    )
     response_payload = json.loads(raw)
     content = response_payload.get("message", {}).get("content")
     if not isinstance(content, str):
