@@ -30,12 +30,12 @@ SEASON_NAMES = [
 def _lua_time_snapshot():
     """Build a safe Lua expression that returns calendar fields as JSON."""
     return (
-        "local json=require('data-JSON');"
+        "local json=require('json');"
         "local g=df.global;"
         "local r={year=g.cur_year,season=g.cur_season,"
         "tick=(g.cur_year_tick or -1),"
         "paused=(g.pause_state and true or false)};"
-        "json.write(r)"
+        "print(json.encode(r))"
     )
 
 
@@ -227,7 +227,7 @@ def stockpile_summary(stockpiles):
 def probe_stockpiles(timeout=15):
     """Call bridge.stockpile_list() via DFHack and return parsed stockpile data."""
     try:
-        result = _dfhack_run("lua require('bridge.core').stockpile_list()", timeout=timeout)
+        result = _dfhack_run("require('bridge.core').stockpile_list()", timeout=timeout)
         if isinstance(result, dict) and not result.get("ok"):
             return []
         if isinstance(result, list):
@@ -262,7 +262,7 @@ def zones_at_z(zones, z):
 def probe_zones(timeout=15):
     """Call bridge.zone_list() via DFHack and return parsed zone data."""
     try:
-        result = _dfhack_run("lua require('bridge.core').zone_list()", timeout=timeout)
+        result = _dfhack_run("require('bridge.core').zone_list()", timeout=timeout)
         if isinstance(result, dict) and not result.get("ok"):
             return []
         if isinstance(result, list):
@@ -1241,7 +1241,7 @@ def probe_unit_needs(timeout=30):
     Returns a list of unit dicts each with {id, counter fields…},
     or None on transport failure."""
     try:
-        result = _dfhack_run("lua require('bridge.core').unit_needs()", timeout=timeout)
+        result = _dfhack_run("require('bridge.core').unit_needs()", timeout=timeout)
         if not isinstance(result, list):
             return None
         for u in result:
@@ -1399,7 +1399,7 @@ def probe_thought_emotions(timeout=30):
     Returns a list of unit dicts each with {id, stress, happiness_pctile,
     emotions: [{type, strength, thought, severity}], n_emotions}, or None."""
     try:
-        result = _dfhack_run("lua require('bridge.core').thought_emotions()", timeout=timeout)
+        result = _dfhack_run("require('bridge.core').thought_emotions()", timeout=timeout)
         if not isinstance(result, list):
             return None
         for u in result:

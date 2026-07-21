@@ -73,9 +73,9 @@ def _default_observation():
 def _dfhack_run(lualine, timeout=30):
     """Run a single DFHack command and parse JSON from stdout.
 
-    Uses ``dfhack-run <command>`` syntax (live-probed on 53.15-r2).
+    Uses ``dfhack-run lua <source>`` syntax (live-probed on 53.15-r2).
     The caller is responsible for escaping the Lua expression as valid
-    code; this wrapper simply passes ``lua <lualine>`` to the runner.
+    code; this wrapper passes ``lua`` and ``lualine`` as separate argv elements.
 
     If the DFHack process exits with a non-zero exit code (e.g., segfault 139
     when no game process is active), returns a dict with keys ``dfhack_error``,
@@ -86,7 +86,7 @@ def _dfhack_run(lualine, timeout=30):
     dfhack_bin = os.path.join(DF_DIR, "hack", "dfhack-run")
     try:
         proc = subprocess.run(
-            [dfhack_bin, f"lua {lualine}"],
+            [dfhack_bin, "lua", lualine],
             capture_output=True, text=True, timeout=timeout, env=env,
             cwd=DF_DIR,
         )
