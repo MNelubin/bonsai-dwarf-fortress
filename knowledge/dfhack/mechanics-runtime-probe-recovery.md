@@ -1,68 +1,59 @@
 # Runtime Probe Recovery and Budget Exhaustion
 
-This note details the observed behavior of runtime readiness checks, probe execution via `bonsai-df-probe`, and harness budget exhaustion events in Dwarf Fortress 53.15 with DFHack 53.15-r2.
+This note documents the mechanics of runtime readiness verification, probe execution via `bonsai-df-probe`, and the conditions leading to harness budget exhaustion in the DF-Bonsai environment.
+
+## Target Versions
+- **Dwarf Fortress**: 53.15 (Steam Build 23622201)
+- **DFHack**: 53.15-r2 (release)
 
 ## Runtime Readiness Verification
 
-The system verifies runtime readiness before executing game logic probes. The trace indicates a successful readiness check during the `ensure_runtime_ready` phase.
+The system verifies runtime readiness before executing probes. The state is captured in JSON metadata within probe results.
 
-- **Status**: Ready (`true`) [VERIFIED]
-- **Game Started**: False (`false`) [VERIFIED]
-- **Attempts**: 1 [VERIFIED]
-- **Source Command Output**: The DFHack help text is returned, confirming the CLI is responsive. The output explicitly states: `DFHack version 53.15-r2 (release) on x86_64` [VERIFIED].
+### Observed State Fields [VERIFIED]
+Based on the `runtime_readiness` event and `BONSAI_PROBE_RESULT` output:
+- **`ready`**: Boolean indicating if DFHack is responsive. Value: `true`.
+- **`started`**: Boolean indicating if a fortress simulation has begun. Value: `false` (Title Screen/Menu state).
+- **`attempts`**: Integer count of readiness checks. Value: `1`.
+- **`runtime_ready`**: Top-level flag in probe result. Value: `true`.
 
-## Probe Execution and Result Structure
+### Probe Command Structure [VERIFIED]
+The probe utility is located at `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe`. It wraps the DFHack runner.
+- **Runner Path**: `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run`
+- **Timeout**: Configurable via `--timeout` (e.g., 30 seconds).
+- **Execution**: The probe executes commands like `help` to verify connectivity.
 
-Probes are executed using the `bonsai-df-probe` wrapper tool. The trace shows a successful probe execution during the `live_game_probe_recovery` phase.
+## Harness Budget and Exhaustion Mechanics
 
-- **Command Executed**: `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help` [VERIFIED]
-- **Exit Code**: 0 [VERIFIED]
-- **Timeout Status**: `false` [VERIFIED]
-- **Duration**: 0.008 seconds [VERIFIED]
-- **Runtime Ready Flag**: `true` [VERIFIED]
+The research trace demonstrates two distinct phases of budget exhaustion, highlighting the constraints on tool usage during automated probing.
 
-The probe result includes a structured JSON payload (`BONSAI_PROBE_RESULT`) embedded in the stdout, which mirrors the runtime state:
-```json
-{
-  "exit": 0,
-  "timed_out": false,
-  "duration_seconds": 0.008,
-  "command": ["/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run", "help"],
-  "runtime_ready": true,
-  "runtime": {
-    "ready": true,
-    "started": false,
-    "attempts": 1,
-    "output": "...",
-    "required": true
-  }
-}
-```
-This structure allows the harness to programmatically verify both the success of the command and the underlying runtime state [VERIFIED].
+### Phase 1: OpenCode Discovery [VERIFIED]
+- **Phase Name**: `opencode`
+- **Tool Profile**: `general`
+- **Max Tool Uses**: 16
+- **Exhaustion Reason**: `probe_deadline`
+- **Observation**: The harness terminated after discovering file structures (`game_runner`, `bridge`, `tests`) but before completing deeper analysis. The deadline constraint prevented further tool calls despite available budget.
 
-## Harness Budget Exhaustion
-
-The trace records two instances of budget exhaustion, indicating limits on tool usage or time within specific phases.
-
-1. **Opencode Phase**:
-   - **Reason**: `phase_timeout` [VERIFIED]
-   - **Max Tool Uses**: 16 [VERIFIED]
-   - **Checkpoint**: `checkpoint-opencode.json` created with no changed paths [VERIFIED].
-
-2. **Live Game Probe Recovery Phase**:
-   - **Reason**: `tool_budget` [VERIFIED]
-   - **Max Tool Uses**: 1 [VERIFIED]
-   - This suggests a strict limit on the number of tools that can be invoked during recovery probes, likely to prevent infinite loops or excessive resource consumption during error handling [INFERRED].
+### Phase 2: Live Game Probe Recovery [VERIFIED]
+- **Phase Name**: `live_game_probe_recovery`
+- **Tool Profile**: `implementation_only`
+- **Max Tool Uses**: 1
+- **Exhaustion Reason**: `tool_budget`
+- **Observation**: The harness was strictly limited to a single tool use. It successfully executed one probe (`bonsai-df-probe ... help`) which returned success (`exit: 0`, `timed_out: false`). Immediately after this single successful call, the budget was exhausted.
 
 ## Implications for Reset/Observe/Act/Advance
 
-- **Reset**: The `runtime_cleanup` steps show no processes were killed (`targets`: [], `sigkill`: []) and no files removed. This implies that readiness checks do not trigger a hard reset of the DF process if it is already responsive [VERIFIED].
-- **Observe**: Probes are lightweight (0.008s) and return structured metadata alongside game output. Observations should parse the `BONSAI_PROBE_RESULT` JSON to determine runtime health before interpreting game state [VERIFIED].
-- **Act/Advance**: Since `started` is `false`, the game world has not initialized. Actions that depend on in-game entities (units, jobs) will fail or return empty sets until a start command is issued and `started` becomes `true` [INFERRED].
+1. **Readiness Check is Fast**: The readiness check completes in ~8ms (`duration_seconds": 0.008`). This suggests that `bonsai-df-probe` can be used as a lightweight health check without significant latency overhead.
+2. **State Stability**: The runtime remained stable across phases. The `started: false` state persisted, indicating no simulation advancement occurred during the probe recovery phase.
+3. **Budget Constraints are Hard Limits**: Agents must prioritize critical verification steps (like connectivity) in early phases if budget is tight (`tool_budget` exhaustion). Complex discovery tasks may fail due to `probe_deadline` even if tool count remains.
 
 ## Coding Recommendations
 
-1. **Parse Probe Results**: Always parse the `BONSAI_PROBE_RESULT` JSON from stdout when using `bonsai-df-probe`. Do not rely solely on exit codes, as the structured data provides critical runtime state (`ready`, `started`).
-2. **Handle Budget Limits**: Implement logic to detect `tool_budget` exhaustion. If a recovery phase is limited to 1 tool use, ensure that single probe is comprehensive or that fallback mechanisms are defined outside the probe loop.
-3. **Verify Runtime State Before Game Logic**: Check `runtime.started` before attempting to query game-specific structures (e.g., jobs, units). If `started` is `false`, queue actions for later or trigger a start sequence [INFERRED].
-4. **Timeout Configuration**: The probe timeout was set to 30 seconds but completed in <1 second. For simple commands like `help`, lower timeouts may be sufficient, but complex queries may require higher limits. Monitor `duration_seconds` to optimize timeout settings [OPEN].
+1. **Probe Wrapper Usage**: Always use `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe` for DFHack interactions to ensure proper timeout handling and result parsing.
+2. **Check `runtime_ready`**: Before issuing complex commands, verify the `runtime_ready` flag in the probe result JSON. If `false`, retry or handle the error state.
+3. **Budget Awareness**: In `implementation_only` profiles with low tool budgets (e.g., 1), execute only the most critical verification command (e.g., `help` or a specific status check) to confirm connectivity before assuming success.
+4. **Path Resolution**: Use the release-specific path `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run` for direct DFHack execution if bypassing the probe wrapper is necessary (not recommended due to lack of timeout handling).
+
+## Uncertainties [OPEN]
+- The exact threshold for `probe_deadline` vs `tool_budget` exhaustion in mixed scenarios is not fully characterized.
+- Whether `started: false` prevents certain job-related probes from returning valid data is unverified in this trace.
