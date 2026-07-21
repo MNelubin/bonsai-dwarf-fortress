@@ -15,6 +15,7 @@ from bonsai_lab_agent.worker import (
     cleanup_generated_runtime_files,
     coding_graph_decision,
     coding_graph_reasoning_effort,
+    coding_validation_safe_for_handoff,
     df_runtime_process_ids,
     discovery_needs_synthesis,
     compact_phase_checkpoint,
@@ -73,6 +74,25 @@ def test_other_openai_models_can_use_high_only_for_the_first_clean_draft():
     assert coding_graph_reasoning_effort(config, "draft", 1, "") == "high"
     assert coding_graph_reasoning_effort(config, "repair", 1, "") == "medium"
     assert coding_graph_reasoning_effort(config, "draft", 2, "") == "medium"
+
+
+def test_coding_wip_handoff_requires_syntax_and_quality_but_not_green_pytest():
+    validation = {
+        "commands": [
+            {"name": "git_diff_check", "exit_code": 0},
+            {"name": "py_compile", "exit_code": 0},
+            {"name": "public_pytest", "exit_code": 1},
+        ],
+        "quality": {"ok": True},
+    }
+    assert coding_validation_safe_for_handoff(validation) is True
+
+    validation["commands"][1]["exit_code"] = 1
+    assert coding_validation_safe_for_handoff(validation) is False
+
+    validation["commands"][1]["exit_code"] = 0
+    validation["quality"] = {"ok": False}
+    assert coding_validation_safe_for_handoff(validation) is False
 
 
 def test_openai_structured_request_uses_high_reasoning_without_token_limit():

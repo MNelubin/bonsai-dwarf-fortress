@@ -1727,6 +1727,19 @@ def coding_graph_reasoning_effort(
     return config.model_reasoning_effort
 
 
+def coding_validation_safe_for_handoff(validation: dict[str, Any]) -> bool:
+    """Persist only syntactically valid, quality-clean coding WIP across jobs."""
+    commands = {
+        str(command.get("name")): int(command.get("exit_code", 1))
+        for command in validation.get("commands", [])
+        if isinstance(command, dict)
+    }
+    if commands.get("git_diff_check") != 0 or commands.get("py_compile") != 0:
+        return False
+    quality = validation.get("quality")
+    return isinstance(quality, dict) and quality.get("ok") is True
+
+
 def run_coding_graph(
     config: Config,
     api: Api,
@@ -1771,10 +1784,21 @@ def run_coding_graph(
                 coding_graph_reasoning_effort(config, decision, attempt, diagnostics),
             )
             applied_paths = apply_coding_graph_edits(repo, proposal)
-            persist_cross_job_wip(
-                config, job, repo, base_commit, phase, "graph_edit_applied", trace_path
-            )
             validation = validate_coding_candidate(repo)
+            if coding_validation_safe_for_handoff(validation):
+                persist_cross_job_wip(
+                    config, job, repo, base_commit, phase, "graph_edit_applied", trace_path
+                )
+            else:
+                _trace_event(
+                    trace_path,
+                    {
+                        "type": "cross_job_wip_rejected",
+                        "phase": phase,
+                        "reason": "syntax_or_quality_gate_failed",
+                        "changed_paths": serializable_working_tree_paths(repo),
+                    },
+                )
             diagnostics = json.dumps(validation, ensure_ascii=False)[-24_000:]
             decision = coding_graph_decision(repo, validation)
             state = {
@@ -3022,15 +3046,28 @@ def main() -> None:
                 if run_repositories:
                     try:
                         failed_repo = run_repositories[0]
-                        persist_cross_job_wip(
-                            config,
-                            job,
-                            failed_repo,
-                            str(job.get("base_commit") or ""),
-                            "worker_exception",
-                            repr(exc),
-                            failed_repo.parent / "opencode-trace.jsonl",
+                        is_coding = str(job.get("job_type") or "") == "coding_cycle"
+                        failed_validation = (
+                            validate_coding_candidate(failed_repo) if is_coding else None
                         )
+                        if not is_coding or (
+                            failed_validation is not None
+                            and coding_validation_safe_for_handoff(failed_validation)
+                        ):
+                            persist_cross_job_wip(
+                                config,
+                                job,
+                                failed_repo,
+                                str(job.get("base_commit") or ""),
+                                "worker_exception",
+                                repr(exc),
+                                failed_repo.parent / "opencode-trace.jsonl",
+                            )
+                        else:
+                            print(
+                                "discarded unsafe cross-job WIP after syntax/quality failure",
+                                flush=True,
+                            )
                     except Exception as wip_exc:
                         print(f"failed to persist cross-job WIP: {wip_exc}", flush=True)
             try:
