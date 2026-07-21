@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import difflib
 import hashlib
 import importlib.metadata
 import json
@@ -983,6 +984,47 @@ CODING_CONTEXT_MAX_FILE_CHARS = 18_000
 CODING_CONTEXT_MAX_CHARS = 60_000
 
 
+def _normalized_edit_text(value: str) -> str:
+    return "\n".join(line.strip() for line in value.splitlines() if line.strip())
+
+
+def unique_fuzzy_edit_span(current: str, old: str, path: str) -> tuple[int, int, float] | None:
+    """Resolve one unambiguous near-match while keeping exact paths and validation gates."""
+    if not path.endswith(".py") or len(old) < 80:
+        return None
+    symbol = re.search(r"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(", old)
+    if symbol is None:
+        return None
+    name = symbol.group(1)
+    definitions = list(
+        re.finditer(
+            rf"(?m)^(?P<indent>[ \t]*)(?:async[ \t]+)?def[ \t]+{re.escape(name)}[ \t]*\(",
+            current,
+        )
+    )
+    if len(definitions) != 1:
+        return None
+    definition = definitions[0]
+    start = definition.start()
+    indent_width = len(definition.group("indent").expandtabs(4))
+    end = len(current)
+    for candidate in re.finditer(r"(?m)^(?P<indent>[ \t]*)(?:async[ \t]+)?def[ \t]+", current[definition.end():]):
+        candidate_indent = len(candidate.group("indent").expandtabs(4))
+        if candidate_indent <= indent_width:
+            end = definition.end() + candidate.start()
+            break
+    actual = current[start:end].rstrip()
+    score = difflib.SequenceMatcher(
+        None,
+        _normalized_edit_text(old),
+        _normalized_edit_text(actual),
+        autojunk=False,
+    ).ratio()
+    if score < 0.72:
+        return None
+    return start, start + len(actual), score
+
+
 def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
     """Build a bounded, deterministic source packet for a tool-free coding node."""
     objective_text = json.dumps(objective, ensure_ascii=False)
@@ -1095,6 +1137,12 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
                 occurrences = current.count(old)
                 if occurrences == 0 and new and current.count(new) == 1:
                     continue  # Idempotent retry of an edit already present in restored WIP.
+                if occurrences == 0:
+                    fuzzy = unique_fuzzy_edit_span(current, old, path)
+                    if fuzzy is not None:
+                        start, end, _score = fuzzy
+                        replacements.append((start, end, new, index))
+                        continue
                 if occurrences != 1:
                     raise ValueError(
                         f"edit {index} old text occurs {occurrences} times instead of once: {path}"

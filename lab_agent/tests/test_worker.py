@@ -25,6 +25,7 @@ from bonsai_lab_agent.worker import (
     trace_latest_input_tokens,
     trace_phase_latest_input_tokens,
     trace_phase_tool_use_count,
+    unique_fuzzy_edit_span,
     serializable_working_tree_paths,
     select_coding_context,
     supervised_df_runtime_process_ids,
@@ -608,6 +609,55 @@ def test_coding_graph_batches_independent_edits_against_one_file_version(tmp_pat
 
     assert changed == ["bridge/client.py"]
     assert target.read_text(encoding="utf-8") == "FIRST = 10\nMIDDLE = 2\nLAST = 30\n"
+
+
+def test_coding_graph_accepts_only_unique_high_similarity_python_method(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_contract.py"
+    target.parent.mkdir()
+    target.write_text(
+        "class TestContract:\n"
+        "    def test_transport_error(self):\n"
+        "        \"\"\"Old live-only assumption.\"\"\"\n"
+        "        result = call_live_server(timeout=5)\n"
+        "        assert result is None\n\n"
+        "    def test_other(self):\n"
+        "        assert 2 + 2 == 4\n",
+        encoding="utf-8",
+    )
+    approximate_old = (
+        "    def test_transport_error(self):\n"
+        "        \"\"\"Slightly different live-only assumption.\"\"\"\n"
+        "        result = call_live_server(timeout=2)\n"
+        "        assert result is None\n"
+    )
+    replacement = (
+        "    def test_transport_error(self, monkeypatch):\n"
+        "        monkeypatch.setattr('bridge.probe.probe_time', lambda **_kwargs: None)\n"
+        "        assert probe_time(timeout=2) is None\n"
+    )
+
+    assert unique_fuzzy_edit_span(
+        target.read_text(encoding="utf-8"), approximate_old, "tests/test_contract.py"
+    ) is not None
+    changed = apply_coding_graph_edits(
+        repo,
+        {"edits": [{"path": "tests/test_contract.py", "old": approximate_old, "new": replacement}]},
+    )
+
+    assert changed == ["tests/test_contract.py"]
+    updated = target.read_text(encoding="utf-8")
+    assert "monkeypatch" in updated
+    assert "def test_other" in updated
+
+
+def test_coding_graph_rejects_ambiguous_fuzzy_symbol(tmp_path: Path):
+    current = (
+        "class First:\n    def test_same(self):\n        assert True\n\n"
+        "class Second:\n    def test_same(self):\n        assert False\n"
+    )
+    old = "    def test_same(self):\n        assert maybe_true\n" + ("# context\n" * 10)
+    assert unique_fuzzy_edit_span(current, old, "tests/test_contract.py") is None
 
 
 def test_coding_graph_routes_from_artifacts_and_validation(tmp_path: Path):
