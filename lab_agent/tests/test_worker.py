@@ -638,7 +638,10 @@ def test_coding_graph_accepts_only_unique_high_similarity_python_method(tmp_path
     )
 
     assert unique_fuzzy_edit_span(
-        target.read_text(encoding="utf-8"), approximate_old, "tests/test_contract.py"
+        target.read_text(encoding="utf-8"),
+        approximate_old,
+        replacement,
+        "tests/test_contract.py",
     ) is not None
     changed = apply_coding_graph_edits(
         repo,
@@ -657,7 +660,15 @@ def test_coding_graph_rejects_ambiguous_fuzzy_symbol(tmp_path: Path):
         "class Second:\n    def test_same(self):\n        assert False\n"
     )
     old = "    def test_same(self):\n        assert maybe_true\n" + ("# context\n" * 10)
-    assert unique_fuzzy_edit_span(current, old, "tests/test_contract.py") is None
+    replacement = "    def test_same(self):\n        assert 2 + 2 == 4\n"
+    assert unique_fuzzy_edit_span(current, old, replacement, "tests/test_contract.py") is None
+
+
+def test_coding_graph_fuzzy_replacement_must_keep_the_same_symbol():
+    current = "def test_transport():\n    assert call_live() is None\n"
+    old = "def test_transport():\n    # a long but approximate block\n    assert live_result is None\n"
+    new = "def unrelated_test():\n    assert 2 + 2 == 4\n"
+    assert unique_fuzzy_edit_span(current, old, new, "tests/test_contract.py") is None
 
 
 def test_coding_graph_routes_from_artifacts_and_validation(tmp_path: Path):

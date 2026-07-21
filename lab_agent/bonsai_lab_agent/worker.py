@@ -988,7 +988,9 @@ def _normalized_edit_text(value: str) -> str:
     return "\n".join(line.strip() for line in value.splitlines() if line.strip())
 
 
-def unique_fuzzy_edit_span(current: str, old: str, path: str) -> tuple[int, int, float] | None:
+def unique_fuzzy_edit_span(
+    current: str, old: str, new: str, path: str
+) -> tuple[int, int, float] | None:
     """Resolve one unambiguous near-match while keeping exact paths and validation gates."""
     if not path.endswith(".py") or len(old) < 80:
         return None
@@ -996,6 +998,12 @@ def unique_fuzzy_edit_span(current: str, old: str, path: str) -> tuple[int, int,
     if symbol is None:
         return None
     name = symbol.group(1)
+    replacement_symbol = re.search(
+        r"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(",
+        new,
+    )
+    if replacement_symbol is None or replacement_symbol.group(1) != name:
+        return None
     definitions = list(
         re.finditer(
             rf"(?m)^(?P<indent>[ \t]*)(?:async[ \t]+)?def[ \t]+{re.escape(name)}[ \t]*\(",
@@ -1020,7 +1028,7 @@ def unique_fuzzy_edit_span(current: str, old: str, path: str) -> tuple[int, int,
         _normalized_edit_text(actual),
         autojunk=False,
     ).ratio()
-    if score < 0.72:
+    if score < 0.45:
         return None
     return start, start + len(actual), score
 
@@ -1138,7 +1146,7 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
                 if occurrences == 0 and new and current.count(new) == 1:
                     continue  # Idempotent retry of an edit already present in restored WIP.
                 if occurrences == 0:
-                    fuzzy = unique_fuzzy_edit_span(current, old, path)
+                    fuzzy = unique_fuzzy_edit_span(current, old, new, path)
                     if fuzzy is not None:
                         start, end, _score = fuzzy
                         replacements.append((start, end, new, index))
