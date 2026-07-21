@@ -2164,7 +2164,9 @@ def synthesize_discovery(
     schema = {
         "type": "object",
         "properties": {
-            "note_path": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}\\.md$"},
+            # K2 Think v2's API returns HTTP 500 for the JSON Schema `pattern`
+            # keyword. DISCOVERY_NOTE_PATH still enforces this boundary locally.
+            "note_path": {"type": "string"},
             "index_markdown": {"type": "string"},
             "note_markdown": {"type": "string"},
         },

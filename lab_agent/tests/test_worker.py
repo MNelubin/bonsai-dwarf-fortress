@@ -195,6 +195,7 @@ def test_discovery_synthesis_uses_medium_reasoning_without_output_limit(
 
     def fake_request(*_args, **kwargs):
         captured.update(kwargs)
+        captured["schema"] = _args[2]
         return b"{}"
 
     note = "DF 53.15 / DFHack 53.15-r2\n\nVERIFIED: bounded probe evidence.\n" + (
@@ -226,6 +227,7 @@ def test_discovery_synthesis_uses_medium_reasoning_without_output_limit(
     )
 
     assert captured["reasoning_effort"] == "medium"
+    assert "pattern" not in json.dumps(captured["schema"])
     assert target == "dfhack/probe-episode-backend.md"
 
 
