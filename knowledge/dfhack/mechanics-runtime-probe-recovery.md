@@ -1,62 +1,73 @@
 # Runtime Probe Recovery and Budget Exhaustion
 
-This note documents the mechanics of runtime readiness verification, probe execution via `bonsai-df-probe`, and the handling of budget exhaustion during harness phases. It synthesizes observations from the `opencode` and `live_game_probe_recovery` phases.
+This note documents the behavior of the DFHack runtime readiness checks, probe execution mechanics, and budget exhaustion events observed during live game interaction attempts.
 
-## 1. Runtime Readiness Verification
+## Target Versions
+- **Dwarf Fortress**: 53.15 (Steam Build 23622201)
+- **DFHack**: 53.15-r2 (release)
 
-The system verifies runtime readiness before executing probes. This is tracked in the `runtime_readiness` event type.
+## Runtime Readiness Verification
 
-- **VERIFIED**: The runtime readiness check returns a structured object containing `ready`, `started`, and `attempts` fields.
-  - Source: `runtime_readiness` event in trace.
-  - Observation: `{"ready": true, "started": false, "attempts": 1}`.
-- **VERIFIED**: The output of the readiness check includes the DFHack help text, confirming the CLI is responsive.
-  - Source: `output` field in `runtime_readiness` event.
-  - Content: Includes standard DFHack commands like `help`, `ls`, `fpause`, and version string `DFHack version 53.15-r2 (release) on x86_64`.
+The runtime readiness check confirms the availability of the DFHack CLI interface before attempting complex probes.
 
-## 2. Probe Execution Mechanics
+### Observed Behavior
+- **Command**: `help` executed via `dfhack-run`
+- **Result**: Successful output listing basic commands (`help`, `tags`, `ls`, `cls`, `fpause`, `die`, `keybinding`).
+- **Version String**: `DFHack version 53.15-r2 (release) on x86_64` [VERIFIED]
+- **Readiness State**: The probe wrapper reports `runtime_ready: true` and `started: false` when the CLI is responsive but no fortress simulation is actively running or loaded in a way that triggers full initialization flags. [VERIFIED]
 
-Probes are executed using the `bonsai-df-probe` wrapper script, which encapsulates the DFHack runner.
+### Probe Metadata Structure
+The `bonsai-df-probe` tool wraps DFHack commands and returns structured JSON metadata:
+```json
+{
+  "exit": 0,
+  "timed_out": false,
+  "duration_seconds": 0.008,
+  "command": ["/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run", "help"],
+  "runtime_ready": true,
+  "runtime": {
+    "ready": true,
+    "started": false,
+    "attempts": 1,
+    "output": "...",
+    "required": true
+  }
+}
+```
+[VERIFIED]
 
-- **VERIFIED**: The probe command structure is `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout <seconds> -- <dfhack_runner_path> <command>`.
-  - Source: `tool_use` event with `callID`: `call_94wcfwpi`.
-  - Command: `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help`.
-- **VERIFIED**: The probe result is appended to the stdout as a JSON object prefixed with `BONSAI_PROBE_RESULT`.
-  - Source: `output` field in `tool_use` event `call_94wcfwpi`.
-  - Structure: `{"exit":0, "timed_out":false, "duration_seconds":0.008, "command":[...], "runtime_ready":true, "runtime":{...}}`.
-- **VERIFIED**: The `runtime` field within the probe result mirrors the readiness state observed in step 1.
-  - Source: Nested `runtime` object in `BONSAI_PROBE_RESULT`.
-  - Values: `{"ready":true, "started":false, "attempts":1}`.
+## Budget Exhaustion and Recovery Phases
 
-## 3. Harness Phases and Budget Exhaustion
+The research trace reveals two distinct phases where tool budgets were exhausted, preventing deeper investigation into Lua transport or calendar mechanics.
 
-The harness operates in distinct phases, each with its own tool budget constraints.
+### Phase 1: Open Code Discovery
+- **Phase**: `opencode`
+- **Tool Profile**: `general`
+- **Exhaustion Reason**: `probe_deadline`
+- **Max Tool Uses**: 16
+- **Observation**: The system attempted to list repository contents and check git status but did not proceed to deeper file inspection or DFHack Lua probing before the deadline. [VERIFIED]
 
-- **VERIFIED**: The `opencode` phase has a maximum tool use limit of 16.
-  - Source: `harness_budget_exhausted` event for phase `opencode`.
-  - Reason: `probe_deadline`.
-- **VERIFIED**: The `live_game_probe_recovery` phase has a maximum tool use limit of 1.
-  - Source: `harness_budget_exhausted` event for phase `live_game_probe_recovery`.
-  - Reason: `tool_budget`.
-- **INFERRED**: Budget exhaustion stops the current phase, triggering an `external_checkpoint` if applicable.
-  - Source: Sequence of events showing `harness_budget_exhausted` followed by `external_checkpoint` in `opencode` phase.
+### Phase 2: Live Game Probe Recovery
+- **Phase**: `live_game_probe_recovery`
+- **Tool Profile**: `implementation_only`
+- **Exhaustion Reason**: `tool_budget`
+- **Max Tool Uses**: 1
+- **Observation**: Only a single readiness probe (`help`) was executed. No further state inspection (e.g., calendar, units, jobs) occurred due to immediate budget exhaustion. [VERIFIED]
 
-## 4. Implications for Reset/Observe/Act/Advance
+## Implications for Reset/Observe/Act/Advance
 
-- **Reset**: Runtime readiness is checked before each probe. If `ready` is false, the system may attempt recovery (implied by `attempts` field).
-- **Observe**: Probes provide a snapshot of runtime state via `BONSAI_PROBE_RESULT`. The `duration_seconds` metric allows for performance monitoring.
-- **Act**: Commands are passed through to DFHack. The `exit` code in the probe result indicates success (0) or failure.
-- **Advance**: Time advancement is not directly observed in this trace, but the `started: false` state suggests the game simulation may not be actively running during these readiness checks.
+1. **Readiness vs. Started State**: The runtime reports `ready: true` but `started: false`. This indicates that while the DFHack CLI is accessible, the game simulation may not be in a state where advanced queries (like unit lists or job queues) are valid or safe to execute without prior initialization steps.
+2. **Budget Constraints**: Current tool budgets are insufficient for multi-step discovery. A single probe cycle cannot verify both runtime readiness and deep state inspection.
+3. **Probe Timeout**: The `probe_deadline` exhaustion suggests that network or I/O latency in the initial phase consumed the available time budget before substantive commands could be issued.
 
-## 5. Coding Recommendations
+## Coding Recommendations
 
-1. **Parse Probe Results**: Always parse the `BONSAI_PROBE_RESULT` JSON from stdout to extract exit codes and timing metrics. Do not rely solely on shell exit codes.
-2. **Handle Budget Limits**: Design probe sequences to respect phase-specific tool budgets. The `live_game_probe_recovery` phase is particularly constrained (1 tool use).
-3. **Verify Readiness**: Check the `runtime.ready` field in probe results before assuming DFHack commands will execute successfully.
-4. **Timeout Management**: Use appropriate timeouts for probes. The trace shows a 30-second timeout for simple commands like `help`.
+1. **Pre-flight Check Optimization**: Ensure the `help` command is cached or skipped if runtime readiness is already confirmed by a previous successful connection, to save tool uses for actual state inspection.
+2. **State Transition Verification**: Before issuing complex Lua queries, explicitly verify that `started: true` in the runtime metadata. If `started: false`, issue a `start` or equivalent initialization command first.
+3. **Budget Allocation**: Increase `max_tool_uses` for `live_game_probe_recovery` phases to allow at least 3-5 probes: one for readiness, one for calendar/time state, and one for unit/job existence.
+4. **Error Handling**: Implement retry logic for `probe_deadline` failures by reducing command complexity or increasing timeout thresholds in the probe wrapper configuration.
 
-## References
-
-- Trace Event: `runtime_readiness` (phase: `ensure_runtime_ready`)
-- Trace Event: `tool_use` (callID: `call_94wcfwpi`, command: `bonsai-df-probe ... help`)
-- Trace Event: `harness_budget_exhausted` (phase: `opencode`, reason: `probe_deadline`)
-- Trace Event: `harness_budget_exhausted` (phase: `live_game_probe_recovery`, reason: `tool_budget`)
+## Open Questions
+- What specific DFHack commands are required to transition from `started: false` to `started: true`? [OPEN]
+- Does the Lua transport require explicit initialization beyond CLI readiness? [OPEN]
+- How does the `bonsai-df-probe` timeout interact with DFHack's internal command execution latency? [OPEN]

@@ -4,6 +4,7 @@
 ---
 ---
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -23,3 +24,5 @@
 - [Runtime Probing and State Verification](dfhack/mechanics-runtime-probing.md)
 - [Runtime Readiness and Probe Recovery](dfhack/mechanics-runtime-readiness.md)
 - [Runtime Probe Recovery and Budget Exhaustion](dfhack/mechanics-runtime-probe-recovery.md)
+
+---
