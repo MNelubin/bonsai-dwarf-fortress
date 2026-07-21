@@ -120,12 +120,30 @@ def tick() -> None:
                 """,
                 (objective["id"], last_discovery_at),
             ).fetchone()["count"]
+        recent_coding_states = connection.execute(
+            """
+            SELECT state
+            FROM bonsai.jobs
+            WHERE objective_id = %s
+              AND job_type = 'coding_cycle'
+              AND state IN ('completed', 'rejected', 'failed', 'cancelled')
+            ORDER BY completed_at DESC NULLS LAST, created_at DESC
+            LIMIT 4
+            """,
+            (objective["id"],),
+        ).fetchall()
+        consecutive_coding_failures = 0
+        for recent in recent_coding_states:
+            if recent["state"] not in {"failed", "rejected"}:
+                break
+            consecutive_coding_failures += 1
         decision = choose_cycle(
             has_promoted_discovery=last_discovery_at is not None,
             last_job_type=previous["job_type"] if previous else None,
             last_job_state=previous["state"] if previous else None,
             last_job_changed=(previous["result"] or {}).get("changed") if previous else None,
             promoted_coding_since_discovery=promoted_coding_since_discovery,
+            consecutive_coding_failures=consecutive_coding_failures,
         )
         constraints = (
             DISCOVERY_CONSTRAINTS if decision.job_type == "discovery_cycle" else CODING_CONSTRAINTS
@@ -151,6 +169,7 @@ def tick() -> None:
                             "job_type": decision.job_type,
                             "reason": decision.reason,
                             "promoted_coding_since_discovery": promoted_coding_since_discovery,
+                            "consecutive_coding_failures": consecutive_coding_failures,
                         },
                     }
                 ),

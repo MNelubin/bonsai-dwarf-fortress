@@ -1056,6 +1056,7 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
     edits = payload.get("edits")
     if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
         raise ValueError("coding graph must return between 1 and 20 exact edits")
+    grouped: dict[str, list[tuple[int, str, str]]] = {}
     staged: dict[str, str] = {}
     changed: set[str] = set()
     for index, edit in enumerate(edits):
@@ -1076,22 +1077,41 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
         target = repo / path
         if target.is_symlink():
             raise ValueError(f"edit {index} targets a symlink: {path}")
-        current = staged.get(path)
-        if current is None:
-            current = target.read_text(encoding="utf-8") if target.is_file() else ""
-        if old == "":
-            if current != "" or target.exists():
-                raise ValueError(f"edit {index} empty old is only valid for a new file: {path}")
-            updated = new
+        grouped.setdefault(path, []).append((index, old, new))
+
+    for path, file_edits in grouped.items():
+        target = repo / path
+        exists = target.is_file()
+        current = target.read_text(encoding="utf-8") if exists else ""
+        if not exists:
+            if len(file_edits) != 1 or file_edits[0][1] != "":
+                raise ValueError(f"new file requires exactly one empty-old edit: {path}")
+            updated = file_edits[0][2]
         else:
-            occurrences = current.count(old)
-            if occurrences != 1:
-                raise ValueError(
-                    f"edit {index} old text occurs {occurrences} times instead of once: {path}"
-                )
-            updated = current.replace(old, new, 1)
+            replacements: list[tuple[int, int, str, int]] = []
+            for index, old, new in file_edits:
+                if old == "":
+                    raise ValueError(f"edit {index} empty old is only valid for a new file: {path}")
+                occurrences = current.count(old)
+                if occurrences == 0 and new and current.count(new) == 1:
+                    continue  # Idempotent retry of an edit already present in restored WIP.
+                if occurrences != 1:
+                    raise ValueError(
+                        f"edit {index} old text occurs {occurrences} times instead of once: {path}"
+                    )
+                start = current.index(old)
+                replacements.append((start, start + len(old), new, index))
+            ordered = sorted(replacements)
+            for left, right in zip(ordered, ordered[1:]):
+                if left[1] > right[0]:
+                    raise ValueError(
+                        f"edits {left[3]} and {right[3]} overlap in current file: {path}"
+                    )
+            updated = current
+            for start, end, new, _index in reversed(ordered):
+                updated = updated[:start] + new + updated[end:]
         if len(updated.encode("utf-8")) > 2 * 1024 * 1024:
-            raise ValueError(f"edit {index} would exceed the 2 MiB file limit: {path}")
+            raise ValueError(f"edits would exceed the 2 MiB file limit: {path}")
         staged[path] = updated
         if updated != current:
             changed.add(path)
@@ -1161,8 +1181,9 @@ correct implementation and deterministic public test for the objective using onl
 packet, current diff, and validator diagnostics. Return schema-valid JSON only.
 
 Each edit is an exact replacement: `old` must be copied byte-for-byte from the current file and occur
-exactly once; `new` replaces it. Use old="" only to create a new file. You may return multiple sequential
-edits to one file. Paths are limited to bridge/, game_runner/, player/, skills/, curricula/, tests/, and
+exactly once; `new` replaces it. Use old="" only to create a new file. Multiple edits to one file must be
+independent, non-overlapping replacements against the supplied current version. Paths are limited to
+bridge/, game_runner/, player/, skills/, curricula/, tests/, and
 evaluator_public/. Never edit knowledge/, infrastructure, agent/controller code, or generated files.
 Do not return prose instead of edits. Do not weaken tests, add placeholders, swallow errors, or invent
 DFHack APIs. Preserve existing public interfaces unless the objective explicitly changes them.
@@ -1261,6 +1282,7 @@ def run_coding_graph(
     validation: dict[str, Any] | None = None
     if working_tree_paths(repo):
         validation = validate_coding_candidate(repo)
+        diagnostics = json.dumps(validation, ensure_ascii=False)[-24_000:]
     decision = coding_graph_decision(repo, validation)
     for attempt in range(1, 4):
         if decision == "promote":
