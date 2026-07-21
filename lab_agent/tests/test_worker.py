@@ -1380,6 +1380,28 @@ def test_quality_gate_blocks_placeholder_tests_and_swallowed_errors(tmp_path: Pa
     assert "SLOP003" in codes
 
 
+def test_quality_gate_allows_protocol_declarations_but_blocks_regular_placeholders(
+    tmp_path: Path,
+):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "backend.py"
+    target.parent.mkdir()
+    target.write_text(
+        "from typing import Protocol\n\n"
+        "class Backend(Protocol):\n"
+        "    def observe(self) -> dict:\n"
+        "        ...\n\n"
+        "def unfinished():\n"
+        "    ...\n",
+        encoding="utf-8",
+    )
+
+    quality = evaluate_python_quality(repo, "HEAD", ["bridge/backend.py"])
+    placeholders = [item for item in quality["diagnostics"] if item["code"] == "SLOP001"]
+    assert len(placeholders) == 1
+    assert placeholders[0]["message"] == "new function 'unfinished' is only a placeholder"
+
+
 def test_quality_gate_blocks_placeholder_replacing_existing_test_body(tmp_path: Path):
     repo = init_repo(tmp_path)
     target = repo / "tests" / "test_existing.py"
