@@ -28,3 +28,4 @@
 - [Runtime Probe Recovery and Budget Exhaustion](dfhack/mechanics-runtime-probe-recovery.md)
 - [Live Game Probe Recovery Mechanics](dfhack/mechanics-runtime-probe-recovery.md)
 - [Pause Command Interaction and Probe Verification](dfhack/mechanics-pause-interaction.md)
+- [Unit Help Command Mechanics](dfhack/mechanics-help-unit.md)
