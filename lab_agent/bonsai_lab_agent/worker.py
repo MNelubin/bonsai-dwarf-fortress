@@ -1531,6 +1531,9 @@ def bounded_ollama_chat(
     response_path = run_root / f".{safe_phase}.response.json"
     stderr_path = run_root / f".{safe_phase}.stderr.log"
     node_timeout = min(max(120, config.phase_timeout), 900)
+    model_api_url = getattr(config, "model_api_url", None)
+    if not model_api_url:
+        model_api_url = f"{config.ollama_url}/api/chat"
     request_path.write_bytes(request_body)
     node_started = time.monotonic()
     process: subprocess.Popen[str] | None = None
@@ -1550,7 +1553,7 @@ def bounded_ollama_chat(
                     "Content-Type: application/json",
                     "--data-binary",
                     f"@{request_path}",
-                    getattr(config, "model_api_url", f"{config.ollama_url}/api/chat"),
+                    model_api_url,
                 ],
                 stdout=response_file,
                 stderr=stderr_file,
@@ -1580,8 +1583,12 @@ def bounded_ollama_chat(
         return_code = process.returncode
         if return_code != 0:
             stderr = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            response_excerpt = response_path.read_text(
+                encoding="utf-8", errors="replace"
+            )[-4000:]
             raise RuntimeError(
-                f"model {phase} request failed with curl exit {return_code}: {stderr}"
+                f"model {phase} request failed with curl exit {return_code}: {stderr}; "
+                f"response={response_excerpt}"
             )
         if response_path.stat().st_size > 4 * 1024 * 1024:
             raise RuntimeError(f"model {phase} response exceeded 4 MiB")
@@ -2140,37 +2147,17 @@ Research trace:
         schema_name="discovery_bundle",
         ollama_num_ctx=65536,
         ollama_num_predict=4096,
+        reasoning_effort="medium",
     )
-    request = urllib.request.Request(
-        config.model_api_url,
-        method="POST",
-        data=request_body,
-        headers={"Content-Type": "application/json"},
+    raw = bounded_ollama_chat(
+        config,
+        api,
+        job,
+        repo.parent,
+        "discovery_structured_synthesis",
+        request_body,
+        started,
     )
-
-    def fetch() -> bytes:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            return response.read(2 * 1024 * 1024 + 1)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fetch)
-        while True:
-            try:
-                raw = future.result(timeout=25)
-                break
-            except FutureTimeout as exc:
-                elapsed = round(time.monotonic() - started)
-                if elapsed > config.harness_timeout:
-                    raise TimeoutError(
-                        f"structured synthesis exceeded {config.harness_timeout} seconds"
-                    ) from exc
-                progress = {
-                    "phase": "discovery_structured_synthesis",
-                    "model": config.model,
-                    "elapsed_seconds": elapsed,
-                }
-                api.heartbeat(job, progress)
-                api.worker_heartbeat("running", str(job["id"]), progress)
     if len(raw) > 2 * 1024 * 1024:
         raise RuntimeError("structured discovery response exceeded 2 MiB")
     response_payload = json.loads(raw)
@@ -2371,9 +2358,12 @@ three investigative calls must target actual files or processes under /srv/df-bo
 live DF runtime, not this repository.
 
 Run at least one bounded executable probe through the trusted wrapper, for example:
-`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run status`.
+`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help lua`.
 Never execute `dwarfort` or `dfhack-run` directly or through shell `timeout`; the game ignores SIGTERM
 and leaked earlier probes. The wrapper ensures the supervised headless runtime is ready before connecting.
+Never run unfiltered `dfhack-run ls`, `tags`, or bare `help`: their output floods the bounded context.
+Use `help <specific-command>`, a focused source read, or a compact Lua probe instead. Repository paths
+are relative to the current worktree (for example `knowledge/INDEX.md`), never absolute `/knowledge/...`.
 Capture the wrapper's BONSAI_PROBE_RESULT, stdout/stderr, and extract field names,
 enum values, IDs, coordinates, ticks, or state transitions. If a game launch is blocked, the failed
 command and its precise blocker are evidence, but `ls`, `file`, or rereading VERSIONS.txt alone are not.

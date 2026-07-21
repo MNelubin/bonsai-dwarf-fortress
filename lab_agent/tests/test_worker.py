@@ -24,6 +24,7 @@ from bonsai_lab_agent.worker import (
     provider_model_id,
     restore_cross_job_wip,
     structured_model_request,
+    synthesize_discovery,
     trace_ended_with_degenerate_stop,
     trace_has_live_game_probe,
     trace_latest_input_tokens,
@@ -153,6 +154,78 @@ def test_bounded_ollama_chat_kills_a_process_past_the_deadline(
         )
     assert not list(tmp_path.glob(".*.json"))
     assert not list(tmp_path.glob(".*.log"))
+
+
+def test_bounded_model_error_includes_provider_response_body(tmp_path: Path):
+    fake_curl = tmp_path / "fake-curl"
+    fake_curl.write_text(
+        "#!/bin/sh\nprintf '{\"error\":\"provider overloaded\"}'\n"
+        "printf 'curl: HTTP 500' >&2\nexit 22\n",
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+    config = object.__new__(Config)
+    object.__setattr__(config, "phase_timeout", 120)
+    object.__setattr__(config, "model", "k2think/test")
+    object.__setattr__(config, "model_api_url", "http://127.0.0.1:1")
+
+    with pytest.raises(RuntimeError, match="provider overloaded"):
+        bounded_ollama_chat(
+            config,
+            HeartbeatApi(),  # type: ignore[arg-type]
+            {"id": "job"},
+            tmp_path,
+            "discovery_structured_synthesis",
+            b"{}",
+            0.0,
+            curl_bin=str(fake_curl),
+        )
+
+
+def test_discovery_synthesis_uses_medium_reasoning_without_output_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = init_repo(tmp_path)
+    (repo / "knowledge").mkdir()
+    (repo / "knowledge" / "INDEX.md").write_text("# Knowledge\n", encoding="utf-8")
+    trace = tmp_path / "opencode-trace.jsonl"
+    trace.write_text('{"probe":"DFHack 53.15-r2 on DF 53.15"}\n', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_request(*_args, **kwargs):
+        captured.update(kwargs)
+        return b"{}"
+
+    note = "DF 53.15 / DFHack 53.15-r2\n\nVERIFIED: bounded probe evidence.\n" + (
+        "Evidence and implication for reset observe act advance.\n" * 12
+    )
+    bundle = {
+        "note_path": "probe-episode-backend.md",
+        "index_markdown": "# Knowledge\n\n[Episode backend](dfhack/probe-episode-backend.md)\n",
+        "note_markdown": note,
+    }
+    response = {
+        "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(bundle)}}]
+    }
+    monkeypatch.setattr("bonsai_lab_agent.worker.structured_model_request", fake_request)
+    monkeypatch.setattr(
+        "bonsai_lab_agent.worker.bounded_ollama_chat",
+        lambda *_args, **_kwargs: json.dumps(response).encode(),
+    )
+    config = object.__new__(Config)
+    object.__setattr__(config, "model_api_style", "openai")
+    object.__setattr__(config, "model", "k2think/MBZUAI-IFM/K2-Think-v2")
+    target = synthesize_discovery(
+        config,
+        HeartbeatApi(),  # type: ignore[arg-type]
+        {"id": "job"},
+        repo,
+        trace,
+        0.0,
+    )
+
+    assert captured["reasoning_effort"] == "medium"
+    assert target == "dfhack/probe-episode-backend.md"
 
 
 def init_repo(tmp_path: Path) -> Path:
