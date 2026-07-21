@@ -678,6 +678,29 @@ def test_coding_graph_fuzzy_replacement_must_keep_the_same_symbol():
     assert unique_fuzzy_edit_span(current, old, new, "tests/test_contract.py") is None
 
 
+def test_coding_graph_selects_distinct_duplicate_class_by_similarity():
+    current = (
+        "class TestTransport:\n"
+        "    def test_existing(self):\n        assert 2 + 2 == 4\n\n"
+        "class TestTransport:\n"
+        "    def test_live(self):\n        assert call_live() is None\n"
+    )
+    old = (
+        "class TestTransport:\n"
+        "    # approximate duplicate class from the model\n"
+        "    def test_live(self):\n        assert live_result is None\n"
+    )
+    new = (
+        "class TestTransport:\n"
+        "    def test_live(self, monkeypatch):\n"
+        "        monkeypatch.setattr('bridge.probe.probe_time', lambda **_kwargs: None)\n"
+        "        assert probe_time() is None\n"
+    )
+    span = unique_fuzzy_edit_span(current, old, new, "tests/test_contract.py")
+    assert span is not None
+    assert "call_live" in current[span[0]:span[1]]
+
+
 def test_coding_graph_routes_from_artifacts_and_validation(tmp_path: Path):
     repo = init_repo(tmp_path)
     assert coding_graph_decision(repo, None) == "draft"

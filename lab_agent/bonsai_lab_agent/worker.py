@@ -1017,46 +1017,66 @@ def _normalized_edit_text(value: str) -> str:
 def unique_fuzzy_edit_span(
     current: str, old: str, new: str, path: str
 ) -> tuple[int, int, float] | None:
-    """Resolve one unambiguous near-match while keeping exact paths and validation gates."""
+    """Resolve the uniquely best same-symbol block while preserving validation gates."""
     if not path.endswith(".py") or len(old) < 80:
         return None
-    symbol = re.search(r"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(", old)
+    symbol_pattern = (
+        r"(?m)^[ \t]*(?P<kind>class|(?:async[ \t]+)?def)[ \t]+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\(|:)"
+    )
+    symbol = re.search(symbol_pattern, old)
     if symbol is None:
         return None
-    name = symbol.group(1)
-    replacement_symbol = re.search(
-        r"(?m)^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(",
-        new,
+    kind = "def" if symbol.group("kind").endswith("def") else "class"
+    name = symbol.group("name")
+    replacement_symbol = re.search(symbol_pattern, new)
+    replacement_kind = (
+        "def"
+        if replacement_symbol is not None and replacement_symbol.group("kind").endswith("def")
+        else "class"
     )
-    if replacement_symbol is None or replacement_symbol.group(1) != name:
+    if (
+        replacement_symbol is None
+        or replacement_kind != kind
+        or replacement_symbol.group("name") != name
+    ):
         return None
+    kind_pattern = r"(?:async[ \t]+)?def" if kind == "def" else "class"
     definitions = list(
         re.finditer(
-            rf"(?m)^(?P<indent>[ \t]*)(?:async[ \t]+)?def[ \t]+{re.escape(name)}[ \t]*\(",
+            rf"(?m)^(?P<indent>[ \t]*){kind_pattern}[ \t]+{re.escape(name)}[ \t]*(?:\(|:)",
             current,
         )
     )
-    if len(definitions) != 1:
+    if not definitions:
         return None
-    definition = definitions[0]
-    start = definition.start()
-    indent_width = len(definition.group("indent").expandtabs(4))
-    end = len(current)
-    for candidate in re.finditer(r"(?m)^(?P<indent>[ \t]*)(?:async[ \t]+)?def[ \t]+", current[definition.end():]):
-        candidate_indent = len(candidate.group("indent").expandtabs(4))
-        if candidate_indent <= indent_width:
-            end = definition.end() + candidate.start()
-            break
-    actual = current[start:end].rstrip()
-    score = difflib.SequenceMatcher(
-        None,
-        _normalized_edit_text(old),
-        _normalized_edit_text(actual),
-        autojunk=False,
-    ).ratio()
-    if score < 0.45:
+    scored: list[tuple[float, int, int]] = []
+    for definition in definitions:
+        start = definition.start()
+        indent_width = len(definition.group("indent").expandtabs(4))
+        end = len(current)
+        remainder = current[definition.end():]
+        for candidate in re.finditer(
+            r"(?m)^(?P<indent>[ \t]*)(?:class|(?:async[ \t]+)?def)[ \t]+",
+            remainder,
+        ):
+            candidate_indent = len(candidate.group("indent").expandtabs(4))
+            if candidate_indent <= indent_width:
+                end = definition.end() + candidate.start()
+                break
+        actual = current[start:end].rstrip()
+        score = difflib.SequenceMatcher(
+            None,
+            _normalized_edit_text(old),
+            _normalized_edit_text(actual),
+            autojunk=False,
+        ).ratio()
+        scored.append((score, start, start + len(actual)))
+    scored.sort(reverse=True)
+    best = scored[0]
+    if best[0] < 0.45 or (len(scored) > 1 and best[0] - scored[1][0] < 0.08):
         return None
-    return start, start + len(actual), score
+    return best[1], best[2], best[0]
 
 
 def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
