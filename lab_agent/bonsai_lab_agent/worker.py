@@ -968,9 +968,47 @@ def store_external_checkpoint(
     return checkpoint
 
 
+def normalize_coding_whitespace(repo: Path) -> list[str]:
+    """Remove diff-check-only whitespace defects without spending a model turn.
+
+    ``git diff --check`` ignores untracked files, while the promoter checks the
+    resulting commit. Normalizing bounded source/config files before validation
+    keeps the lab and promoter views consistent without changing program logic.
+    """
+    normalized: list[str] = []
+    suffixes = {".py", ".lua", ".json", ".toml", ".yaml", ".yml"}
+    for relative in serializable_working_tree_paths(repo):
+        target = repo / relative
+        if target.suffix.lower() not in suffixes or not target.is_file():
+            continue
+        data = target.read_bytes()
+        if len(data) > 2 * 1024 * 1024 or b"\0" in data:
+            continue
+        newline = b"\r\n" if b"\r\n" in data and data.count(b"\r\n") == data.count(b"\n") else b"\n"
+        lines = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+        while lines and lines[-1] == b"":
+            lines.pop()
+        updated = newline.join(line.rstrip(b" \t") for line in lines)
+        if lines:
+            updated += newline
+        if updated != data:
+            target.write_bytes(updated)
+            normalized.append(relative)
+    return normalized
+
+
 def validate_coding_candidate(repo: Path) -> dict[str, Any]:
     """Run harness-owned checks after the model's final edit, so evidence cannot be stale."""
     commands: list[dict[str, Any]] = []
+
+    normalized = normalize_coding_whitespace(repo)
+    commands.append(
+        {
+            "name": "normalize_coding_whitespace",
+            "exit_code": 0,
+            "output": json.dumps({"normalized_paths": normalized}, ensure_ascii=False),
+        }
+    )
 
     diff_check = subprocess.run(
         ["git", "-C", str(repo), "diff", "--check"],

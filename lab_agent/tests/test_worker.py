@@ -814,6 +814,33 @@ def test_harness_owned_validation_detects_edits_after_old_test_output(tmp_path: 
     assert passed["ok"] is True
 
 
+def test_harness_normalizes_untracked_source_whitespace_before_candidate(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    tests = repo / "tests"
+    tests.mkdir()
+    (tests / "test_ok.py").write_bytes(
+        b"def test_ok():   \n    assert 2 * 3 == 6\t\n\n\n"
+    )
+    backend = repo / "game_runner" / "backend.py"
+    backend.parent.mkdir()
+    backend.write_bytes(b"VALUE = 6   \n\n")
+
+    validation = validate_coding_candidate(repo)
+
+    assert validation["ok"] is True
+    assert backend.read_bytes() == b"VALUE = 6\n"
+    assert (tests / "test_ok.py").read_bytes() == (
+        b"def test_ok():\n    assert 2 * 3 == 6\n"
+    )
+    normalization = next(
+        command
+        for command in validation["commands"]
+        if command["name"] == "normalize_coding_whitespace"
+    )
+    assert "game_runner/backend.py" in normalization["output"]
+    assert "tests/test_ok.py" in normalization["output"]
+
+
 def test_coding_graph_context_selects_objective_source_symbol_and_test(tmp_path: Path):
     repo = init_repo(tmp_path)
     (repo / "game_runner").mkdir()
