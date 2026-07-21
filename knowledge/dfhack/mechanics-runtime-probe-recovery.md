@@ -1,59 +1,61 @@
 # Runtime Probe Recovery and Budget Exhaustion
 
-This note documents the mechanics of runtime readiness verification, probe execution via `bonsai-df-probe`, and the conditions leading to harness budget exhaustion in the DF-Bonsai environment.
+## Scope
 
-## Target Versions
-- **Dwarf Fortress**: 53.15 (Steam Build 23622201)
-- **DFHack**: 53.15-r2 (release)
+This note documents the observed behavior of the `bonsai-df-probe` wrapper during runtime recovery phases, specifically focusing on successful command execution versus budget exhaustion scenarios. It applies to Dwarf Fortress 53.15 and DFHack 53.15-r2.
 
-## Runtime Readiness Verification
+## Successful Probe Execution [VERIFIED]
 
-The system verifies runtime readiness before executing probes. The state is captured in JSON metadata within probe results.
+During the `live_game_probe_recovery` phase, a bounded probe was executed using the trusted wrapper. The command successfully returned structured metadata indicating runtime readiness.
 
-### Observed State Fields [VERIFIED]
-Based on the `runtime_readiness` event and `BONSAI_PROBE_RESULT` output:
-- **`ready`**: Boolean indicating if DFHack is responsive. Value: `true`.
-- **`started`**: Boolean indicating if a fortress simulation has begun. Value: `false` (Title Screen/Menu state).
-- **`attempts`**: Integer count of readiness checks. Value: `1`.
-- **`runtime_ready`**: Top-level flag in probe result. Value: `true`.
+**Command:**
+```bash
+/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help
+```
 
-### Probe Command Structure [VERIFIED]
-The probe utility is located at `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe`. It wraps the DFHack runner.
-- **Runner Path**: `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run`
-- **Timeout**: Configurable via `--timeout` (e.g., 30 seconds).
-- **Execution**: The probe executes commands like `help` to verify connectivity.
+**Observed Result (`BONSAI_PROBE_RESULT`):**
+- **Exit Status:** `0`
+- **Timed Out:** `false`
+- **Duration:** `0.009` seconds
+- **Runtime Ready:** `true`
+- **Runtime State:**
+  - `ready`: `true`
+  - `started`: `false`
+  - `attempts`: `1`
 
-## Harness Budget and Exhaustion Mechanics
+**Implication:** The wrapper correctly isolates the process, executes the command within the timeout, and returns a JSON payload confirming the DFHack runtime is responsive and ready for further commands. The low duration (9ms) suggests the runtime was already initialized or started very quickly.
 
-The research trace demonstrates two distinct phases of budget exhaustion, highlighting the constraints on tool usage during automated probing.
+## Budget Exhaustion Scenarios [VERIFIED]
 
-### Phase 1: OpenCode Discovery [VERIFIED]
-- **Phase Name**: `opencode`
-- **Tool Profile**: `general`
-- **Max Tool Uses**: 16
-- **Exhaustion Reason**: `probe_deadline`
-- **Observation**: The harness terminated after discovering file structures (`game_runner`, `bridge`, `tests`) but before completing deeper analysis. The deadline constraint prevented further tool calls despite available budget.
+The trace reveals two distinct instances where harness phases terminated due to resource constraints rather than logical completion:
 
-### Phase 2: Live Game Probe Recovery [VERIFIED]
-- **Phase Name**: `live_game_probe_recovery`
-- **Tool Profile**: `implementation_only`
-- **Max Tool Uses**: 1
-- **Exhaustion Reason**: `tool_budget`
-- **Observation**: The harness was strictly limited to a single tool use. It successfully executed one probe (`bonsai-df-probe ... help`) which returned success (`exit: 0`, `timed_out: false`). Immediately after this single successful call, the budget was exhausted.
+1. **`opencode` Phase:**
+   - **Reason:** `probe_deadline`
+   - **Max Tool Uses:** 16
+   - **Context:** The agent attempted to read existing knowledge and inspect the runtime but exhausted its tool use budget before completing a full probe cycle or writing new knowledge.
 
-## Implications for Reset/Observe/Act/Advance
+2. **`live_game_probe_recovery` Phase:**
+   - **Reason:** `tool_budget`
+   - **Max Tool Uses:** 1
+   - **Context:** After successfully executing one probe (`help`), the phase terminated immediately because the tool budget was exhausted after that single use.
 
-1. **Readiness Check is Fast**: The readiness check completes in ~8ms (`duration_seconds": 0.008`). This suggests that `bonsai-df-probe` can be used as a lightweight health check without significant latency overhead.
-2. **State Stability**: The runtime remained stable across phases. The `started: false` state persisted, indicating no simulation advancement occurred during the probe recovery phase.
-3. **Budget Constraints are Hard Limits**: Agents must prioritize critical verification steps (like connectivity) in early phases if budget is tight (`tool_budget` exhaustion). Complex discovery tasks may fail due to `probe_deadline` even if tool count remains.
+**Implication:** Autonomous agents operating in this environment are strictly constrained by tool-use budgets. A successful probe does not guarantee subsequent actions can be taken in the same phase if the budget is low (e.g., 1 tool use). Phases must be designed to prioritize critical state verification within the first few tool calls.
+
+## Design Implications for Reset/Observe/Act/Advance
+
+- **Observe:** The `BONSAI_PROBE_RESULT` JSON structure is the primary source of truth for runtime health. Agents should parse this JSON to determine if `runtime_ready` is true before attempting state queries.
+- **Act:** Commands like `help` are safe, low-cost probes. More complex Lua injections require careful budget management as they may consume multiple tool uses or risk timeouts.
+- **Advance:** Time advancement commands (`advance`, `tick`) should only be issued after confirming `runtime_ready: true` via a probe result.
+- **Reset:** If a probe times out or fails with a non-zero exit, the runtime may be in an inconsistent state. The wrapper's SIGKILL mechanism ensures cleanup, but subsequent phases must re-verify readiness.
 
 ## Coding Recommendations
 
-1. **Probe Wrapper Usage**: Always use `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe` for DFHack interactions to ensure proper timeout handling and result parsing.
-2. **Check `runtime_ready`**: Before issuing complex commands, verify the `runtime_ready` flag in the probe result JSON. If `false`, retry or handle the error state.
-3. **Budget Awareness**: In `implementation_only` profiles with low tool budgets (e.g., 1), execute only the most critical verification command (e.g., `help` or a specific status check) to confirm connectivity before assuming success.
-4. **Path Resolution**: Use the release-specific path `/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run` for direct DFHack execution if bypassing the probe wrapper is necessary (not recommended due to lack of timeout handling).
+1. **Parse Probe Results:** Always parse the `BONSAI_PROBE_RESULT` JSON from stdout to check `exit`, `timed_out`, and `runtime_ready`. Do not rely solely on exit code 0.
+2. **Budget Awareness:** Design probe sequences to fit within expected tool budgets. If a phase has a budget of 1, it can only perform one action (e.g., verify readiness). Subsequent actions must be deferred to later phases.
+3. **Timeout Handling:** Use the `--timeout` flag appropriately. For simple commands like `help`, a short timeout is sufficient. For complex state queries, increase timeout but monitor for `timed_out: true` in results.
+4. **Error Recovery:** If a probe fails, do not assume the runtime is dead. Re-attempt with a fresh probe in a new phase or after a reset command if available.
 
-## Uncertainties [OPEN]
-- The exact threshold for `probe_deadline` vs `tool_budget` exhaustion in mixed scenarios is not fully characterized.
-- Whether `started: false` prevents certain job-related probes from returning valid data is unverified in this trace.
+## Open Questions
+
+- What is the minimum tool budget required to perform a full state query (e.g., read unit list) and act upon it? [OPEN]
+- How does the runtime handle concurrent probes from different phases? [OPEN]
