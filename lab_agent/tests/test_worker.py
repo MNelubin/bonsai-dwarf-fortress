@@ -75,6 +75,25 @@ def test_openai_response_content_is_separate_from_reasoning():
     assert model_response_content(config, response) == '{"ok": true}'
 
 
+def test_openai_empty_content_reports_finish_reason_reasoning_and_usage():
+    config = object.__new__(Config)
+    object.__setattr__(config, "model_api_style", "openai")
+    response = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"reasoning_content": "private reasoning", "content": None},
+            }
+        ],
+        "usage": {"completion_tokens": 4096},
+    }
+    with pytest.raises(
+        RuntimeError,
+        match=r"finish_reason='length'.*reasoning_chars=17.*completion_tokens",
+    ):
+        model_response_content(config, response)
+
+
 class HeartbeatApi:
     def heartbeat(self, job: dict[str, object], progress: dict[str, object]) -> None:
         pass
@@ -703,6 +722,50 @@ def test_coding_graph_applies_exact_controller_validated_edits(tmp_path: Path):
     assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
 
 
+def test_coding_graph_can_fully_replace_existing_untracked_wip_file(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "broken.py"
+    target.parent.mkdir()
+    target.write_text("def broken():\\n  return ???\n", encoding="utf-8")
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "edits": [
+                {
+                    "path": "bridge/broken.py",
+                    "old": "",
+                    "new": "def repaired():\n    return True\n",
+                }
+            ]
+        },
+    )
+
+    assert changed == ["bridge/broken.py"]
+    assert target.read_text(encoding="utf-8") == "def repaired():\n    return True\n"
+
+
+def test_coding_graph_refuses_full_replacement_of_tracked_file(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "tracked.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "tracked"],
+        check=True,
+        capture_output=True,
+    )
+
+    with pytest.raises(ValueError, match="empty old is only valid for a new file"):
+        apply_coding_graph_edits(
+            repo,
+            {"edits": [{"path": "bridge/tracked.py", "old": "", "new": "VALUE = 2\n"}]},
+        )
+
+    assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
 def test_coding_graph_applies_unique_whitespace_drift_without_weakening_tokens(tmp_path: Path):
     repo = init_repo(tmp_path)
     target = repo / "bridge" / "client.py"
@@ -1040,6 +1103,51 @@ def test_cross_job_wip_namespaces_coding_and_discovery_for_one_objective(tmp_pat
     names = {path.name for path in config.wip_dir.iterdir()}
     assert f"{coding['objective_id']}.coding_cycle.patch" in names
     assert f"{coding['objective_id']}.discovery_cycle.patch" in names
+
+
+def test_cross_job_wip_quarantines_after_three_unchanged_replays(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    config = WipConfigStub(tmp_path)
+    job = wip_job()
+    (repo / "bridge").mkdir()
+    (repo / "bridge" / "stuck.py").write_text("BROKEN = True\n", encoding="utf-8")
+    persist_cross_job_wip(config, job, repo, "baseline", "repair", "failed")
+    clean_repo(repo)
+
+    for _ in range(3):
+        restored = restore_cross_job_wip(config, job, repo)
+        assert restored is not None and restored["status"] == "restored"
+        clean_repo(repo)
+
+    quarantined = restore_cross_job_wip(config, job, repo)
+    assert quarantined is not None and quarantined["status"] == "quarantined"
+    assert quarantined["reason"] == "unchanged_replay_limit"
+    assert quarantined["replay_count"] == 3
+    assert working_tree_paths(repo) == set()
+    active_stem = f"{job['objective_id']}.coding_cycle"
+    assert not config.wip_dir.joinpath(f"{active_stem}.patch").exists()
+    assert not config.wip_dir.joinpath(f"{active_stem}.json").exists()
+    assert len(list(config.wip_dir.joinpath("quarantine").glob("*.patch"))) == 1
+    assert len(list(config.wip_dir.joinpath("quarantine").glob("*.json"))) == 1
+
+
+def test_cross_job_wip_changed_patch_resets_replay_count(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    config = WipConfigStub(tmp_path)
+    job = wip_job()
+    (repo / "bridge").mkdir()
+    target = repo / "bridge" / "progress.py"
+    target.write_text("STEP = 1\n", encoding="utf-8")
+    persist_cross_job_wip(config, job, repo, "baseline", "repair", "first")
+    clean_repo(repo)
+    restored = restore_cross_job_wip(config, job, repo)
+    assert restored is not None and restored["replay_count"] == 1
+
+    target.write_text("STEP = 2\n", encoding="utf-8")
+    persist_cross_job_wip(config, job, repo, "baseline", "repair", "changed")
+    metadata_path = config.wip_dir / f"{job['objective_id']}.coding_cycle.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["replay_count"] == 0
 
 
 def test_quality_gate_ignores_preexisting_lint_but_checks_added_lines(tmp_path: Path):

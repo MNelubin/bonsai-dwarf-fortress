@@ -420,6 +420,7 @@ WIP_PROTECTED_PATHS = (
     "lab_agent/",
 )
 WIP_MAX_PATCH_BYTES = 32 * 1024 * 1024
+WIP_MAX_UNCHANGED_REPLAYS = 3
 OBJECTIVE_ID = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -546,7 +547,11 @@ def persist_cross_job_wip(
         "reason": reason[-2000:],
         "patch_sha256": digest,
         "patch_bytes": len(patch),
-        "replay_count": int(previous.get("replay_count") or 0),
+        "replay_count": (
+            int(previous.get("replay_count") or 0)
+            if previous.get("patch_sha256") == digest
+            else 0
+        ),
         "updated_at_unix": time.time(),
     }
     config.wip_dir.mkdir(parents=True, exist_ok=True)
@@ -623,6 +628,30 @@ def restore_cross_job_wip(
             "stored_job_type": metadata.get("job_type"),
             "current_job_type": job.get("job_type"),
             "source_job_id": metadata.get("source_job_id"),
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    replay_count = int(metadata.get("replay_count") or 0)
+    if replay_count >= WIP_MAX_UNCHANGED_REPLAYS:
+        quarantine_dir = config.wip_dir / "quarantine"
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        digest_prefix = str(metadata.get("patch_sha256") or "unknown")[:12]
+        suffix = f"{int(time.time())}-{digest_prefix}"
+        quarantined_patch = quarantine_dir / f"{patch_path.stem}.{suffix}.patch"
+        quarantined_metadata = quarantine_dir / f"{metadata_path.stem}.{suffix}.json"
+        os.replace(patch_path, quarantined_patch)
+        os.replace(metadata_path, quarantined_metadata)
+        event = {
+            "type": "cross_job_wip_quarantined",
+            "status": "quarantined",
+            "reason": "unchanged_replay_limit",
+            "source_job_id": metadata.get("source_job_id"),
+            "changed_paths": changed_paths,
+            "patch_sha256": metadata.get("patch_sha256"),
+            "replay_count": replay_count,
+            "quarantined_patch": str(quarantined_patch),
+            "quarantined_metadata": str(quarantined_metadata),
         }
         _trace_event(trace_path, event)
         return event
@@ -1331,9 +1360,18 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
         target = repo / path
         exists = target.is_file()
         current = target.read_text(encoding="utf-8") if exists else ""
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
         if not exists:
             if len(file_edits) != 1 or file_edits[0][1] != "":
                 raise ValueError(f"new file requires exactly one empty-old edit: {path}")
+            updated = file_edits[0][2]
+        elif not tracked and len(file_edits) == 1 and file_edits[0][1] == "":
+            # Restored WIP can contain malformed new files whose bytes are impossible for
+            # the model to quote exactly. Full replacement is safe only while untracked.
             updated = file_edits[0][2]
         else:
             replacements: list[tuple[int, int, str, int]] = []
@@ -1455,11 +1493,23 @@ def model_response_content(config: Config, response_payload: dict[str, Any]) -> 
         choices = response_payload.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise RuntimeError("OpenAI-compatible response has no choices")
-        message = choices[0].get("message")
+        choice = choices[0]
+        message = choice.get("message")
     else:
+        choice = {}
         message = response_payload.get("message")
     if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-        raise RuntimeError("model response has no message content")
+        reasoning = (
+            message.get("reasoning", message.get("reasoning_content", ""))
+            if isinstance(message, dict)
+            else ""
+        )
+        raise RuntimeError(
+            "model response has no message content; "
+            f"finish_reason={choice.get('finish_reason')!r}; "
+            f"reasoning_chars={len(reasoning) if isinstance(reasoning, str) else 0}; "
+            f"usage={response_payload.get('usage')!r}"
+        )
     return str(message["content"]).strip()
 
 
@@ -1581,7 +1631,8 @@ correct implementation and deterministic public test for the objective using onl
 packet, current diff, and validator diagnostics. Return schema-valid JSON only.
 
 Each edit is an exact replacement: `old` must be copied byte-for-byte from the current file and occur
-exactly once; `new` replaces it. Use old="" only to create a new file. Multiple edits to one file must be
+exactly once; `new` replaces it. Use old="" to create a new file or fully replace an untracked file.
+Multiple edits to one file must be
 independent, non-overlapping replacements against the supplied current version. Paths are limited to
 bridge/, game_runner/, player/, skills/, curricula/, tests/, and
 evaluator_public/. Never edit knowledge/, infrastructure, agent/controller code, or generated files.
