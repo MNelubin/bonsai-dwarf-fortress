@@ -91,7 +91,7 @@ class ScriptedEpisodeBackend:
             raise BackendProtocolError("save_id must be a non‑empty string")
         if not isinstance(seed, int):
             raise BackendProtocolError("seed must be an integer")
-        if not self._obs_seq or not self._act_seq:
+        if not self._obs_seq and not self._act_seq:
             raise BackendProtocolError("scripted observation or action sequence empty")
 
         self.save_id = save_id
