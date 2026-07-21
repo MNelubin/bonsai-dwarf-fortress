@@ -5,6 +5,7 @@
 ---
 ---
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -21,10 +22,4 @@
 - [Tile Material Resolution and Geology](dfhack/mechanics-tile-materials.md)
 - [Unit, Job, Item, and Skill Mechanics](dfhack/mechanics-units-jobs-items.md)
 - [CLI Lua Execution and RPC Limitations](dfhack/mechanics-cli-lua-execution.md)
----
-
----
-
----
-
----
+- [Runtime Probing and State Verification](dfhack/mechanics-runtime-probing.md)
