@@ -1,73 +1,66 @@
----
-title: Runtime Readiness and Probe Recovery
-path: dfhack/mechanics-runtime-readiness.md
----
-
 # Runtime Readiness and Probe Recovery
 
-This note documents the mechanics of verifying DFHack runtime readiness, specifically focusing on the `runtime_readiness` phase and recovery procedures when probes fail or time out. It details the state transitions observed during initialization and the specific commands used to verify environment stability.
+## Scope
 
-## 1. Runtime Readiness Verification
+This note documents the verified mechanics for establishing runtime readiness in Dwarf Fortress 53.15 with DFHack 53.15-r2 within the DF-Bonsai LXC environment. It details the successful probe path using `bonsai-df-probe` and contrasts it with failed direct execution attempts.
 
-The system employs a `runtime_readiness` check to ensure the DFHack environment is stable before executing complex logic. This phase is critical for preventing race conditions where scripts might execute against an uninitialized or crashing game state.
+## Verified Runtime Readiness Probe [VERIFIED]
 
-### Observed State Fields
-Based on the trace data from the `ensure_runtime_ready` phase, the following fields define the readiness state:
+A successful runtime readiness check was executed during the `live_game_probe_recovery` phase. The command used the trusted wrapper to invoke DFHack's help system, confirming connectivity and version status without initiating a full game simulation loop.
 
-*   **`ready`**: Boolean indicating if the runtime is prepared. In the trace, this was `true` [VERIFIED].
-*   **`started`**: Boolean indicating if the game simulation has actively begun. In the trace, this was `false` [VERIFIED], suggesting the world may be paused or in a pre-game menu state.
-*   **`attempts`**: Integer count of initialization attempts. The trace shows `1` [VERIFIED].
-*   **`output`**: Contains the raw console output from the DFHack help command, confirming version and available primitives [VERIFIED].
-
-### Version Confirmation
-The runtime explicitly reports:
-> "DFHack version 53.15-r2 (release) on x86_64" [VERIFIED]
-
-This confirms compatibility with Dwarf Fortress 53.15.
-
-## 2. Probe Execution and Recovery
-
-When the initial `opencode` phase exhausts its budget or encounters a deadline (`probe_deadline`), the system transitions to a `live_game_probe_recovery` phase. This mechanism ensures that transient failures do not permanently halt knowledge acquisition.
-
-### Recovery Command Structure
-The recovery process utilizes a specific probe command structure:
+**Command:**
 ```bash
 /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help
 ```
-*   **Tool**: `bonsai-df-probe` [VERIFIED]
-*   **Timeout**: 30 seconds [VERIFIED]
-*   **Target Command**: `/srv/df-bonsai/current/dfhack-run help` [VERIFIED]
 
-### Probe Result Analysis
-The probe returns a structured JSON object `BONSAI_PROBE_RESULT` containing:
-*   **`exit`**: 0 (Success) [VERIFIED]
-*   **`timed_out`**: false [VERIFIED]
-*   **`duration_seconds`**: 0.008 [VERIFIED]
-*   **`runtime_ready`**: true [VERIFIED]
-*   **`runtime`**: Nested object confirming `ready: true`, `started: false`, and `attempts: 1` [VERIFIED].
+**Result Analysis:**
+The probe returned a `BONSAI_PROBE_RESULT` JSON object with the following verified fields:
+- `exit`: 0 (Success)
+- `timed_out`: false
+- `duration_seconds`: 0.007
+- `runtime_ready`: true
+- `runtime.started`: false (Indicates DFHack is connected but no fortress simulation is actively running/loaded in the session context, or the game is paused/idle at startup).
+- `runtime.attempts`: 1
 
-## 3. Implications for Reset/Observe/Act/Advance
+**Output Content:**
+The stdout contained the standard DFHack help text:
+```
+Here are some basic commands to get you started:
+  help|?|man         - This text.
+  help <tool>        - Usage help for the given plugin, command, or script.
+  tags               - List the tags that the DFHack tools are grouped by.
+  ls|dir [<filter>]  - List commands, optionally filtered by a tag or substring.
+                       Optional parameters:
+                         --notags: skip printing tags for each command.
+                         --dev:  include commands intended for developers and modders.
+  cls|clear          - Clear the console.
+  fpause             - Force DF to pause.
+  die                - Force DF to close immediately, without saving.
+  keybinding         - Modify bindings of commands to in-game key shortcuts.
 
-### Reset
-If `runtime_ready` is false or `timed_out` is true, the system should trigger a reset of the DFHack process rather than attempting further commands. The trace shows that even after a `probe_deadline`, the recovery probe succeeded quickly (0.008s), indicating the underlying runtime was likely stable but perhaps unresponsive to previous high-load operations.
+See more commands by running 'ls'.
 
-### Observe
-Observation scripts must check the `started` field. If `started` is false, game-state-dependent observations (e.g., unit positions, job queues) will return empty or invalid data. The trace confirms `started: false`, so any observation of game entities at this stage would be futile.
+DFHack version 53.15-r2 (release) on x86_64
+```
 
-### Act
-Actions should only be dispatched if `runtime_ready` is true. The presence of the `help` command output in the readiness check serves as a lightweight heartbeat. If this fails, higher-level actions are likely to fail.
+This confirms that `dfhack-run` is the correct entry point for RPC-style command execution and that the runtime environment is responsive.
 
-### Advance
-Time advancement commands (e.g., `advance`) should not be issued if `started` is false, as the game loop may not be active. The trace indicates the game is not started, so advancing time would have no effect or could cause errors.
+## Failed Direct Execution Paths [VERIFIED]
 
-## 4. Coding Recommendations
+Previous attempts to execute Lua directly via CLI arguments failed or were unsafe:
+1. **Direct `dwarfort -- lua -e`**: Processes remained alive with high CPU usage (up to 756% summed across multiple instances) and produced no terminal result. This is classified as [OPEN] for success but [VERIFIED] as a failure mode for autonomous jobs due to resource exhaustion and lack of termination signals.
+2. **RPC Lua Injection**: Passing `lua <code>` strings directly to the RPC client was rejected with "is not a recognized command". [VERIFIED]
 
-1.  **Pre-Flight Check**: Always execute a lightweight probe (e.g., `help`) before complex operations to verify `runtime_ready` and capture the current version string.
-2.  **State Awareness**: Explicitly check the `started` field in the runtime metadata. If false, defer game-state observations until the simulation begins.
-3.  **Recovery Logic**: Implement a retry mechanism with a timeout (e.g., 30s) for probe commands. If a probe times out, assume the runtime is hung and trigger a process reset rather than continuing to queue commands.
-4.  **Version Pinning**: Validate that the reported DFHack version matches the expected target (53.15-r2) before executing version-specific Lua scripts or memory offsets.
-5.  **Error Handling**: Parse the `BONSAI_PROBE_RESULT` JSON for `exit` codes. Non-zero exits should be treated as critical failures requiring immediate intervention.
+## Implications for Reset/Observe/Act/Advance
 
-## 5. Open Questions
-*   What is the exact threshold for `attempts` before a hard reset is triggered? [OPEN]
-*   Does `started: false` imply the game is in the main menu, or is it paused at tick 0? Further probing of the calendar state is required to distinguish these scenarios. [OPEN]
+1. **Reset**: To reset state, rely on `dfhack-run die` or process management via the wrapper's SIGKILL capability if the game hangs. Do not use direct binary kills without cleanup.
+2. **Observe**: Use `dfhack-run <command>` for all state queries. The `help` command serves as a lightweight heartbeat probe. Complex state observation requires specific DFHack plugins (e.g., `lua`, `json`) invoked through this runner, not raw CLI args.
+3. **Act/Advance**: Actions must be queued via supported DFHack commands. Time advancement should use `fpause` or specific tick-advance commands if available, rather than relying on the game loop to run freely, which risks CPU spikes observed in failed probes.
+
+## Coding Recommendations
+
+1. **Always Use Wrapper**: All autonomous interactions must go through `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe` with a timeout (e.g., 30s).
+2. **Check `runtime_ready`**: Parse the `BONSAI_PROBE_RESULT` JSON. If `runtime_ready` is false, retry or escalate. If `started` is false, the game may need initialization before complex queries.
+3. **Avoid Raw Lua CLI**: Do not attempt `dwarfort -- lua -e`. Use DFHack's internal Lua execution capabilities via `dfhack-run` if supported by specific plugins, or stick to native DFHack commands.
+4. **Resource Monitoring**: Monitor for high CPU usage associated with `dwarfort` processes. If a probe hangs, the wrapper's SIGKILL mechanism is the only reliable recovery path.
+5. **State Verification**: Before acting, verify runtime readiness with a lightweight command like `help` or `ls` to ensure the DFHack bridge is active and responsive.

@@ -1,4 +1,5 @@
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -17,4 +18,3 @@
 - [CLI Lua Execution and RPC Limitations](dfhack/mechanics-cli-lua-execution.md)
 - [Runtime Probing and State Verification](dfhack/mechanics-runtime-probing.md)
 - [Runtime Readiness and Probe Recovery](dfhack/mechanics-runtime-readiness.md)
----
