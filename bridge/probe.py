@@ -917,7 +917,7 @@ KNOWN_FEATURE_TYPES = [
 def map_features_probe():
     """Call bridge.map_features() via DFHack and return parsed feature list."""
     try:
-        result = _dfhack_run("lua require('bridge.core').map_features()", timeout=10)
+        result = _dfhack_run("require('bridge.core').map_features()", timeout=10)
         if not result.get("ok"):
             return []
         data = result.get("data")
@@ -989,7 +989,7 @@ TILE_SAMPLE_LIMIT = 256
 def probe_tile_map(timeout=30):
     """Call bridge.tile_map() via DFHack and return the parsed map snapshot."""
     try:
-        result = _dfhack_run("lua require('bridge.core').tile_map()", timeout=timeout)
+        result = _dfhack_run("require('bridge.core').tile_map()", timeout=timeout)
         if not isinstance(result, dict):
             return None
         for key in ("has_map", "width", "height", "tiles"):
@@ -1224,7 +1224,7 @@ def probe_unit_skills(timeout=30):
     Returns a list of unit dicts each with {id, skills: [{id, name, rating}]},
     or None on transport failure."""
     try:
-        result = _dfhack_run("lua require('bridge.core').unit_skills()", timeout=timeout)
+        result = _dfhack_run("require('bridge.core').unit_skills()", timeout=timeout)
         if not isinstance(result, list):
             return None
         for u in result:

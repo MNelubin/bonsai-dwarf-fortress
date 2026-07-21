@@ -107,6 +107,44 @@ class TestDfhackTransport:
                 assert argv[1] == "lua", f"Second element must be 'lua', got '{argv[1]}'"
                 assert argv[2] == "print('hello')", f"Third element must be source, got '{argv[2]}'"
 
+    @mock.patch('game_runner.episode.subprocess.run')
+    def test_probe_argv_structure(self, mock_run):
+        """Assert probe functions produce correct argv structure."""
+        from bridge import probe
+        mock_proc = mock.Mock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = '[]'
+        mock_proc.stderr = ''
+        mock_run.return_value = mock_proc
+
+        # map_features_probe has no timeout argument, others do.
+        test_cases = [
+            (probe.map_features_probe, "map_features", {}),
+            (probe.probe_tile_map, "tile_map", {"timeout": 5}),
+            (probe.probe_unit_skills, "unit_skills", {"timeout": 5}),
+        ]
+
+        for func, name, kwargs in test_cases:
+            mock_run.reset_mock()
+            func(**kwargs)
+            call_args = mock_run.call_args
+            argv = call_args[0][0]
+            assert len(argv) == 3, f"{name}: Expected 3 argv elements, got {len(argv)}: {argv}"
+            assert argv[1] == "lua", f"{name}: Second element must be 'lua', got '{argv[1]}'"
+            assert argv[2].startswith("require('bridge.core')"), \
+                f"{name}: Third element must start with require, got '{argv[2]}'"
+            for elem in argv:
+                assert not elem.startswith("lua require"), \
+                    f"{name}: No argv element should start with 'lua require', got '{elem}'"
+
+    def test_no_lua_prefix_in_probe_calls(self):
+        """Static assertion: no _dfhack_run calls with redundant 'lua ' prefix."""
+        import inspect
+        from bridge import probe
+        source = inspect.getsource(probe)
+        assert '_dfhack_run("lua ' not in source, \
+            "Found obsolete _dfhack_run call with redundant 'lua ' prefix"
+
 
 def _sample_obs(tick=0, paused=True, n_units=4):
     """Return a synthetic observation matching the observe contract."""
