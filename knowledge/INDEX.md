@@ -1,4 +1,5 @@
 ---
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -26,4 +27,5 @@
 - [Date Mechanics](dfhack/mechanics-date.md)
 - [Lua Command Syntax and Profession Enums](dfhack/mechanics-lua-command-syntax.md)
 - [Runtime Help Command Overview](dfhack/mechanics-runtime-help.md)
+- [CLI Help Output Mechanics](dfhack/mechanics-cli-help-output.md)
 ---
