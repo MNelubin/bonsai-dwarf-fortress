@@ -1,11 +1,13 @@
-## Pause Mechanic Discovery
+# Mechanics - Pause/FPAUSE
 
-**Source:** `pause` command probe in DFHack
-**Status:** VERIFIED
-**Command:** `dfhack-run help pause`
-**Result:** No dedicated pause command exists in DFHack. The closest match is **fpause** - Force DF to pause.
+## VERIFIED
+- `fpause` command successfully forced game into a paused state (BONSAI_PROBE_RESULT: exit=0).
 
-### Key finding
-DFHack does not implement a direct `pause` command. Instead, the pause functionality is accessed through: `fpause` - Force Dwarf Fortress to pause.
+## INFERRED
+- `dfhack-run` does not support Lua shortcuts (`:lua`) when invoked directly with command arguments (BONSAI_PROBE_RESULT: exit=1).
 
-This indicates that DFHack abstracts pause functionality through the `fpause` command for programmatic pausing control.
+## OPEN
+- Needs determination if `dfhack-run FPAUSE` can pause a loaded save without launching the game loop.
+- Required probe: Run `dfhack-run FPAUSE` in a headful session and verify pause effect on save file.
+
+[Next task: Probe non-headless `FPAUSE` execution]
