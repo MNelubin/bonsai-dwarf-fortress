@@ -561,6 +561,16 @@ def _promote(candidate: Candidate, report: dict[str, Any]) -> None:
                     {"completed_parent_id": str(objective["id"])},
                 )
             report = {**report, "objective_transition": transition}
+        if objective is not None and candidate.job_type == "coding_cycle":
+            connection.execute(
+                """
+                UPDATE bonsai.objective_evaluation_state
+                SET last_failure_fingerprint = NULL, repeated_failure_count = 0,
+                    cooldown_until = NULL, updated_at = now()
+                WHERE objective_id = %s
+                """,
+                (objective["id"],),
+            )
         connection.execute(
             """
             UPDATE bonsai.git_changes

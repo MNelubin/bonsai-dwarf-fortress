@@ -28,6 +28,10 @@ class GraphBlockedError(RuntimeError):
     """A bounded graph reached a terminal node and must not retry the same job."""
 
 
+class CodingEditError(ValueError):
+    """A deterministic edit could not be applied and needs a different proposal."""
+
+
 GUARDED_BASH_PERMISSIONS = {
     "*": "allow",
     "*dwarfort*": "deny",
@@ -59,6 +63,7 @@ class Config:
     coding_tool_budget: int
     max_continuations: int
     validation_repair_attempts: int
+    worker_id: str = "bonsai-lab-agent"
 
     def __post_init__(self) -> None:
         if self.model_api_style not in {"ollama", "openai"}:
@@ -104,6 +109,7 @@ class Config:
             validation_repair_attempts=int(
                 os.environ.get("BONSAI_VALIDATION_REPAIR_ATTEMPTS", "2")
             ),
+            worker_id=os.environ.get("BONSAI_WORKER_ID", "bonsai-lab-agent"),
         )
 
 
@@ -130,6 +136,7 @@ class Api:
             data=data,
             headers={
                 "X-Bonsai-Lab-Token": self.config.lab_token,
+                "X-Bonsai-Worker-Id": self.config.worker_id,
                 "Content-Type": content_type,
             },
         )
@@ -1373,7 +1380,7 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
     edits = payload.get("edits")
     if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
         raise ValueError("coding graph must return between 1 and 20 exact edits")
-    grouped: dict[str, list[tuple[int, str, str]]] = {}
+    grouped: dict[str, list[tuple[int, str, str, str, str]]] = {}
     staged: dict[str, str] = {}
     changed: set[str] = set()
     for index, edit in enumerate(edits):
@@ -1382,8 +1389,16 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
         path = edit.get("path")
         old = edit.get("old")
         new = edit.get("new")
+        operation = edit.get("operation")
+        expected_sha256 = edit.get("expected_sha256", "")
         if not all(isinstance(value, str) for value in (path, old, new)):
             raise ValueError(f"edit {index} path/old/new must be strings")
+        if operation is None:
+            operation = "legacy_empty" if old == "" else "replace"
+        if operation not in {"replace", "create", "replace_file", "legacy_empty"}:
+            raise ValueError(f"edit {index} has invalid operation: {operation}")
+        if not isinstance(expected_sha256, str):
+            raise ValueError(f"edit {index} expected_sha256 must be a string")
         assert isinstance(path, str) and isinstance(old, str) and isinstance(new, str)
         if (
             not _safe_wip_path(path, "coding_cycle")
@@ -1394,7 +1409,9 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
         target = repo / path
         if target.is_symlink():
             raise ValueError(f"edit {index} targets a symlink: {path}")
-        grouped.setdefault(path, []).append((index, old, new))
+        grouped.setdefault(path, []).append(
+            (index, operation, old, new, expected_sha256)
+        )
 
     for path, file_edits in grouped.items():
         target = repo / path
@@ -1406,18 +1423,42 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
             stderr=subprocess.DEVNULL,
         ).returncode == 0
         if not exists:
-            if len(file_edits) != 1 or file_edits[0][1] != "":
-                raise ValueError(f"new file requires exactly one empty-old edit: {path}")
-            updated = file_edits[0][2]
-        elif not tracked and len(file_edits) == 1 and file_edits[0][1] == "":
+            if (
+                len(file_edits) != 1
+                or file_edits[0][1] not in {"create", "legacy_empty"}
+                or file_edits[0][2] != ""
+            ):
+                raise CodingEditError(f"new file requires exactly one create operation: {path}")
+            updated = file_edits[0][3]
+        elif (
+            not tracked
+            and len(file_edits) == 1
+            and file_edits[0][1] == "legacy_empty"
+            and file_edits[0][2] == ""
+        ):
             # Restored WIP can contain malformed new files whose bytes are impossible for
             # the model to quote exactly. Full replacement is safe only while untracked.
-            updated = file_edits[0][2]
+            updated = file_edits[0][3]
+        elif len(file_edits) == 1 and file_edits[0][1] == "replace_file":
+            index, _operation, old, new, expected_sha256 = file_edits[0]
+            if old:
+                raise CodingEditError(f"edit {index} replace_file requires empty old: {path}")
+            current_sha256 = hashlib.sha256(current.encode("utf-8")).hexdigest()
+            if not expected_sha256 or expected_sha256 != current_sha256:
+                raise CodingEditError(
+                    f"edit {index} replace_file SHA-256 mismatch for {path}; "
+                    f"expected_sha256 must equal {current_sha256}"
+                )
+            updated = new
         else:
             replacements: list[tuple[int, int, str, int]] = []
-            for index, old, new in file_edits:
-                if old == "":
-                    raise ValueError(f"edit {index} empty old is only valid for a new file: {path}")
+            for index, operation, old, new, _expected_sha256 in file_edits:
+                if operation != "replace" or old == "":
+                    current_sha256 = hashlib.sha256(current.encode("utf-8")).hexdigest()
+                    raise CodingEditError(
+                        f"edit {index} cannot create over existing file {path}; use exact replace, "
+                        f"or replace_file with expected_sha256={current_sha256}"
+                    )
                 occurrences = current.count(old)
                 if occurrences == 0 and new and current.count(new) == 1:
                     continue  # Idempotent retry of an edit already present in restored WIP.
@@ -1463,6 +1504,53 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     return sorted(changed)
+
+
+def coding_proposal_repair_diagnostics(
+    repo: Path,
+    proposal: dict[str, Any] | None,
+    error: Exception,
+) -> str:
+    """Return bounded state the next patch attempt can actually use to recover."""
+    details: dict[str, Any] = {
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "instruction": (
+            "Return a materially different proposal. For an existing file, either copy a unique "
+            "old snippet exactly or use operation=replace_file with the supplied current_sha256."
+        ),
+        "files": [],
+    }
+    seen: set[str] = set()
+    edits = proposal.get("edits", []) if isinstance(proposal, dict) else []
+    for edit in edits[:20] if isinstance(edits, list) else []:
+        if not isinstance(edit, dict) or not isinstance(edit.get("path"), str):
+            continue
+        path = edit["path"]
+        if path in seen or not _safe_wip_path(path, "coding_cycle"):
+            continue
+        seen.add(path)
+        target = repo / path
+        if not target.is_file() or target.is_symlink():
+            details["files"].append({"path": path, "exists": False})
+            continue
+        current = target.read_text(encoding="utf-8", errors="replace")
+        file_detail: dict[str, Any] = {
+            "path": path,
+            "exists": True,
+            "current_sha256": hashlib.sha256(current.encode("utf-8")).hexdigest(),
+            "current_chars": len(current),
+        }
+        # The exact current bytes are more useful than another blind retry. Keep the whole
+        # small file; for a large file provide deterministic head/tail context and require
+        # an exact localized replacement.
+        if len(current) <= 16_000 and not details["files"]:
+            file_detail["current_content"] = current
+        else:
+            file_detail["current_head"] = current[:4_000]
+            file_detail["current_tail"] = current[-4_000:]
+        details["files"].append(file_detail)
+    return json.dumps(details, ensure_ascii=False)[-24_000:]
 
 
 def coding_graph_decision(repo: Path, validation: dict[str, Any] | None) -> str:
@@ -1664,23 +1752,35 @@ def request_coding_graph_edits(
                 "items": {
                     "type": "object",
                     "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["replace", "create", "replace_file"],
+                        },
                         "path": {"type": "string"},
                         "old": {"type": "string"},
                         "new": {"type": "string"},
+                        "expected_sha256": {"type": "string"},
                     },
-                    "required": ["path", "old", "new"],
+                    "required": ["operation", "path", "old", "new", "expected_sha256"],
+                    "additionalProperties": False,
                 },
             },
         },
         "required": ["summary", "edits"],
+        "additionalProperties": False,
     }
     prompt = f"""
 You are the PATCH node in a deterministic coding graph. You have no tools. Produce the smallest
 correct implementation and deterministic public test for the objective using only the supplied source
 packet, current diff, and validator diagnostics. Return schema-valid JSON only.
 
-Each edit is an exact replacement: `old` must be copied byte-for-byte from the current file and occur
-exactly once; `new` replaces it. Use old="" to create a new file or fully replace an untracked file.
+Choose an explicit operation for every edit:
+- `replace`: `old` must be copied byte-for-byte from the current file and occur exactly once; `new`
+  replaces it; set expected_sha256="".
+- `create`: only for an absent path; set old="" and expected_sha256="".
+- `replace_file`: only when validator diagnostics supply current_sha256 for an existing file; set
+  old="" and copy that hash into expected_sha256. This is optimistic concurrency protection, not a
+  shortcut for files whose current content you have not received.
 Multiple edits to one file must be
 independent, non-overlapping replacements against the supplied current version. Paths are limited to
 bridge/, game_runner/, player/, skills/, curricula/, tests/, and
@@ -1805,6 +1905,7 @@ def run_coding_graph(
         validation = validate_coding_candidate(repo)
         diagnostics = json.dumps(validation, ensure_ascii=False)[-24_000:]
     decision = coding_graph_decision(repo, validation)
+    previous_proposal_fingerprint: str | None = None
     for attempt in range(1, 4):
         if decision == "promote":
             return "coding_graph_promote", "validated"
@@ -1830,6 +1931,15 @@ def run_coding_graph(
                 started,
                 coding_graph_reasoning_effort(config, decision, attempt, diagnostics),
             )
+            proposal_fingerprint = hashlib.sha256(
+                json.dumps(proposal, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            if proposal_fingerprint == previous_proposal_fingerprint:
+                raise CodingEditError(
+                    "model repeated the identical rejected proposal; use the supplied file state "
+                    "and return a materially different edit"
+                )
+            previous_proposal_fingerprint = proposal_fingerprint
             applied_paths = apply_coding_graph_edits(repo, proposal)
             validation = validate_coding_candidate(repo)
             if coding_validation_safe_for_handoff(validation):
@@ -1858,7 +1968,7 @@ def run_coding_graph(
                 "validation": validation,
             }
         except Exception as exc:
-            diagnostics = f"Proposal/application error: {exc!r}"
+            diagnostics = coding_proposal_repair_diagnostics(repo, proposal, exc)
             decision = "repair" if working_tree_paths(repo) else "draft"
             proposal_diagnostics: list[dict[str, Any]] = []
             if isinstance(proposal, dict) and isinstance(proposal.get("edits"), list):

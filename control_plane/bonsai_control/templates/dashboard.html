@@ -51,7 +51,7 @@
   </tbody></table></section>
 
   <section class="objectives"><h2>Objectives</h2><table><thead><tr><th>priority</th><th>objective</th><th>status</th><th>interval / last job</th></tr></thead><tbody>
-    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td class="wide">{{ o.title }}<br><span class="label">{{ o.description }}</span></td><td><span class="pill {{ o.status }}">{{ o.status }}</span>{% if o.cooldown_until %}<br><span class="label">cooldown {{ o.cooldown_until }}</span>{% endif %}</td><td>{{ o.cycle_interval_seconds }}s<br><span class="label">{{ o.last_job_at or 'never' }}</span><br><span class="label">best {{ o.best_score if o.best_score is not none else '-' }} · evals {{ o.evaluations_completed or 0 }}</span></td></tr>{% else %}<tr><td colspan="4">No objectives</td></tr>{% endfor %}
+    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td class="wide">{{ o.title }}<br><span class="label">{{ o.description }}</span></td><td><span class="pill {{ o.status }}">{{ o.status }}</span>{% if o.cooldown_until %}<br><span class="label">cooldown {{ o.cooldown_until }}</span>{% endif %}{% if o.repeated_failure_count %}<br><span class="failed">same failure ×{{ o.repeated_failure_count }}</span><br><code>{{ o.last_failure_fingerprint[:12] }}</code>{% endif %}</td><td>{{ o.cycle_interval_seconds }}s<br><span class="label">{{ o.last_job_at or 'never' }}</span><br><span class="label">best {{ o.best_score if o.best_score is not none else '-' }} · evals {{ o.evaluations_completed or 0 }}</span></td></tr>{% else %}<tr><td colspan="4">No objectives</td></tr>{% endfor %}
   </tbody></table></section>
 
   <section class="submissions"><h2>Controller submissions</h2><table><thead><tr><th>state</th><th>submission</th><th>commit</th><th>controller</th><th>latest score</th><th>created</th></tr></thead><tbody>
@@ -76,7 +76,7 @@
         <div class="box"><div class="label">CONSTRAINTS</div><pre>{{ j.constraints|tojson(indent=2) }}</pre></div>
         <div class="box"><div class="label">PROGRESS</div><pre>{{ j.progress|tojson(indent=2) }}</pre></div>
         <div class="box"><div class="label">RESULT</div><pre>{{ j.result|tojson(indent=2) }}</pre></div>
-        {% if j.error_tail %}<div class="box"><div class="label">ERROR (LAST 2000 CHARS)</div><pre>{{ j.error_tail }}</pre></div>{% endif %}
+        {% if j.error_tail %}<div class="box"><div class="label">ERROR · {{ j.failure_class }}</div><pre>{{ j.error_tail }}</pre></div>{% endif %}
         <div class="box"><div class="label">ARTIFACTS</div>{% for sha in j.artifact_hashes %}<div><a href="/artifacts/{{ sha }}">{{ sha[:16] }}… download</a></div>{% else %}<span class="muted">none</span>{% endfor %}</div>
       </div></details></td>
     </tr>{% else %}<tr><td colspan="8">No jobs yet</td></tr>{% endfor %}

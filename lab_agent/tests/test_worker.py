@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ from bonsai_lab_agent.worker import (
     apply_coding_graph_edits,
     bounded_ollama_chat,
     cleanup_generated_runtime_files,
+    coding_proposal_repair_diagnostics,
     coding_graph_decision,
     coding_graph_reasoning_effort,
     coding_validation_safe_for_handoff,
@@ -963,7 +965,7 @@ def test_coding_graph_can_fully_replace_existing_untracked_wip_file(tmp_path: Pa
     assert target.read_text(encoding="utf-8") == "def repaired():\n    return True\n"
 
 
-def test_coding_graph_refuses_full_replacement_of_tracked_file(tmp_path: Path):
+def test_coding_graph_refuses_unchecked_full_replacement_of_tracked_file(tmp_path: Path):
     repo = init_repo(tmp_path)
     target = repo / "bridge" / "tracked.py"
     target.parent.mkdir()
@@ -975,13 +977,91 @@ def test_coding_graph_refuses_full_replacement_of_tracked_file(tmp_path: Path):
         capture_output=True,
     )
 
-    with pytest.raises(ValueError, match="empty old is only valid for a new file"):
+    with pytest.raises(ValueError, match="use exact replace, or replace_file"):
         apply_coding_graph_edits(
             repo,
             {"edits": [{"path": "bridge/tracked.py", "old": "", "new": "VALUE = 2\n"}]},
         )
 
     assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_coding_graph_replaces_tracked_file_only_with_matching_sha256(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "bridge" / "tracked.py"
+    target.parent.mkdir()
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "tracked"],
+        check=True,
+        capture_output=True,
+    )
+    digest = hashlib.sha256(b"VALUE = 1\n").hexdigest()
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "edits": [
+                {
+                    "operation": "replace_file",
+                    "path": "bridge/tracked.py",
+                    "old": "",
+                    "new": "VALUE = 2\n",
+                    "expected_sha256": digest,
+                }
+            ]
+        },
+    )
+
+    assert changed == ["bridge/tracked.py"]
+    assert target.read_text(encoding="utf-8") == "VALUE = 2\n"
+
+
+def test_coding_graph_rejects_stale_replace_file_sha_without_writing(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_tracked.py"
+    target.parent.mkdir()
+    target.write_text("def test_old():\n    assert True\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        apply_coding_graph_edits(
+            repo,
+            {
+                "edits": [
+                    {
+                        "operation": "replace_file",
+                        "path": "tests/test_tracked.py",
+                        "old": "",
+                        "new": "def test_new():\n    assert True\n",
+                        "expected_sha256": "0" * 64,
+                    }
+                ]
+            },
+        )
+
+    assert target.read_text(encoding="utf-8") == "def test_old():\n    assert True\n"
+
+
+def test_repair_diagnostics_include_current_content_and_hash(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_state.py"
+    target.parent.mkdir()
+    target.write_text("def test_state():\n    assert 1 == 1\n", encoding="utf-8")
+    proposal = {
+        "edits": [
+            {"path": "tests/test_state.py", "old": "", "new": "replacement"}
+        ]
+    }
+
+    diagnostics = json.loads(
+        coding_proposal_repair_diagnostics(repo, proposal, ValueError("bad edit"))
+    )
+
+    assert diagnostics["files"][0]["current_content"].startswith("def test_state")
+    assert diagnostics["files"][0]["current_sha256"] == hashlib.sha256(
+        target.read_bytes()
+    ).hexdigest()
 
 
 def test_coding_graph_applies_unique_whitespace_drift_without_weakening_tokens(tmp_path: Path):

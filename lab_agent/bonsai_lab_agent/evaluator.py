@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ class EvaluatorConfig:
     controller_timeout_seconds: int
     probe_bin: str
     dfhack_run: str
+    worker_id: str = "bonsai-evaluator"
 
     @classmethod
     def from_env(cls) -> "EvaluatorConfig":
@@ -48,6 +50,7 @@ class EvaluatorConfig:
             dfhack_run=os.environ.get(
                 "BONSAI_DFHACK_RUN", "/srv/df-bonsai/current/dfhack-run"
             ),
+            worker_id=os.environ.get("BONSAI_EVALUATOR_WORKER_ID", "bonsai-evaluator"),
         )
 
 
@@ -71,6 +74,7 @@ class EvaluatorApi:
             data=json.dumps(payload).encode() if payload is not None else None,
             headers={
                 "X-Bonsai-Lab-Token": self.config.lab_token,
+                "X-Bonsai-Worker-Id": self.config.worker_id,
                 "Content-Type": "application/json",
             },
         )
@@ -272,6 +276,23 @@ def run_controller(
     return responses, latency, process.stderr[-2000:]
 
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def tagged_json(output: str, marker: str) -> dict[str, Any] | None:
+    """Decode a tagged JSON object even when DFHack adds ANSI or pretty printing."""
+    cleaned = ANSI_ESCAPE.sub("", output)
+    offset = cleaned.find(marker)
+    if offset < 0:
+        return None
+    candidate = cleaned[offset + len(marker) :].lstrip()
+    try:
+        decoded, _end = json.JSONDecoder().raw_decode(candidate)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
 def live_df_probe(config: EvaluatorConfig) -> dict[str, Any]:
     command = [
         config.probe_bin,
@@ -284,15 +305,8 @@ def live_df_probe(config: EvaluatorConfig) -> dict[str, Any]:
     started = time.monotonic()
     process = subprocess.run(command, capture_output=True, text=True, timeout=45)
     output = (process.stdout + process.stderr)[-8000:]
-    marker: dict[str, Any] | None = None
-    game_state: dict[str, Any] | None = None
-    for line in output.splitlines():
-        if line.startswith("BONSAI_PROBE_RESULT "):
-            marker = json.loads(line.removeprefix("BONSAI_PROBE_RESULT "))
-        if line.startswith("BONSAI_GAME_STATE "):
-            decoded = json.loads(line.removeprefix("BONSAI_GAME_STATE "))
-            if isinstance(decoded, dict):
-                game_state = decoded
+    marker = tagged_json(output, "BONSAI_PROBE_RESULT ")
+    game_state = tagged_json(output, "BONSAI_GAME_STATE ")
     ready = bool(
         process.returncode == 0
         and marker
@@ -313,6 +327,19 @@ def live_df_probe(config: EvaluatorConfig) -> dict[str, Any]:
     }
 
 
+def evaluation_outcome(
+    deterministic: bool, valid_actions: bool, live_ready: bool
+) -> tuple[float, str, str | None]:
+    """Keep an API failure from receiving a passing score by arithmetic accident."""
+    score = 0.2 + (0.2 if deterministic else 0.0) + (0.2 if valid_actions else 0.0)
+    score += 0.4 if live_ready else 0.0
+    if live_ready and deterministic and valid_actions:
+        return round(score, 6), "api_smoke_passed", None
+    if not live_ready:
+        return round(score, 6), "game_api_failed", "game_api"
+    return round(score, 6), "controller_contract_failed", None
+
+
 def evaluate_job(config: EvaluatorConfig, job: dict[str, Any]) -> dict[str, Any]:
     payload = job.get("payload") or {}
     submission_id = payload.get("submission_id")
@@ -329,11 +356,9 @@ def evaluate_job(config: EvaluatorConfig, job: dict[str, Any]) -> dict[str, Any]
         for response in responses
     )
     live = live_df_probe(config)
-    score = 0.35 + (0.25 if deterministic else 0.0) + (0.2 if valid_actions else 0.0)
-    score += 0.2 if live["ready"] else 0.0
-    score = round(score, 6)
-    verdict = "contract_passed" if score >= 0.8 else "contract_only"
-    failure_kind = None if live["ready"] else "game_api"
+    score, verdict, failure_kind = evaluation_outcome(
+        deterministic, valid_actions, bool(live["ready"])
+    )
     summary = {
         "controller_protocol": "jsonl-v1",
         "controller_kind": manifest.get("kind", "python_callable"),
@@ -348,7 +373,7 @@ def evaluate_job(config: EvaluatorConfig, job: dict[str, Any]) -> dict[str, Any]
     return {
         "submission_id": submission_id,
         "suite_name": "controller_contract_live_smoke",
-        "suite_version": "2",
+        "suite_version": "3",
         "score": score,
         "verdict": verdict,
         "failure_kind": failure_kind,

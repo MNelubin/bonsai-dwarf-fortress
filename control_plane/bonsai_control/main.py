@@ -39,7 +39,7 @@ async def lifespan(_: FastAPI):
     close_pool()
 
 
-app = FastAPI(title="Bonsai Control Plane", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="Bonsai Control Plane", version="0.7.0", lifespan=lifespan)
 
 
 def _event(
@@ -78,6 +78,33 @@ def _valid_commit(value: Any) -> str | None:
     if not isinstance(value, str) or len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
         raise HTTPException(status_code=422, detail="invalid git commit hash")
     return value
+
+
+def failure_class(error: str | None) -> str | None:
+    """Collapse verbose terminal errors into actionable dashboard categories."""
+    if not error:
+        return None
+    lowered = error.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "empty old",
+            "replace_file",
+            "exact edits",
+            "old text occurs",
+            "proposal/application",
+        )
+    ):
+        return "patch_protocol"
+    if any(marker in lowered for marker in ("json", "finish_reason='length'", "one token")):
+        return "model_protocol"
+    if any(marker in lowered for marker in ("timeout", "timed out", "deadline", "exceeded")):
+        return "timeout"
+    if any(marker in lowered for marker in ("ruff", "mypy", "pytest", "validation", "quality gate")):
+        return "validation"
+    if any(marker in lowered for marker in ("dfhack", "runtime", "game api", "game_api")):
+        return "game_runtime"
+    return "other"
 
 
 def _submission_hash(git_commit: str, manifest: dict[str, Any]) -> str:
@@ -774,7 +801,8 @@ def dashboard(request: Request) -> HTMLResponse:
         objectives = connection.execute(
             """
             SELECT o.*, s.best_score, s.evaluations_completed, s.consecutive_no_improvement,
-                   s.cooldown_until, s.champion_submission_id
+                   s.cooldown_until, s.champion_submission_id,
+                   s.last_failure_fingerprint, s.repeated_failure_count
             FROM bonsai.objectives o
             LEFT JOIN bonsai.objective_evaluation_state s ON s.objective_id = o.id
             ORDER BY o.priority DESC, o.created_at LIMIT 25
@@ -830,6 +858,7 @@ def dashboard(request: Request) -> HTMLResponse:
         ).fetchone()
     for job in jobs:
         job["error_tail"] = (job["error"] or "")[-2_000:]
+        job["failure_class"] = failure_class(job["error"])
     for worker in workers:
         worker["online"] = worker["last_seen_at"] >= now - timedelta(seconds=90)
     github_url = settings.github_repo.rstrip("/")

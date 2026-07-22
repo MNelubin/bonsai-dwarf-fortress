@@ -77,6 +77,17 @@ def should_start_cooldown(
     )
 
 
+def repeated_failure_epoch_count(
+    previous_fingerprint: str | None,
+    previous_count: int,
+    repeated_fingerprint: str,
+) -> int:
+    """Count matching terminal failures across cooldown boundaries."""
+    if previous_fingerprint == repeated_fingerprint:
+        return max(0, previous_count) + 3
+    return 3
+
+
 def tick() -> None:
     with db_connection() as connection, connection.transaction():
         expired = connection.execute(
@@ -138,18 +149,22 @@ def tick() -> None:
             (objective["id"],),
         )
 
-        recent_failures = connection.execute(
+        recent_terminals = connection.execute(
             """
-            SELECT id, error, completed_at FROM bonsai.jobs
-            WHERE objective_id = %s AND state = 'failed' AND error IS NOT NULL
+            SELECT id, state, error, completed_at FROM bonsai.jobs
+            WHERE objective_id = %s
+              AND state IN ('completed', 'rejected', 'failed', 'cancelled')
             ORDER BY completed_at DESC NULLS LAST, created_at DESC LIMIT 3
             """,
             (objective["id"],),
         ).fetchall()
-        fingerprints = [failure_fingerprint(row["error"]) for row in recent_failures]
+        fingerprints = [failure_fingerprint(row["error"]) for row in recent_terminals]
         repeated_fingerprint = (
             fingerprints[0]
-            if len(fingerprints) == 3 and fingerprints[0] and len(set(fingerprints)) == 1
+            if len(fingerprints) == 3
+            and all(row["state"] == "failed" for row in recent_terminals)
+            and fingerprints[0]
+            and len(set(fingerprints)) == 1
             else None
         )
         evaluation_state = connection.execute(
@@ -158,17 +173,101 @@ def tick() -> None:
         ).fetchone()
         if should_start_cooldown(
             repeated_fingerprint,
-            recent_failures[0]["completed_at"] if recent_failures else None,
+            recent_terminals[0]["completed_at"] if recent_terminals else None,
             evaluation_state["updated_at"],
         ):
+            assert repeated_fingerprint is not None
+            repeated_count = repeated_failure_epoch_count(
+                evaluation_state["last_failure_fingerprint"],
+                evaluation_state["repeated_failure_count"],
+                repeated_fingerprint,
+            )
+            if repeated_count >= 6:
+                connection.execute(
+                    """
+                    UPDATE bonsai.objective_evaluation_state
+                    SET last_failure_fingerprint = %s, repeated_failure_count = %s,
+                        cooldown_until = NULL, updated_at = now()
+                    WHERE objective_id = %s
+                    """,
+                    (repeated_fingerprint, repeated_count, objective["id"]),
+                )
+                connection.execute(
+                    """
+                    UPDATE bonsai.objectives
+                    SET status = 'blocked', last_job_at = now(), updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (objective["id"],),
+                )
+                successor = connection.execute(
+                    """
+                    SELECT id, title FROM bonsai.objectives
+                    WHERE status = 'paused'
+                    ORDER BY (parent_id = %s) DESC, priority DESC, created_at
+                    FOR UPDATE SKIP LOCKED LIMIT 1
+                    """,
+                    (objective["id"],),
+                ).fetchone()
+                if successor is None:
+                    successor = connection.execute(
+                        """
+                        INSERT INTO bonsai.objectives
+                            (parent_id, title, description, priority, status,
+                             cycle_interval_seconds, created_by)
+                        VALUES (%s, %s, %s, %s, 'active', %s, 'orchestrator:failure-escalation')
+                        RETURNING id, title
+                        """,
+                        (
+                            objective["id"],
+                            "Explore the next bounded DF capability",
+                            (
+                                "Choose one verified but unimplemented DFHack mechanic, gather one "
+                                "live probe, then implement the smallest deterministic API and public "
+                                "test. Do not retry the blocked proposal unchanged."
+                            ),
+                            max(1, objective["priority"] - 1),
+                            objective["cycle_interval_seconds"],
+                        ),
+                    ).fetchone()
+                else:
+                    connection.execute(
+                        """
+                        UPDATE bonsai.objectives
+                        SET status = 'active', last_job_at = NULL, updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (successor["id"],),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO bonsai.events
+                        (event_type, actor_type, actor_id, aggregate_type, aggregate_id, payload)
+                    VALUES ('objective.blocked_by_repeated_failure', 'control', 'orchestrator',
+                            'objective', %s, %s)
+                    """,
+                    (
+                        str(objective["id"]),
+                        json.dumps(
+                            {
+                                "failure_fingerprint": repeated_fingerprint,
+                                "repeated_count": repeated_count,
+                                "successor_objective_id": str(successor["id"]),
+                                "successor_title": successor["title"],
+                                "reason": "same terminal failure survived one cooldown recovery epoch",
+                            }
+                        ),
+                    ),
+                )
+                return
             connection.execute(
                 """
                 UPDATE bonsai.objective_evaluation_state
-                SET last_failure_fingerprint = %s, repeated_failure_count = 3,
+                SET last_failure_fingerprint = %s, repeated_failure_count = %s,
                     cooldown_until = now() + interval '10 minutes', updated_at = now()
                 WHERE objective_id = %s
                 """,
-                (repeated_fingerprint, objective["id"]),
+                (repeated_fingerprint, repeated_count, objective["id"]),
             )
             connection.execute(
                 "UPDATE bonsai.objectives SET last_job_at = now(), updated_at = now() WHERE id = %s",
@@ -185,7 +284,7 @@ def tick() -> None:
                     json.dumps(
                         {
                             "failure_fingerprint": repeated_fingerprint,
-                            "repeated_count": 3,
+                            "repeated_count": repeated_count,
                             "cooldown_seconds": 600,
                             "reason": "three identical terminal failures",
                         }
@@ -384,7 +483,7 @@ def tick() -> None:
                 "submission_id": str(unscored_submission["id"]),
                 "controller_manifest": unscored_submission["manifest"],
                 "suite_name": "controller_contract_live_smoke",
-                "suite_version": "2",
+                "suite_version": "3",
             }
 
         job = connection.execute(
@@ -409,6 +508,10 @@ def tick() -> None:
                             "promoted_coding_since_discovery": promoted_coding_since_discovery,
                             "consecutive_coding_failures": consecutive_coding_failures,
                             "discovery_promotions_since_coding": discovery_promotions_since_coding,
+                            "recovery_mode": bool(
+                                evaluation_state["last_failure_fingerprint"]
+                                and evaluation_state["repeated_failure_count"] >= 3
+                            ),
                         },
                         **experiment_payload,
                     }
