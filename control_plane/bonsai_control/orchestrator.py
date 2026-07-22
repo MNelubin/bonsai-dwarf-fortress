@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 import time
+from datetime import datetime
 
 from .cycle_policy import choose_cycle
 from .db import close_pool, connection as db_connection, open_pool
@@ -59,6 +60,21 @@ def summary_tail(value: object, limit: int = 2_000) -> str:
         return ""
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     return text[-limit:]
+
+
+def should_start_cooldown(
+    repeated_fingerprint: str | None,
+    latest_failure_completed_at: datetime | None,
+    evaluation_state_updated_at: datetime | None,
+) -> bool:
+    return bool(
+        repeated_fingerprint
+        and latest_failure_completed_at
+        and (
+            evaluation_state_updated_at is None
+            or latest_failure_completed_at > evaluation_state_updated_at
+        )
+    )
 
 
 def tick() -> None:
@@ -124,7 +140,7 @@ def tick() -> None:
 
         recent_failures = connection.execute(
             """
-            SELECT id, error FROM bonsai.jobs
+            SELECT id, error, completed_at FROM bonsai.jobs
             WHERE objective_id = %s AND state = 'failed' AND error IS NOT NULL
             ORDER BY completed_at DESC NULLS LAST, created_at DESC LIMIT 3
             """,
@@ -140,7 +156,11 @@ def tick() -> None:
             "SELECT * FROM bonsai.objective_evaluation_state WHERE objective_id = %s FOR UPDATE",
             (objective["id"],),
         ).fetchone()
-        if repeated_fingerprint and evaluation_state["last_failure_fingerprint"] != repeated_fingerprint:
+        if should_start_cooldown(
+            repeated_fingerprint,
+            recent_failures[0]["completed_at"] if recent_failures else None,
+            evaluation_state["updated_at"],
+        ):
             connection.execute(
                 """
                 UPDATE bonsai.objective_evaluation_state

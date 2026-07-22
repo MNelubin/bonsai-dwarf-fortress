@@ -1,4 +1,11 @@
-from bonsai_control.orchestrator import failure_fingerprint, submission_hash, summary_tail
+from datetime import datetime, timedelta, timezone
+
+from bonsai_control.orchestrator import (
+    failure_fingerprint,
+    should_start_cooldown,
+    submission_hash,
+    summary_tail,
+)
 
 
 def test_failure_fingerprint_ignores_ids_paths_and_numbers():
@@ -24,3 +31,10 @@ def test_summary_tail_accepts_structured_experiment_result():
     rendered = summary_tail({"score": 0.75, "live_df": {"ready": True}})
     assert '"score": 0.75' in rendered
     assert '"ready": true' in rendered
+
+
+def test_cooldown_rearms_only_after_a_new_matching_failure():
+    state_updated = datetime.now(timezone.utc)
+    assert not should_start_cooldown("same", state_updated - timedelta(seconds=1), state_updated)
+    assert should_start_cooldown("same", state_updated + timedelta(seconds=1), state_updated)
+    assert not should_start_cooldown(None, state_updated + timedelta(seconds=1), state_updated)
