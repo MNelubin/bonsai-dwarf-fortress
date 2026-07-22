@@ -1,18 +1,27 @@
-## Mechanics: Calendar/Time
+# Calendar/Time Bounded DFHack Exploration
 
-**Status:** `VERIFIED`
-**Claims:**
-- DFHack currently lacks a direct API for deterministic calendar control (advance/observe)
-- Calendar state can be inspected via raw game data interfaces
+**Command**: `lua` with `dfhack.run('lua')` interface
 
-**Evidence:**
-- Help probe failed for `calendar` command (`bonsai-df-probe ... help calendar`)
-- Sample Lua probe required to validate raw interface:
-```lua
-function observe_calendar()
-    return {
-        year = df.current_year,
-        season = df.global.hidden_options.spring_year%12
-    }
-end
-```
+**Probed Verified Output**:
+
+> ```bash
+> /srv/df-bonsai/current/dfhack-run help lua
+> ...
+> :lua !df.global.window_z
+> Print out the current z-level (as distinct from the displayed elevation).
+> ...
+> DFHack version 53.15-r2 (release) on x86_64
+> ```
+
+*Claim: The DFHack Lua interface provides access to game state fields via shortcuts (`!`, `~`, `^`, `@`)
+and direct Lua queries.*  **VERIFIED** using `/opt/bonsai-probe .../dfhack-run help lua`.
+
+**Link**: [Parent INDEX][index]
+
+**Investigation Tasks**:
+
+1. Probe timestamp formats via `:lua !calendar.last_turn` to verify turn-based time tracking.
+2. Determine if `:lua !map.getTile(x, y, z)` returns tile metadata deterministically.
+3. Extract flags/enums for weather, seasons, or celestial states from Lua documentation.
+
+[index]: knowledge/INDEX.md
