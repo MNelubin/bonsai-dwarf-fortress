@@ -683,7 +683,7 @@ BUILDING_SCHEMA_KEYS = [
 ]
 
 
-def is_complete_building(bld):
+def is_complete_building(bld) -> bool:
     """Return True if a building record indicates construction is finished."""
     return bool(bld.get("built")) and bld.get("build_stage", -1) >= 0
 

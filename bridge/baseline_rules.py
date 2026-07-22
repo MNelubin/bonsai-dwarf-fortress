@@ -37,7 +37,7 @@ def collect_baseline(seed: int, game_state: Any) -> Dict[str, Any]:
     # For a brand‑new baseline run we simply record the observed value.
     return {
         "seed": seed,
-        "cpu_seconds": cpu,
-        "worst_cpu": cpu > 0.0,   # deterministic detection: any non‑zero CPU time triggers worst_cpu
+        "cpu_seconds": cpu if isinstance(cpu, (int, float)) else 0.0,
+                    "worst_cpu": (isinstance(cpu, (int, float)) and cpu > 0.0) if isinstance(cpu, (int, float)) else False,
         "failure_taxonomy": [],
     }
