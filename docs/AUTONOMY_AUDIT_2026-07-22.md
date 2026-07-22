@@ -29,6 +29,8 @@ cooldown the exact same path was scheduled again indefinitely.
    possible without permitting a blind overwrite.
 2. A rejected proposal now hands the next graph node bounded current file content, size, and
    SHA-256. An identical rejected proposal is detected and cannot consume the next attempt silently.
+   Generic objectives also receive lexically ranked implementation sources; previously a tool-free
+   node could see only its invented WIP test and had no implementation file available to edit.
 3. Failure epochs survive cooldown boundaries. One three-failure epoch gets one cooldown/recovery
    epoch. If the same fingerprint survives it, the objective is blocked and a paused successor is
    activated (or a bounded successor objective is created). A successful coding promotion clears
@@ -40,6 +42,8 @@ cooldown the exact same path was scheduled again indefinitely.
 6. The evaluator parser accepts ANSI-prefixed, pretty-printed DFHack markers. Evaluator suite v3
    cannot receive a passing score when live game state is absent: its maximum in that case is 0.6.
 7. The dashboard shows repeated-failure count, fingerprint, and an actionable error class.
+8. Patch-protocol variants share one terminal failure fingerprint, so superficial changes in an
+   exception string cannot reset the retry epoch.
 
 ## Verification before deployment
 

@@ -872,6 +872,39 @@ def test_coding_graph_context_selects_objective_source_symbol_and_test(tmp_path:
     assert "def _dfhack_run" in packet["game_runner/episode.py"]
 
 
+def test_coding_graph_context_lexically_finds_implementation_for_generic_goal(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    (repo / "player").mkdir()
+    (repo / "player" / "baseline.py").write_text(
+        "def rules_based_player(seed):\n    return {'failure_taxonomy': {}, 'seed': seed}\n",
+        encoding="utf-8",
+    )
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_unrelated.py").write_text(
+        "def test_unrelated():\n    assert True\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "add baseline"],
+        check=True,
+        capture_output=True,
+    )
+
+    packet = select_coding_context(
+        repo,
+        {
+            "objective": "30-day CPU baseline",
+            "description": (
+                "Rules-based player evaluated over multiple seeds including worst-run metrics "
+                "and failure taxonomy."
+            ),
+        },
+    )
+
+    assert "player/baseline.py" in packet
+    assert "rules_based_player" in packet["player/baseline.py"]
+
+
 def test_coding_graph_context_keeps_named_symbols_from_large_file_middle(tmp_path: Path):
     repo = init_repo(tmp_path)
     (repo / "bridge").mkdir()
@@ -965,6 +998,31 @@ def test_coding_graph_can_fully_replace_existing_untracked_wip_file(tmp_path: Pa
     assert target.read_text(encoding="utf-8") == "def repaired():\n    return True\n"
 
 
+def test_coding_graph_explicit_create_can_repair_existing_untracked_wip(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_new_contract.py"
+    target.parent.mkdir()
+    target.write_text("def broken():\n  return ???\n", encoding="utf-8")
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "edits": [
+                {
+                    "operation": "create",
+                    "path": "tests/test_new_contract.py",
+                    "old": "",
+                    "new": "def test_contract():\n    assert True\n",
+                    "expected_sha256": "",
+                }
+            ]
+        },
+    )
+
+    assert changed == ["tests/test_new_contract.py"]
+    assert target.read_text(encoding="utf-8") == "def test_contract():\n    assert True\n"
+
+
 def test_coding_graph_refuses_unchecked_full_replacement_of_tracked_file(tmp_path: Path):
     repo = init_repo(tmp_path)
     target = repo / "bridge" / "tracked.py"
@@ -984,6 +1042,39 @@ def test_coding_graph_refuses_unchecked_full_replacement_of_tracked_file(tmp_pat
         )
 
     assert target.read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_coding_graph_can_replace_tracked_file_visible_in_full_source_packet(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    target = repo / "tests" / "test_visible.py"
+    target.parent.mkdir()
+    target.write_text("def test_old():\n    assert True\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "tracked"],
+        check=True,
+        capture_output=True,
+    )
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    changed = apply_coding_graph_edits(
+        repo,
+        {
+            "_visible_file_sha256": {"tests/test_visible.py": digest},
+            "edits": [
+                {
+                    "operation": "create",
+                    "path": "tests/test_visible.py",
+                    "old": "",
+                    "new": "def test_new():\n    assert True\n",
+                    "expected_sha256": "",
+                }
+            ],
+        },
+    )
+
+    assert changed == ["tests/test_visible.py"]
+    assert target.read_text(encoding="utf-8") == "def test_new():\n    assert True\n"
 
 
 def test_coding_graph_replaces_tracked_file_only_with_matching_sha256(tmp_path: Path):

@@ -38,6 +38,17 @@ def failure_fingerprint(error: str | None) -> str | None:
     if not error:
         return None
     normalized = error.lower()
+    if any(
+        marker in normalized
+        for marker in (
+            "cannot create over existing file",
+            "coding graph proposal does not change any file",
+            "empty old is only valid",
+            "old text occurs",
+            "replace_file sha-256 mismatch",
+        )
+    ):
+        normalized = "coding_graph:patch_protocol"
     normalized = re.sub(r"[0-9a-f]{8}-[0-9a-f-]{27,}", "<uuid>", normalized)
     normalized = re.sub(r"\b[0-9a-f]{40,64}\b", "<hash>", normalized)
     normalized = re.sub(r"/[^\s:'\"]+", "<path>", normalized)

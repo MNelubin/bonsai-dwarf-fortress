@@ -21,6 +21,13 @@ def test_failure_fingerprint_ignores_ids_paths_and_numbers():
     assert failure_fingerprint(first) == failure_fingerprint(second)
 
 
+def test_patch_protocol_variants_share_one_terminal_failure_epoch():
+    first = "coding graph proposal does not change any file"
+    second = "edit 2 cannot create over existing file tests/test_x.py"
+    third = "edit 1 old text occurs 0 times instead of once: player/policy.py"
+    assert failure_fingerprint(first) == failure_fingerprint(second) == failure_fingerprint(third)
+
+
 def test_submission_hash_is_canonical_and_commit_sensitive():
     manifest_a = {"protocol": "jsonl-v1", "kind": "python_callable"}
     manifest_b = {"kind": "python_callable", "protocol": "jsonl-v1"}

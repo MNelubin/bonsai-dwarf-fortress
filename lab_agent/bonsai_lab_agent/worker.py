@@ -1350,6 +1350,42 @@ def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, st
             if path.startswith(WIP_AUTO_PATHS):
                 add(path)
 
+    # Generic objectives often name a capability ("rules-based player", "failure taxonomy")
+    # instead of a concrete symbol or path. Rank tracked editable files by bounded lexical hits so
+    # the tool-free patch node receives implementation sources, not only the WIP test it invented.
+    stop_words = {
+        "after", "already", "before", "bounded", "coding", "cycle", "description",
+        "including", "objective", "previous", "should", "state", "their", "these",
+        "through", "using", "with", "without",
+    }
+    terms = {
+        term
+        for term in re.findall(r"[a-z][a-z0-9_]{3,}", objective_text.lower())
+        if term not in stop_words
+    }
+    lexical_scores: dict[str, int] = {}
+    for term in sorted(terms, key=lambda value: (-len(value), value))[:16]:
+        matches = subprocess.run(
+            ["git", "-C", str(repo), "grep", "-i", "-l", "-F", "--", term],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        if matches.returncode not in {0, 1}:
+            continue
+        for path in matches.stdout.splitlines()[:24]:
+            if path.startswith(CODING_GRAPH_ROOTS):
+                lexical_scores[path] = lexical_scores.get(path, 0) + 1
+                if term in path.lower():
+                    lexical_scores[path] += 2
+    for path, _score in sorted(
+        lexical_scores.items(), key=lambda item: (-item[1], item[0])
+    )[:8]:
+        add(path)
+
     stems = {PurePosixPath(path).stem.removeprefix("test_") for path in selected}
     for path in sorted(tracked):
         if not path.startswith(("tests/", "evaluator_public/")):
@@ -1383,6 +1419,9 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
     grouped: dict[str, list[tuple[int, str, str, str, str]]] = {}
     staged: dict[str, str] = {}
     changed: set[str] = set()
+    visible_file_sha256 = payload.get("_visible_file_sha256", {})
+    if not isinstance(visible_file_sha256, dict):
+        visible_file_sha256 = {}
     for index, edit in enumerate(edits):
         if not isinstance(edit, dict):
             raise ValueError(f"edit {index} is not an object")
@@ -1433,11 +1472,13 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
         elif (
             not tracked
             and len(file_edits) == 1
-            and file_edits[0][1] == "legacy_empty"
+            and file_edits[0][1] in {"create", "legacy_empty"}
             and file_edits[0][2] == ""
         ):
             # Restored WIP can contain malformed new files whose bytes are impossible for
-            # the model to quote exactly. Full replacement is safe only while untracked.
+            # the model to quote exactly. The explicit create operation is also valid here:
+            # relative to the immutable baseline this path is still a new file. Full replacement
+            # remains safe only while untracked.
             updated = file_edits[0][3]
         elif len(file_edits) == 1 and file_edits[0][1] == "replace_file":
             index, _operation, old, new, expected_sha256 = file_edits[0]
@@ -1450,6 +1491,17 @@ def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
                     f"expected_sha256 must equal {current_sha256}"
                 )
             updated = new
+        elif (
+            len(file_edits) == 1
+            and file_edits[0][1] == "create"
+            and file_edits[0][2] == ""
+            and visible_file_sha256.get(path)
+            == hashlib.sha256(current.encode("utf-8")).hexdigest()
+        ):
+            # The controller, not the model, attests that the complete current tracked file was in
+            # this node's source packet. This is equivalent to optimistic replace_file without
+            # asking a weak model to copy a 64-character digest perfectly.
+            updated = file_edits[0][3]
         else:
             replacements: list[tuple[int, int, str, int]] = []
             for index, operation, old, new, _expected_sha256 in file_edits:
@@ -1777,7 +1829,8 @@ packet, current diff, and validator diagnostics. Return schema-valid JSON only.
 Choose an explicit operation for every edit:
 - `replace`: `old` must be copied byte-for-byte from the current file and occur exactly once; `new`
   replaces it; set expected_sha256="".
-- `create`: only for an absent path; set old="" and expected_sha256="".
+- `create`: for a path absent from the immutable baseline. It may already exist in the current diff
+  as restored cross-job WIP; set old="" and expected_sha256="".
 - `replace_file`: only when validator diagnostics supply current_sha256 for an existing file; set
   old="" and copy that hash into expected_sha256. This is optimistic concurrency protection, not a
   shortcut for files whose current content you have not received.
@@ -1839,6 +1892,15 @@ Bounded source packet:
     response_payload = json.loads(raw)
     content = model_response_content(config, response_payload)
     payload = json.loads(content)
+    visible_file_sha256: dict[str, str] = {}
+    for path, visible_content in context_packet.items():
+        target = repo / path
+        if not target.is_file() or target.is_symlink():
+            continue
+        current = target.read_text(encoding="utf-8", errors="replace")
+        if current == visible_content:
+            visible_file_sha256[path] = hashlib.sha256(current.encode("utf-8")).hexdigest()
+    payload["_visible_file_sha256"] = visible_file_sha256
     _trace_event(
         repo.parent / "opencode-trace.jsonl",
         {
