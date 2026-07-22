@@ -1,37 +1,4 @@
----
 # Knowledge Index
 
 ## DFHack & Environment
-- [DF-Bonsai Environment Verification](dfhack/df-bonsai-environment-verification.md)
-- [DFHack Runtime Structure and Entry Points](dfhack/dfhack-runtime-structure.md)
-- [Bridge Primitives and Game Loop Controls](dfhack/bridge-primitives.md)
-- [DF-Bonsai Runtime Analysis & Launcher Logic](dfhack/df-bonsai-runtime-analysis.md)
-- [DF-Bonsai Release Metadata and Versioning](dfhack/df-bonsai-release-metadata.md)
-- [DF-Bonsai Runtime Structure and File Layout](dfhack/df-bonsai-runtime-structure.md)
-- [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)
-- [Job System Structures and State](dfhack/mechanics-jobs.md)
-- [Time, Calendar, and State Probes](dfhack/mechanics-time-and-state-probes.md)
-- [Job Categorization and Unit Needs Heuristics](dfhack/mechanics-jobs-and-units.md)
-- [Tile Material Resolution and Geology](dfhack/mechanics-tile-materials.md)
-- [Unit, Job, Item, and Skill Mechanics](dfhack/mechanics-units-jobs-items.md)
-- [CLI Lua Execution and RPC Limitations](dfhack/mechanics-cli-lua-execution.md)
-- [Runtime Probing and State Verification](dfhack/mechanics-runtime-probing.md)
-- [Runtime Readiness and Probe Recovery](dfhack/mechanics-runtime-readiness.md)
-- [Runtime Probe Recovery and Budget Exhaustion](dfhack/mechanics-runtime-probe-recovery.md)
-- [Live Game Probe Recovery Mechanics](dfhack/mechanics-runtime-probe-recovery.md)
-- [Pause Command Interaction and Probe Verification](dfhack/mechanics-pause-interaction.md)
-- [Unit Help Command Mechanics](dfhack/mechanics-help-unit.md)
-- [Calendar Mechanics](dfhack/mechanics-calendar.md)
-- [Help Command Mechanics](dfhack/mechanics-help-commands.md)
-- [Date Mechanics](dfhack/mechanics-date.md)
-- [Lua Command Syntax and Profession Enums](dfhack/mechanics-lua-command-syntax.md)
-- [Runtime Help Command Overview](dfhack/mechanics-runtime-help.md)
-- [CLI Help Output Mechanics](dfhack/mechanics-cli-help-output.md)
-- [Pause Command Mechanics](dfhack/mechanics-fpause.md)
-
-
-- [Calendar Events/Holidays Management Mechanic](dfhack/calendar-events-management.md)
-
-
-- [Map Tile Query Mechanic](dfhack/mechanics-map-tiles.md)
----
+- [Pause and Advancement Commands Overview](dfhack/mechanics-pause-advancement.md)
