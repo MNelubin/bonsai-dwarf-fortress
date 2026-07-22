@@ -7,6 +7,7 @@
 ---
 ---
 ---
+
 # Knowledge Index
 
 ## DFHack & Environment
@@ -30,3 +31,4 @@
 - [Pause Command Interaction and Probe Verification](dfhack/mechanics-pause-interaction.md)
 - [Unit Help Command Mechanics](dfhack/mechanics-help-unit.md)
 - [Calendar Mechanics](dfhack/mechanics-calendar.md)
+- [Help Command Mechanics](dfhack/mechanics-help-commands.md)
