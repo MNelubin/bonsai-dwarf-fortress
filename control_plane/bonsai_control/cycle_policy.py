@@ -18,9 +18,24 @@ def choose_cycle(
     promoted_coding_since_discovery: int,
     consecutive_coding_failures: int,
     discovery_promotions_since_coding: int,
+    has_unscored_submission: bool = False,
+    last_experiment_failure_kind: str | None = None,
 ) -> CycleDecision:
+    if has_unscored_submission:
+        return CycleDecision(
+            "experiment_cycle", "a promoted controller is waiting for independent measurement"
+        )
     if not has_promoted_discovery:
         return CycleDecision("discovery_cycle", "knowledge library has no promoted discovery yet")
+    if last_job_type == "experiment_cycle" and last_job_state == "completed":
+        if last_experiment_failure_kind in {"game_api", "runtime", "reset"}:
+            return CycleDecision(
+                "discovery_cycle",
+                "evaluator classified a game API failure; gather one bounded live probe",
+            )
+        return CycleDecision(
+            "coding_cycle", "independent score is available; improve the controller from evidence"
+        )
     if last_job_type == "discovery_cycle" and last_job_state == "completed":
         return CycleDecision("coding_cycle", "fresh promoted knowledge is ready for implementation")
     if promoted_coding_since_discovery >= 3:

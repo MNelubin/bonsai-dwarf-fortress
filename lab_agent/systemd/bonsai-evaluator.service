@@ -1,0 +1,20 @@
+[Unit]
+Description=Bonsai out-of-agent controller evaluator
+After=network-online.target tailscaled.service bonsai-df-runtime.service
+Wants=network-online.target tailscaled.service bonsai-df-runtime.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/srv/bonsai-evaluator
+EnvironmentFile=/etc/bonsai-agent/agent.env
+ExecStart=/opt/bonsai-lab-agent/venv/bin/bonsai-evaluator
+StandardOutput=append:/srv/bonsai-evaluator/logs/evaluator.log
+StandardError=append:/srv/bonsai-evaluator/logs/evaluator.log
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

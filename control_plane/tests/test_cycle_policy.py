@@ -10,6 +10,8 @@ def decide(**overrides):
         promoted_coding_since_discovery=1,
         consecutive_coding_failures=0,
         discovery_promotions_since_coding=0,
+        has_unscored_submission=False,
+        last_experiment_failure_kind=None,
     )
     values.update(overrides)
     return choose_cycle(**values)
@@ -57,3 +59,25 @@ def test_one_failed_coding_graph_gets_one_wip_repair_retry():
     decision = decide(last_job_state="failed", consecutive_coding_failures=1)
     assert decision.job_type == "coding_cycle"
     assert "retry" in decision.reason
+
+
+def test_promoted_unscored_controller_is_measured_before_more_llm_work():
+    decision = decide(has_unscored_submission=True)
+    assert decision.job_type == "experiment_cycle"
+    assert "measurement" in decision.reason
+
+
+def test_scored_controller_routes_back_to_coding():
+    decision = decide(last_job_type="experiment_cycle", last_job_state="completed")
+    assert decision.job_type == "coding_cycle"
+    assert "score" in decision.reason
+
+
+def test_game_api_evaluation_failure_routes_one_discovery_cycle():
+    decision = decide(
+        last_job_type="experiment_cycle",
+        last_job_state="completed",
+        last_experiment_failure_kind="game_api",
+    )
+    assert decision.job_type == "discovery_cycle"
+    assert "game API" in decision.reason

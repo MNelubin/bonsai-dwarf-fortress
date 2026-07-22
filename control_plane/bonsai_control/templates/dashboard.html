@@ -15,7 +15,7 @@
     main { padding:20px; display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:15px; }
     section { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:15px; overflow:auto; }
     .status { grid-column:span 12; display:grid; grid-template-columns:repeat(7,minmax(130px,1fr)); gap:10px; }
-    .workers { grid-column:span 5; } .objectives { grid-column:span 7; } .jobs,.promotions,.artifacts,.events { grid-column:span 12; }
+    .workers { grid-column:span 5; } .objectives { grid-column:span 7; } .jobs,.promotions,.submissions,.experiments,.artifacts,.events { grid-column:span 12; }
     .events { max-height:520px; }
     .metric { border-left:3px solid var(--green); padding:3px 0 3px 10px; min-width:0; }
     .label { color:var(--muted); font-size:11px; letter-spacing:.04em; } .value { font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -51,7 +51,15 @@
   </tbody></table></section>
 
   <section class="objectives"><h2>Objectives</h2><table><thead><tr><th>priority</th><th>objective</th><th>status</th><th>interval / last job</th></tr></thead><tbody>
-    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td class="wide">{{ o.title }}<br><span class="label">{{ o.description }}</span></td><td><span class="pill {{ o.status }}">{{ o.status }}</span></td><td>{{ o.cycle_interval_seconds }}s<br><span class="label">{{ o.last_job_at or 'never' }}</span></td></tr>{% else %}<tr><td colspan="4">No objectives</td></tr>{% endfor %}
+    {% for o in objectives %}<tr><td>{{ o.priority }}</td><td class="wide">{{ o.title }}<br><span class="label">{{ o.description }}</span></td><td><span class="pill {{ o.status }}">{{ o.status }}</span>{% if o.cooldown_until %}<br><span class="label">cooldown {{ o.cooldown_until }}</span>{% endif %}</td><td>{{ o.cycle_interval_seconds }}s<br><span class="label">{{ o.last_job_at or 'never' }}</span><br><span class="label">best {{ o.best_score if o.best_score is not none else '-' }} · evals {{ o.evaluations_completed or 0 }}</span></td></tr>{% else %}<tr><td colspan="4">No objectives</td></tr>{% endfor %}
+  </tbody></table></section>
+
+  <section class="submissions"><h2>Controller submissions</h2><table><thead><tr><th>state</th><th>submission</th><th>commit</th><th>controller</th><th>latest score</th><th>created</th></tr></thead><tbody>
+    {% for s in submissions %}<tr><td><span class="pill {{ s.state }}">{{ s.state }}</span></td><td><code>{{ s.id }}</code></td><td>{% if github_url %}<a href="{{ github_url }}/commit/{{ s.git_commit }}" target="_blank">{{ s.git_commit[:12] }}</a>{% else %}<code>{{ s.git_commit[:12] }}</code>{% endif %}</td><td><code>{{ s.manifest.get('kind') }}</code><br><span class="label">{{ s.manifest.get('entrypoint') or s.manifest.get('argv') }}</span></td><td>{{ s.latest_score if s.latest_score is not none else '-' }}<br><span class="label">{{ s.latest_verdict or 'not evaluated' }}</span></td><td class="nowrap">{{ s.created_at }}</td></tr>{% else %}<tr><td colspan="6">No controller submissions yet</td></tr>{% endfor %}
+  </tbody></table></section>
+
+  <section class="experiments"><h2>External evaluator</h2><table><thead><tr><th>state</th><th>experiment / job</th><th>suite</th><th>score</th><th>verdict</th><th>commit</th><th>evidence</th></tr></thead><tbody>
+    {% for e in experiments %}<tr><td><span class="pill {{ e.state }}">{{ e.state }}</span></td><td><code>{{ e.id }}</code><br><span class="label">job {{ e.job_id }}</span></td><td>{{ e.suite_name or '-' }}<br><span class="label">v{{ e.suite_version or '-' }}</span></td><td>{{ e.score if e.score is not none else '-' }}</td><td>{{ e.verdict or '-' }}{% if e.failure_kind %}<br><span class="failed">{{ e.failure_kind }}</span>{% endif %}</td><td>{% if e.git_commit and github_url %}<a href="{{ github_url }}/commit/{{ e.git_commit }}" target="_blank">{{ e.git_commit[:12] }}</a>{% else %}<code>{{ e.git_commit or '-' }}</code>{% endif %}</td><td><details><summary>inspect result</summary><pre>{{ e.summary|tojson(indent=2) }}</pre></details></td></tr>{% else %}<tr><td colspan="7">No experiments yet</td></tr>{% endfor %}
   </tbody></table></section>
 
   <section class="jobs"><h2>Job history</h2><table><thead><tr><th>state</th><th>job / objective</th><th>model / phase</th><th>attempt</th><th>duration</th><th>commits</th><th>created</th><th>evidence</th></tr></thead><tbody>

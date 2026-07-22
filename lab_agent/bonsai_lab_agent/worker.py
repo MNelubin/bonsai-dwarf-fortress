@@ -142,7 +142,9 @@ class Api:
             raise RuntimeError(f"control API {exc.code}: {body[:2000]}") from exc
 
     def lease(self) -> dict[str, Any] | None:
-        status, body = self.request("POST", "/api/v1/jobs/lease")
+        status, body = self.request(
+            "POST", "/api/v1/jobs/lease", query={"capability": "agent"}
+        )
         return None if status == 204 else body
 
     def heartbeat(self, job: dict[str, Any], progress: dict[str, Any]) -> None:

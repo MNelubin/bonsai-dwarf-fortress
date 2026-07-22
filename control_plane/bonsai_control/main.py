@@ -17,7 +17,15 @@ from psycopg import Connection
 
 from .auth import require_admin, require_lab
 from .db import close_pool, connection as db_connection, open_pool
-from .schemas import Heartbeat, JobCreate, JobFailure, JobResult, ObjectiveCreate, WorkerHeartbeat
+from .schemas import (
+    ControllerSubmissionCreate,
+    Heartbeat,
+    JobCreate,
+    JobFailure,
+    JobResult,
+    ObjectiveCreate,
+    WorkerHeartbeat,
+)
 from .settings import get_settings
 
 
@@ -31,7 +39,7 @@ async def lifespan(_: FastAPI):
     close_pool()
 
 
-app = FastAPI(title="Bonsai Control Plane", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="Bonsai Control Plane", version="0.6.0", lifespan=lifespan)
 
 
 def _event(
@@ -70,6 +78,39 @@ def _valid_commit(value: Any) -> str | None:
     if not isinstance(value, str) or len(value) != 40 or any(c not in "0123456789abcdef" for c in value):
         raise HTTPException(status_code=422, detail="invalid git commit hash")
     return value
+
+
+def _submission_hash(git_commit: str, manifest: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        {"git_commit": git_commit, "manifest": manifest},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _validate_controller_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(manifest)
+    kind = normalized.setdefault("kind", "python_callable")
+    normalized.setdefault("protocol", "jsonl-v1")
+    if normalized["protocol"] != "jsonl-v1":
+        raise HTTPException(status_code=422, detail="only jsonl-v1 is currently supported")
+    if kind == "python_callable":
+        entrypoint = normalized.setdefault("entrypoint", "player.baseline:baseline_policy")
+        if not isinstance(entrypoint, str) or ":" not in entrypoint or len(entrypoint) > 300:
+            raise HTTPException(status_code=422, detail="invalid Python controller entrypoint")
+    elif kind == "command":
+        argv = normalized.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or len(argv) > 32
+            or any(not isinstance(value, str) or not value for value in argv)
+        ):
+            raise HTTPException(status_code=422, detail="command manifest needs a bounded argv")
+    else:
+        raise HTTPException(status_code=422, detail="unsupported controller kind")
+    return normalized
 
 
 def _verify_lease(connection: Connection, job_id: UUID, token: str, worker_id: str) -> dict[str, Any]:
@@ -138,6 +179,78 @@ def list_objectives() -> list[dict[str, Any]]:
         ).fetchall()
 
 
+@app.post("/api/v1/submissions", status_code=status.HTTP_201_CREATED)
+def create_submission(
+    payload: ControllerSubmissionCreate, worker_id: str = Depends(require_lab)
+) -> dict[str, Any]:
+    manifest = _validate_controller_manifest(payload.manifest)
+    content_hash = _submission_hash(payload.git_commit, manifest)
+    with db_connection() as connection, connection.transaction():
+        row = connection.execute(
+            """
+            INSERT INTO bonsai.controller_submissions
+                (objective_id, source_job_id, git_commit, content_hash, manifest)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (objective_id, content_hash) DO UPDATE SET updated_at = now()
+            RETURNING *
+            """,
+            (
+                payload.objective_id,
+                payload.source_job_id,
+                payload.git_commit,
+                content_hash,
+                json.dumps(manifest),
+            ),
+        ).fetchone()
+        connection.execute(
+            """
+            INSERT INTO bonsai.objective_evaluation_state (objective_id, submissions_seen)
+            VALUES (%s, 1)
+            ON CONFLICT (objective_id) DO UPDATE SET
+                submissions_seen = bonsai.objective_evaluation_state.submissions_seen + 1,
+                updated_at = now()
+            """,
+            (payload.objective_id,),
+        )
+        _event(
+            connection,
+            "submission.admitted",
+            "lab",
+            worker_id,
+            "submission",
+            str(row["id"]),
+            {"git_commit": payload.git_commit, "manifest": manifest},
+        )
+    return row
+
+
+@app.get("/api/v1/submissions")
+def list_submissions(limit: int = 100) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 500))
+    with db_connection() as connection:
+        return connection.execute(
+            """
+            SELECT s.*, e.score AS latest_score, e.verdict AS latest_verdict
+            FROM bonsai.controller_submissions s
+            LEFT JOIN LATERAL (
+                SELECT score, verdict FROM bonsai.experiments
+                WHERE submission_id = s.id ORDER BY completed_at DESC NULLS LAST LIMIT 1
+            ) e ON true
+            ORDER BY s.created_at DESC LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+
+
+@app.get("/api/v1/experiments")
+def list_experiments(limit: int = 100) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 500))
+    with db_connection() as connection:
+        return connection.execute(
+            "SELECT * FROM bonsai.experiments ORDER BY started_at DESC LIMIT %s", (limit,)
+        ).fetchall()
+
+
 @app.post("/api/v1/jobs", status_code=status.HTTP_201_CREATED)
 def create_job(payload: JobCreate, _: str = Depends(require_admin)) -> dict[str, Any]:
     with db_connection() as connection, connection.transaction():
@@ -172,7 +285,9 @@ def list_jobs(limit: int = 100) -> list[dict[str, Any]]:
 
 
 @app.post("/api/v1/jobs/lease", response_model=None)
-def lease_job(worker_id: str = Depends(require_lab)) -> Any:
+def lease_job(capability: str = "agent", worker_id: str = Depends(require_lab)) -> Any:
+    if capability not in {"agent", "evaluator"}:
+        raise HTTPException(status_code=400, detail="unsupported worker capability")
     settings = get_settings()
     token = secrets.token_urlsafe(32)
     with db_connection() as connection, connection.transaction():
@@ -185,10 +300,15 @@ def lease_job(worker_id: str = Depends(require_lab)) -> Any:
             """
             SELECT * FROM bonsai.jobs
             WHERE state = 'queued' AND available_at <= now()
+              AND CASE WHEN %s = 'evaluator'
+                       THEN job_type = 'experiment_cycle'
+                       ELSE job_type <> 'experiment_cycle'
+                  END
             ORDER BY priority DESC, created_at
             FOR UPDATE SKIP LOCKED
             LIMIT 1
-            """
+            """,
+            (capability,),
         ).fetchone()
         if row is None:
             return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -204,6 +324,31 @@ def lease_job(worker_id: str = Depends(require_lab)) -> Any:
             (worker_id, _lease_hash(token), settings.lease_seconds, row["id"]),
         ).fetchone()
         _event(connection, "job.leased", "lab", worker_id, "job", str(row["id"]), {"attempt": leased["attempts"]})
+        if leased["job_type"] == "experiment_cycle":
+            submission_id = (leased["payload"] or {}).get("submission_id")
+            connection.execute(
+                """
+                INSERT INTO bonsai.experiments
+                    (job_id, submission_id, baseline_commit, candidate_commit, state,
+                     suite_name, suite_version, budget_seconds)
+                VALUES (%s, %s, %s, %s, 'running', %s, %s, %s)
+                ON CONFLICT (job_id) DO UPDATE SET state = 'running', started_at = now()
+                """,
+                (
+                    leased["id"],
+                    submission_id,
+                    leased["base_commit"],
+                    leased["base_commit"],
+                    (leased["payload"] or {}).get("suite_name", "controller_contract_live_smoke"),
+                    (leased["payload"] or {}).get("suite_version", "1"),
+                    (leased["constraints"] or {}).get("wall_time_seconds", 180),
+                ),
+            )
+            if submission_id:
+                connection.execute(
+                    "UPDATE bonsai.controller_submissions SET state = 'evaluating', updated_at = now() WHERE id = %s",
+                    (submission_id,),
+                )
     leased["lease_token"] = token
     leased.pop("lease_token_hash", None)
     return leased
@@ -304,6 +449,11 @@ def complete_job(
             raise HTTPException(status_code=409, detail="worker base_commit differs from trusted job baseline")
         if payload.status == "candidate" and (not candidate_commit or candidate_commit == job["base_commit"]):
             raise HTTPException(status_code=422, detail="candidate job must report a new candidate_commit")
+        if job["job_type"] == "experiment_cycle" and payload.status != "completed":
+            raise HTTPException(
+                status_code=422,
+                detail="experiment results are measurements and must complete, not become candidates or rejects",
+            )
         row = connection.execute(
             """
             UPDATE bonsai.jobs
@@ -339,6 +489,105 @@ def complete_job(
                     json.dumps({"artifact_hashes": payload.artifact_hashes}),
                 ),
             )
+        if job["job_type"] == "experiment_cycle":
+            experiment_result = payload.result
+            submission_id = experiment_result.get("submission_id") or (job["payload"] or {}).get(
+                "submission_id"
+            )
+            score = experiment_result.get("score")
+            if not isinstance(score, (int, float)) or not 0.0 <= float(score) <= 1.0:
+                raise HTTPException(status_code=422, detail="experiment score must be in [0, 1]")
+            metrics = experiment_result.get("metrics") or []
+            if not isinstance(metrics, list) or len(metrics) > 200:
+                raise HTTPException(status_code=422, detail="invalid experiment metrics")
+            experiment = connection.execute(
+                """
+                UPDATE bonsai.experiments
+                SET submission_id = %s, state = 'completed', summary = %s,
+                    suite_name = %s, suite_version = %s, score = %s, verdict = %s,
+                    failure_kind = %s, result_artifact_hash = %s,
+                    completed_at = now()
+                WHERE job_id = %s
+                RETURNING *
+                """,
+                (
+                    submission_id,
+                    json.dumps(experiment_result.get("summary") or {}),
+                    experiment_result.get("suite_name"),
+                    str(experiment_result.get("suite_version") or ""),
+                    float(score),
+                    experiment_result.get("verdict"),
+                    experiment_result.get("failure_kind"),
+                    experiment_result.get("result_hash"),
+                    job_id,
+                ),
+            ).fetchone()
+            if experiment is None:
+                raise HTTPException(status_code=409, detail="experiment lease record is missing")
+            for metric in metrics:
+                if not isinstance(metric, dict) or not isinstance(metric.get("name"), str):
+                    raise HTTPException(status_code=422, detail="invalid metric object")
+                value = metric.get("value")
+                if not isinstance(value, (int, float)):
+                    raise HTTPException(status_code=422, detail="metric value must be numeric")
+                connection.execute(
+                    """
+                    INSERT INTO bonsai.metrics
+                        (experiment_id, episode_id, name, value, unit, tags)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        experiment["id"],
+                        metric.get("episode_id"),
+                        metric["name"][:200],
+                        float(value),
+                        metric.get("unit"),
+                        json.dumps(metric.get("tags") or {}),
+                    ),
+                )
+            evaluation_state = connection.execute(
+                """
+                INSERT INTO bonsai.objective_evaluation_state (objective_id)
+                VALUES (%s)
+                ON CONFLICT (objective_id) DO UPDATE SET updated_at = now()
+                RETURNING *
+                """,
+                (job["objective_id"],),
+            ).fetchone()
+            improved = evaluation_state["best_score"] is None or float(score) > float(
+                evaluation_state["best_score"]
+            )
+            connection.execute(
+                """
+                UPDATE bonsai.objective_evaluation_state
+                SET champion_submission_id = CASE WHEN %s THEN %s ELSE champion_submission_id END,
+                    best_score = CASE WHEN %s THEN %s ELSE best_score END,
+                    evaluations_completed = evaluations_completed + 1,
+                    consecutive_no_improvement = CASE WHEN %s THEN 0 ELSE consecutive_no_improvement + 1 END,
+                    updated_at = now()
+                WHERE objective_id = %s
+                """,
+                (improved, submission_id, improved, float(score), improved, job["objective_id"]),
+            )
+            if submission_id:
+                connection.execute(
+                    "UPDATE bonsai.controller_submissions SET state = 'scored', updated_at = now() WHERE id = %s",
+                    (submission_id,),
+                )
+            _event(
+                connection,
+                "experiment.scored",
+                "evaluator",
+                worker_id,
+                "experiment",
+                str(experiment["id"]),
+                {
+                    "submission_id": submission_id,
+                    "score": float(score),
+                    "verdict": experiment_result.get("verdict"),
+                    "improved_champion": improved,
+                },
+            )
         _event(connection, f"job.{payload.status}", "lab", worker_id, "job", str(job_id), payload.result)
     return row
 
@@ -364,6 +613,27 @@ def fail_job(
             """,
             (state, payload.error, retry, retry, job_id),
         ).fetchone()
+        if job["job_type"] == "experiment_cycle":
+            submission_id = (job["payload"] or {}).get("submission_id")
+            connection.execute(
+                """
+                UPDATE bonsai.experiments
+                SET state = %s, summary = summary || %s,
+                    completed_at = CASE WHEN %s THEN NULL ELSE now() END
+                WHERE job_id = %s
+                """,
+                (
+                    "queued" if retry else "failed",
+                    json.dumps({"last_error": payload.error[-4000:]}),
+                    retry,
+                    job_id,
+                ),
+            )
+            if submission_id:
+                connection.execute(
+                    "UPDATE bonsai.controller_submissions SET state = %s, updated_at = now() WHERE id = %s",
+                    ("queued" if retry else "admitted", submission_id),
+                )
         _event(connection, "job.retry_scheduled" if retry else "job.failed", "lab", worker_id, "job", str(job_id), {"error": payload.error})
     return row
 
@@ -502,7 +772,13 @@ def dashboard(request: Request) -> HTMLResponse:
             """
         ).fetchall()
         objectives = connection.execute(
-            "SELECT * FROM bonsai.objectives ORDER BY priority DESC, created_at LIMIT 25"
+            """
+            SELECT o.*, s.best_score, s.evaluations_completed, s.consecutive_no_improvement,
+                   s.cooldown_until, s.champion_submission_id
+            FROM bonsai.objectives o
+            LEFT JOIN bonsai.objective_evaluation_state s ON s.objective_id = o.id
+            ORDER BY o.priority DESC, o.created_at LIMIT 25
+            """
         ).fetchall()
         events = connection.execute(
             "SELECT * FROM bonsai.events ORDER BY id DESC LIMIT 30"
@@ -519,6 +795,26 @@ def dashboard(request: Request) -> HTMLResponse:
             FROM bonsai.git_changes g
             JOIN bonsai.jobs j ON j.id = g.job_id
             ORDER BY g.created_at DESC LIMIT 25
+            """
+        ).fetchall()
+        submissions = connection.execute(
+            """
+            SELECT s.*, e.score AS latest_score, e.verdict AS latest_verdict
+            FROM bonsai.controller_submissions s
+            LEFT JOIN LATERAL (
+                SELECT score, verdict FROM bonsai.experiments
+                WHERE submission_id = s.id ORDER BY completed_at DESC NULLS LAST LIMIT 1
+            ) e ON true
+            ORDER BY s.created_at DESC LIMIT 25
+            """
+        ).fetchall()
+        experiments = connection.execute(
+            """
+            SELECT e.*, s.git_commit, j.objective_id
+            FROM bonsai.experiments e
+            LEFT JOIN bonsai.controller_submissions s ON s.id = e.submission_id
+            JOIN bonsai.jobs j ON j.id = e.job_id
+            ORDER BY e.started_at DESC LIMIT 25
             """
         ).fetchall()
         counts = connection.execute(
@@ -550,6 +846,8 @@ def dashboard(request: Request) -> HTMLResponse:
             "workers": workers,
             "artifacts": artifacts,
             "promotions": promotions,
+            "submissions": submissions,
+            "experiments": experiments,
             "counts": counts,
             "github_url": github_url,
             "now": now,

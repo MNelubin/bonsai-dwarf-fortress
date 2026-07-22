@@ -43,3 +43,10 @@ class ObjectiveCreate(BaseModel):
     description: str = ""
     priority: int = Field(default=100, ge=-1000, le=1000)
     cycle_interval_seconds: int = Field(default=300, ge=30, le=86_400)
+
+
+class ControllerSubmissionCreate(BaseModel):
+    objective_id: UUID
+    git_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    source_job_id: UUID | None = None
+    manifest: dict[str, Any] = Field(default_factory=dict)
