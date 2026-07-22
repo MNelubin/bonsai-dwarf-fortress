@@ -1,1 +1,28 @@
----\n---\n---\n---\n---\n---\n---\n---\n---\n\n# Knowledge Index\n\n## DFHack & Environment\n- [DF-Bonsai Environment Verification](dfhack/df-bonsai-environment-verification.md)\n- [DFHack Runtime Structure and Entry Points](dfhack/dfhack-runtime-structure.md)\n- [Bridge Primitives and Game Loop Controls](dfhack/bridge-primitives.md)\n- [DF-Bonsai Runtime Analysis & Launcher Logic](dfhack/df-bonsai-runtime-analysis.md)\n- [DF-Bonsai Release Metadata and Versioning](dfhack/df-bonsai-release-metadata.md)\n- [DF-Bonsai Runtime Structure and File Layout](dfhack/df-bonsai-runtime-structure.md)\n- [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)\n- [Job System Structures and State](dfhack/mechanics-jobs.md)\n- [Time, Calendar, and State Probes](dfhack/mechanics-time-and-state-probes.md)\n- [Job Categorization and Unit Needs Heuristics](dfhack/mechanics-jobs-and-units.md)\n- [Tile Material Resolution and Geology](dfhack/mechanics-tile-materials.md)\n- [Unit, Job, Item, and Skill Mechanics](dfhack/mechanics-units-jobs-items.md)\n- [CLI Lua Execution and RPC Limitations](dfhack/mechanics-cli-lua-execution.md)\n- [Runtime Probing and State Verification](dfhack/mechanics-runtime-probing.md)\n- [Runtime Readiness and Probe Recovery](dfhack/mechanics-runtime-readiness.md)\n- [Runtime Probe Recovery and Budget Exhaustion](dfhack/mechanics-runtime-probe-recovery.md)\n- [Live Game Probe Recovery Mechanics](dfhack/mechanics-runtime-probe-recovery.md)\n- [Pause Command Interaction and Probe Verification](dfhack/mechanics-pause-interaction.md)\n- [Unit Help Command Mechanics](dfhack/mechanics-help-unit.md)\n- [Calendar Mechanics](dfhack/mechanics-calendar.md)\n- [Help Command Mechanics](dfhack/mechanics-help-commands.md)\n- [Date Mechanics](dfhack/mechanics-date.md)\n
+# Knowledge Index
+
+## DFHack & Environment
+- [DF-Bonsai Environment Verification](dfhack/df-bonsai-environment-verification.md)
+- [DFHack Runtime Structure and Entry Points](dfhack/dfhack-runtime-structure.md)
+- [Bridge Primitives and Game Loop Controls](dfhack/bridge-primitives.md)
+- [DF-Bonsai Runtime Analysis & Launcher Logic](dfhack/df-bonsai-runtime-analysis.md)
+- [DF-Bonsai Release Metadata and Versioning](dfhack/df-bonsai-release-metadata.md)
+- [DF-Bonsai Runtime Structure and File Layout](dfhack/df-bonsai-runtime-structure.md)
+- [Pause, Advance, and Time Mechanics](dfhack/mechanics-pause-advance.md)
+- [Job System Structures and State](dfhack/mechanics-jobs.md)
+- [Time, Calendar, and State Probes](dfhack/mechanics-time-and-state-probes.md)
+- [Job Categorization and Unit Needs Heuristics](dfhack/mechanics-jobs-and-units.md)
+- [Tile Material Resolution and Geology](dfhack/mechanics-tile-materials.md)
+- [Unit, Job, Item, and Skill Mechanics](dfhack/mechanics-units-jobs-items.md)
+- [CLI Lua Execution and RPC Limitations](dfhack/mechanics-cli-lua-execution.md)
+- [Runtime Probing and State Verification](dfhack/mechanics-runtime-probing.md)
+- [Runtime Readiness and Probe Recovery](dfhack/mechanics-runtime-readiness.md)
+- [Runtime Probe Recovery and Budget Exhaustion](dfhack/mechanics-runtime-probe-recovery.md)
+- [Live Game Probe Recovery Mechanics](dfhack/mechanics-runtime-probe-recovery.md)
+- [Pause Command Interaction and Probe Verification](dfhack/mechanics-pause-interaction.md)
+- [Unit Help Command Mechanics](dfhack/mechanics-help-unit.md)
+- [Calendar Mechanics](dfhack/mechanics-calendar.md)
+- [Help Command Mechanics](dfhack/mechanics-help-commands.md)
+- [Date Mechanics](dfhack/mechanics-date.md)
+- [Lua Command Syntax and Profession Enums](dfhack/mechanics-lua-command-syntax.md)
+
+---
