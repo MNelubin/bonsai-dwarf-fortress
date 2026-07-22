@@ -1,0 +1,3 @@
+cpu_metrics:
+  - step: 0
+    cpu_seconds: 0.1
