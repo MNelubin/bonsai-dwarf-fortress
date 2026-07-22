@@ -28,6 +28,12 @@ def test_patch_protocol_variants_share_one_terminal_failure_epoch():
     assert failure_fingerprint(first) == failure_fingerprint(second) == failure_fingerprint(third)
 
 
+def test_incomplete_promotion_shape_has_stable_failure_epoch():
+    first = '{"missing_requirements": ["missing_executable_change"]}'
+    second = '{"missing_requirements": ["missing_public_test_change"], "changed_paths": ["x"]}'
+    assert failure_fingerprint(first) == failure_fingerprint(second)
+
+
 def test_submission_hash_is_canonical_and_commit_sensitive():
     manifest_a = {"protocol": "jsonl-v1", "kind": "python_callable"}
     manifest_b = {"kind": "python_callable", "protocol": "jsonl-v1"}

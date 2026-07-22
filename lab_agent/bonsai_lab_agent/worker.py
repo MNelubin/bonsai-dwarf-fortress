@@ -1617,6 +1617,42 @@ def coding_graph_decision(repo: Path, validation: dict[str, Any] | None) -> str:
     return "draft" if not working_tree_paths(repo) else "repair"
 
 
+def coding_graph_validation_diagnostics(repo: Path, validation: dict[str, Any]) -> str:
+    """Expose validator and graph-routing requirements to the next repair node."""
+    has_implementation = has_executable_candidate_change(repo)
+    has_public_test = has_public_test_change(repo)
+    missing: list[str] = []
+    if not has_implementation:
+        missing.append("missing_executable_change")
+    if not has_public_test:
+        missing.append("missing_public_test_change")
+    payload = {
+        "validator": validation,
+        "routing": {
+            "validator_ok": validation.get("ok") is True,
+            "has_executable_candidate_change": has_implementation,
+            "has_public_test_change": has_public_test,
+            "missing_requirements": missing,
+            "changed_paths": serializable_working_tree_paths(repo),
+            "implementation_roots": [
+                "bridge/",
+                "game_runner/",
+                "player/",
+                "skills/",
+                "curricula/",
+            ],
+            "public_test_roots": ["tests/", "evaluator_public/"],
+        },
+        "instruction": (
+            "Validator success alone is not promotable. Repair every missing routing requirement "
+            "with the smallest objective-relevant change; do not add placeholders or no-op edits."
+            if missing
+            else "The candidate satisfies validator and routing requirements."
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False)[-24_000:]
+
+
 def _coding_context_markdown(packet: dict[str, str]) -> str:
     return "\n\n".join(
         f"--- FILE {path} ---\n{content}\n--- END FILE {path} ---"
@@ -1965,7 +2001,7 @@ def run_coding_graph(
     validation: dict[str, Any] | None = None
     if working_tree_paths(repo):
         validation = validate_coding_candidate(repo)
-        diagnostics = json.dumps(validation, ensure_ascii=False)[-24_000:]
+        diagnostics = coding_graph_validation_diagnostics(repo, validation)
     decision = coding_graph_decision(repo, validation)
     previous_proposal_fingerprint: str | None = None
     for attempt in range(1, 4):
@@ -2018,7 +2054,7 @@ def run_coding_graph(
                         "changed_paths": serializable_working_tree_paths(repo),
                     },
                 )
-            diagnostics = json.dumps(validation, ensure_ascii=False)[-24_000:]
+            diagnostics = coding_graph_validation_diagnostics(repo, validation)
             decision = coding_graph_decision(repo, validation)
             state = {
                 "schema_version": 1,

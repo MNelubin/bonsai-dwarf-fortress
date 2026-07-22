@@ -49,6 +49,11 @@ def failure_fingerprint(error: str | None) -> str | None:
         )
     ):
         normalized = "coding_graph:patch_protocol"
+    elif any(
+        marker in normalized
+        for marker in ("missing_executable_change", "missing_public_test_change")
+    ):
+        normalized = "coding_graph:incomplete_promotion_shape"
     normalized = re.sub(r"[0-9a-f]{8}-[0-9a-f-]{27,}", "<uuid>", normalized)
     normalized = re.sub(r"\b[0-9a-f]{40,64}\b", "<hash>", normalized)
     normalized = re.sub(r"/[^\s:'\"]+", "<path>", normalized)

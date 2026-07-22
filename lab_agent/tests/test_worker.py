@@ -17,6 +17,7 @@ from bonsai_lab_agent.worker import (
     coding_proposal_repair_diagnostics,
     coding_graph_decision,
     coding_graph_reasoning_effort,
+    coding_graph_validation_diagnostics,
     coding_validation_safe_for_handoff,
     df_runtime_process_ids,
     discovery_needs_synthesis,
@@ -903,6 +904,25 @@ def test_coding_graph_context_lexically_finds_implementation_for_generic_goal(tm
 
     assert "player/baseline.py" in packet
     assert "rules_based_player" in packet["player/baseline.py"]
+
+
+def test_coding_graph_diagnostics_explain_missing_promotion_shape(tmp_path: Path):
+    repo = init_repo(tmp_path)
+    test_path = repo / "evaluator_public" / "test_candidate.py"
+    test_path.parent.mkdir()
+    test_path.write_text("def test_candidate():\n    assert True\n", encoding="utf-8")
+
+    diagnostics = json.loads(
+        coding_graph_validation_diagnostics(repo, {"ok": True, "commands": []})
+    )
+
+    assert diagnostics["routing"]["validator_ok"] is True
+    assert diagnostics["routing"]["has_public_test_change"] is True
+    assert diagnostics["routing"]["has_executable_candidate_change"] is False
+    assert diagnostics["routing"]["missing_requirements"] == [
+        "missing_executable_change"
+    ]
+    assert "player/" in diagnostics["routing"]["implementation_roots"]
 
 
 def test_coding_graph_context_keeps_named_symbols_from_large_file_middle(tmp_path: Path):

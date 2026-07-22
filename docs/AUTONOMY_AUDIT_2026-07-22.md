@@ -44,6 +44,9 @@ cooldown the exact same path was scheduled again indefinitely.
 7. The dashboard shows repeated-failure count, fingerprint, and an actionable error class.
 8. Patch-protocol variants share one terminal failure fingerprint, so superficial changes in an
    exception string cannot reset the retry epoch.
+9. Validator output and promotion routing are now one repair packet. A candidate with green tests
+   but a missing implementation or public-test side receives explicit missing requirements and
+   allowed roots instead of being routed back with a misleading bare `ok=true`.
 
 ## Verification before deployment
 
