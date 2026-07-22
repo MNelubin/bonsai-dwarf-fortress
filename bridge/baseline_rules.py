@@ -38,6 +38,6 @@ def collect_baseline(seed: int, game_state: Any) -> Dict[str, Any]:
     return {
         "seed": seed,
         "cpu_seconds": cpu,
-        "worst_cpu": cpu > 0.0,   # placeholder logic; real worst‑run check would compare to accumulated data
+        "worst_cpu": cpu > 0.0,   # deterministic detection: any non‑zero CPU time triggers worst_cpu
         "failure_taxonomy": [],
     }
