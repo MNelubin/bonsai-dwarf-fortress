@@ -1,3 +1,4 @@
+---
 # Knowledge Index
 
 ## DFHack & Environment
@@ -26,8 +27,11 @@
 - [Lua Command Syntax and Profession Enums](dfhack/mechanics-lua-command-syntax.md)
 - [Runtime Help Command Overview](dfhack/mechanics-runtime-help.md)
 - [CLI Help Output Mechanics](dfhack/mechanics-cli-help-output.md)
+- [Pause Command Mechanics](dfhack/mechanics-fpause.md)
+
 
 - [Calendar Events/Holidays Management Mechanic](dfhack/calendar-events-management.md)
 
 
 - [Map Tile Query Mechanic](dfhack/mechanics-map-tiles.md)
+---
