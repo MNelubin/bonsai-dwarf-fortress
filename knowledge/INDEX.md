@@ -1,6 +1,3 @@
----
----
----
 # Knowledge Index
 
 ## DFHack & Environment
@@ -31,4 +28,6 @@
 - [CLI Help Output Mechanics](dfhack/mechanics-cli-help-output.md)
 
 - [Calendar Events/Holidays Management Mechanic](dfhack/calendar-events-management.md)
----
+
+
+- [Map Tile Query Mechanic](dfhack/mechanics-map-tiles.md)
