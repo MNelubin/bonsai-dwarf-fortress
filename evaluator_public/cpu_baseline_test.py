@@ -1,15 +1,11 @@
-
-
 import unittest
 from evaluator_public.implementation import run_simulation
 
 class CpuBaselineTest(unittest.TestCase):
-    """Test that a rules‑based player produces consistent CPU usage metrics over 30 days across multiple seeds."""
     SEEDS = [12345, 67890, 13579]
     DURATION_DAYS = 30
 
     def test_cpu_and_worst_run(self):
-        """Run a 30‑day simulation for each seed and verify collected CPU metrics and worst‑run data."""
         for seed in self.SEEDS:
             result = run_simulation(seed=seed)
             self.assertIsNotNone(result, f"Run returned None for seed {seed}")

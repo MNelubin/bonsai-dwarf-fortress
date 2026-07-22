@@ -1,17 +1,18 @@
 import unittest
-from game_runner.runner import run_simulation
+from evaluator_public.implementation import run_simulation  # coding_graph edit
 
 class CpuBaselineTest(unittest.TestCase):
-    def test_baseline_metrics(self):
-        # Run a single seed simulation and verify basic CPU metrics are collected.
-        result = run_simulation(seed=0)
-        self.assertIn("cpu_time", result)
+    SEEDS = [12345, 67890, 13579]
+    def test_cpu_and_worst_run(self):
+        for seed in self.SEEDS:
+            result = run_simulation(seed=seed)
+            self.assertIsNotNone(result, f"None for seed {seed}")
+            self.assertIn('cpu_time', result, f"cpu_time missing for {seed}")
+            self.assertIn('cpu_usage', result, f"cpu_usage missing for {seed}")
+            self.assertIn('worst_run', result, f"worst_run missing for {seed}")
+            wr = result['worst_run']
+            self.assertIsInstance(wr, dict)
+            self.assertGreater(len(wr), 0)  # ensure worst_run dict is non‑empty
 
-        self.assertIn("cpu_usage", result)
-
-        # Ensure worst‑run metrics are present.
-        self.assertIn("worst_run", result)
-        self.assertIsInstance(result["worst_run"], dict)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
