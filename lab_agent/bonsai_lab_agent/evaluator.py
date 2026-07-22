@@ -279,26 +279,36 @@ def live_df_probe(config: EvaluatorConfig) -> dict[str, Any]:
         "30",
         "--",
         config.dfhack_run,
-        "lua",
-        "!df.global.cur_year",
+        "bonsai-eval-state",
     ]
     started = time.monotonic()
     process = subprocess.run(command, capture_output=True, text=True, timeout=45)
     output = (process.stdout + process.stderr)[-8000:]
     marker: dict[str, Any] | None = None
+    game_state: dict[str, Any] | None = None
     for line in output.splitlines():
         if line.startswith("BONSAI_PROBE_RESULT "):
             marker = json.loads(line.removeprefix("BONSAI_PROBE_RESULT "))
+        if line.startswith("BONSAI_GAME_STATE "):
+            decoded = json.loads(line.removeprefix("BONSAI_GAME_STATE "))
+            if isinstance(decoded, dict):
+                game_state = decoded
     ready = bool(
         process.returncode == 0
         and marker
         and marker.get("runtime_ready") is True
         and marker.get("exit") == 0
+        and game_state
+        and game_state.get("schema") == "bonsai-game-state-v1"
+        and game_state.get("ok") is True
+        and isinstance(game_state.get("year"), int)
+        and isinstance(game_state.get("tick"), int)
     )
     return {
         "ready": ready,
         "duration_seconds": round(time.monotonic() - started, 3),
         "marker": marker,
+        "game_state": game_state,
         "output_tail": output[-1000:],
     }
 
@@ -322,7 +332,7 @@ def evaluate_job(config: EvaluatorConfig, job: dict[str, Any]) -> dict[str, Any]
     score = 0.35 + (0.25 if deterministic else 0.0) + (0.2 if valid_actions else 0.0)
     score += 0.2 if live["ready"] else 0.0
     score = round(score, 6)
-    verdict = "admitted_for_gameplay" if score >= 0.8 else "needs_work"
+    verdict = "contract_passed" if score >= 0.8 else "contract_only"
     failure_kind = None if live["ready"] else "game_api"
     summary = {
         "controller_protocol": "jsonl-v1",
@@ -338,7 +348,7 @@ def evaluate_job(config: EvaluatorConfig, job: dict[str, Any]) -> dict[str, Any]
     return {
         "submission_id": submission_id,
         "suite_name": "controller_contract_live_smoke",
-        "suite_version": "1",
+        "suite_version": "2",
         "score": score,
         "verdict": verdict,
         "failure_kind": failure_kind,
@@ -361,11 +371,25 @@ def evaluate_job(config: EvaluatorConfig, job: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def install_dfhack_state_script(config: EvaluatorConfig) -> Path:
+    source = Path(__file__).with_name("dfhack") / "bonsai-eval-state.lua"
+    runtime_root = Path(config.dfhack_run).resolve().parent
+    target = runtime_root / "hack" / "scripts" / source.name
+    payload = source.read_bytes()
+    if not target.is_file() or target.read_bytes() != payload:
+        temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        temporary.write_bytes(payload)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+    return target
+
+
 def main() -> None:
     config = EvaluatorConfig.from_env()
     config.runs_dir.mkdir(parents=True, exist_ok=True)
+    state_script = install_dfhack_state_script(config)
     api = EvaluatorApi(config)
-    print("Bonsai external evaluator started", flush=True)
+    print(f"Bonsai external evaluator started; state_script={state_script}", flush=True)
     while True:
         job: dict[str, Any] | None = None
         try:

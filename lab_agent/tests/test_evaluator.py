@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -47,3 +48,12 @@ def test_arbitrary_command_controller_is_supported(tmp_path):
 def test_invalid_command_manifest_is_rejected(tmp_path):
     with pytest.raises(ValueError, match="argv"):
         controller_command(tmp_path, {"kind": "command", "argv": []})
+
+
+def test_dfhack_state_script_is_packaged_and_emits_a_versioned_marker():
+    script = (
+        Path(__file__).parents[1] / "bonsai_lab_agent" / "dfhack" / "bonsai-eval-state.lua"
+    ).read_text(encoding="utf-8")
+    assert "BONSAI_GAME_STATE" in script
+    assert "bonsai-game-state-v1" in script
+    assert "df.global.cur_year_tick" in script

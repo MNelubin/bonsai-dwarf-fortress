@@ -1,4 +1,4 @@
-from bonsai_control.orchestrator import failure_fingerprint, submission_hash
+from bonsai_control.orchestrator import failure_fingerprint, submission_hash, summary_tail
 
 
 def test_failure_fingerprint_ignores_ids_paths_and_numbers():
@@ -18,3 +18,9 @@ def test_submission_hash_is_canonical_and_commit_sensitive():
     manifest_b = {"kind": "python_callable", "protocol": "jsonl-v1"}
     assert submission_hash("a" * 40, manifest_a) == submission_hash("a" * 40, manifest_b)
     assert submission_hash("a" * 40, manifest_a) != submission_hash("b" * 40, manifest_a)
+
+
+def test_summary_tail_accepts_structured_experiment_result():
+    rendered = summary_tail({"score": 0.75, "live_df": {"ready": True}})
+    assert '"score": 0.75' in rendered
+    assert '"ready": true' in rendered

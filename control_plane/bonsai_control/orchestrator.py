@@ -54,6 +54,13 @@ def submission_hash(git_commit: str, manifest: dict[str, object]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def summary_tail(value: object, limit: int = 2_000) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text[-limit:]
+
+
 def tick() -> None:
     with db_connection() as connection, connection.transaction():
         expired = connection.execute(
@@ -257,7 +264,7 @@ def tick() -> None:
                 "model": (previous["result"] or {}).get("model"),
                 "changed": (previous["result"] or {}).get("changed"),
                 "error": previous["error"],
-                "summary_tail": (summary or "")[-2_000:],
+                "summary_tail": summary_tail(summary),
                 "score": (previous["result"] or {}).get("score"),
                 "verdict": (previous["result"] or {}).get("verdict"),
                 "failure_kind": (previous["result"] or {}).get("failure_kind"),
@@ -357,7 +364,7 @@ def tick() -> None:
                 "submission_id": str(unscored_submission["id"]),
                 "controller_manifest": unscored_submission["manifest"],
                 "suite_name": "controller_contract_live_smoke",
-                "suite_version": "1",
+                "suite_version": "2",
             }
 
         job = connection.execute(
