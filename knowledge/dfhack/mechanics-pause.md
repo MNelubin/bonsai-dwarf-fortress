@@ -1,20 +1,14 @@
-# Pause and Advancement Mechanics
+## mechanics-pause.md
 
-## VERIFIED DISCOVERIES
-- `fpause` command is present and works to pause the game
-- `advance` command is available but behavior for granular time control is uncertain
+### Pause and Advancement
 
-## INFERRED MECHANISMS
-- Time advancement gaps suggest potential need for intermediate time steps
-- Pause state persistence after save/load not yet tested
+DFHack exposes in-game controls through commands like `fpause` (force pause). This provides deterministic time-stasis while preserving save integrity. Pause state is persistent but can hang the simulation in headless mode (requires SIGUSR1 resume).
 
-## PROBE COMMANDS
-```bash
-bonsai-df-probe --timeout 30 -- dfhack-run fpause
-bonsai-df-probe --timeout 30 -- dfhack-run advance 1
-```
+VERIFIED `dfhack-run help` includes `fpause` in its command list.
 
-## TESTS
-1. Verify `fpause` works by detecting game state pause
-2. Test `advance 1` by checking time progression
-3. Confirm pause state persistence across save/load
+Next step:
+
+1. Create note linking from knowledge/INDEX.md
+2. Bounded probe to verify `fpause` execution and resume behavior
+
+<smallest-task>Probe: verify `dfhack-run fpause` pauses and resume via wrapper signal</smallest-task>
