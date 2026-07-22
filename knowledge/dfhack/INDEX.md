@@ -1,4 +1,5 @@
-# DFHack Mechanics
+# DFHack Knowledge Index
 
-- [Units](mechanics-units.md)
-- [Pause Mechanics](mechanics-pause.md)
+- [mechanics-calendar.md](mechanics-calendar.md)
+  - Verified: Lua calendar access requires save state
+  - Next: Implement `getCalendarInfo()` API endpoint
