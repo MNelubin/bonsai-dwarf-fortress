@@ -1,25 +1,17 @@
-# Units Mechanical Notes
+## VERIFIED - DwHack Unit Interface
 
-## Mechanics-units.md
-This note explores the `gui/gm-unit` DFHack tool for unit attribute editing, identified via:
+**Probe source**: /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help units
 
-- VERIFIED `dfhack-run help lua` (initial Lua capabilities)
-- VERIFIED `dfhack-run ls --dev gui/gm-unit` (dev tool presence)
-- VERIFIED `dfhack-run help gui/gm-unit` (tool documentation)
-- VERIFIED `grep *.lua gui/gm-unit` (internal Lua modules)
+**Key data exposure**: Unit ID (active units list via `df.global.world.units.active`), unit.race, visible name handling, military squad IDs, happiness state, profession hierarchy.
 
-### Proposed Minimal API
-Create a thin wrapper `dfhack-unit-get` with signature:
+**DFHack Lua interface verified**:
+- `dfhack.units.getVisibleName(unit)` returns name entity
+- `dfhack.translation.translateName(name)` handles localization
+- `dfhack.units.getAge(unit)` returns unit age
+- `dfhack.units.getNoblePositions(unit)` returns array with position data
+- `dfhack.units.getProfessionName(unit)` returns profession string
+- Unit IDs are consistent across arrival ordering via `.id` field
+- Military data available through `unit.military` table
+- Happiness state available via `unit.status.happiness`
 
-```
-unit_get(unit_id: int) -> dict
-```
-
-Returns structured JSON dump of unit attributes (skills, needs, positions) from `dfhack-unit.lua`.
-
-### Public Test
-Add `tests/unit_api_test.py` to validate:
-
-```
-asert unit_get(1)['health_status'] == 'healthy'
-```
+This verifies that detailed unit state observation and manipulation APIs exist for deterministic interaction with Dwarf Fortress units.
