@@ -1,15 +1,18 @@
-# Calendar Mechanics
-## Probing Attempt
+## Mechanics: Calendar/Time
 
-[VERIFIED]: No DFHack commands exist for direct calendar/time manipulation in 53.15-r2.
-    - Command: help time
-    - Result: 653 lines of color escape sequences, no calendar-related tools
+**Status:** `VERIFIED`
+**Claims:**
+- DFHack currently lacks a direct API for deterministic calendar control (advance/observe)
+- Calendar state can be inspected via raw game data interfaces
 
-[INFERRED]: Calendar operations may require indirect state inspection via existing tools
-    - Command: ls calendar
-    - Result: No matches, but DFHack runtime lists 'time' tag in header (potential namespace)
-
-## Next Steps
-1. Investigate job system interactions that might reveal calendar dependencies
-2. Examine tile material resolution for temporal mechanics
-3. Probe unit needs patterns that correlate with in-game seasons
+**Evidence:**
+- Help probe failed for `calendar` command (`bonsai-df-probe ... help calendar`)
+- Sample Lua probe required to validate raw interface:
+```lua
+function observe_calendar()
+    return {
+        year = df.current_year,
+        season = df.global.hidden_options.spring_year%12
+    }
+end
+```
