@@ -1675,6 +1675,7 @@ def structured_model_request(
     ollama_num_predict: int,
     ollama_think: bool = False,
     reasoning_effort: str | None = None,
+    openai_json_object: bool = False,
 ) -> bytes:
     """Build a provider-specific structured request without limiting K2 output tokens."""
     if config.model_api_style == "openai":
@@ -1683,10 +1684,14 @@ def structured_model_request(
             "stream": False,
             "reasoning_effort": reasoning_effort or config.model_reasoning_effort,
             "messages": messages,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": schema_name, "strict": True, "schema": schema},
-            },
+            "response_format": (
+                {"type": "json_object"}
+                if openai_json_object
+                else {
+                    "type": "json_schema",
+                    "json_schema": {"name": schema_name, "strict": True, "schema": schema},
+                }
+            ),
         }
     else:
         payload = {
@@ -2333,6 +2338,7 @@ Diff excerpt:
         schema_name="commit_description",
         ollama_num_ctx=32768,
         ollama_num_predict=512,
+        openai_json_object=True,
     )
     request = urllib.request.Request(
         config.model_api_url,
