@@ -26,7 +26,7 @@ def _lua_pause_snapshot() -> str:
     )
 
 
-def probe_pause_status(timeout: int = 20) -> Optional[Dict[str, bool]]:
+def probe_pause_status(timeout: int = 5) -> Optional[Dict[str, bool]]:
     """Query the live DFHack process for the current pause state.
 
     Args:
