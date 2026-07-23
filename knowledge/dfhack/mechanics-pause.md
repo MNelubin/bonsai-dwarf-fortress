@@ -1,26 +1,81 @@
-# Pause state API Proposal
+# Frontmatter
+```yaml
+title: "Calendar Manipulation Via dpause"
+category: mechanic
+tags: pause time dpause
+status: PROPOSED_VERIFIED
+time: 7s
+date: $(date +%F)
+```
 
-## Discovery Summary
+## Discovery of dpause Capability
 
-This note documents the verified DFHack `pause` subsystem capability based on live game probes:
+- VERIFIED: The command `fpause` exists under `pause` tag (see [help pause probe](#probe))
+- INFERRED: No built-in `time` command exists
+- OPEN: Unclear what state transitions available
 
-- `dfhack-run help fpause`: Confirmed the `fpause` command exists and can force DF to pause when framedrop exceeds 1 FPS.
-- Direct Lua probe confirmed DFHack exposes pause state via `dfhack.isPaused()`.
+<!-- <details><summary>Probe #1 result</summary>
 
-## Proposed API
+## probe 1: help pause
 
-Lua function: `dfhack.isPaused() -> boolean`
+Command: help pause
+Result: no help entry but `fpause` is listed under basic commands
 
-This command will return true when DF is paused, and false when unpaused. The function is deterministic when called after `fpause` has been executed or when time advancement has occurred.
+<!-- </details> -->
 
-## Public Test Specification
+<!-- <details><summary>Probe #2 result</summary>
 
-Test `pause-state.lua`:
+## probe 2: help time
+
+Command: help time
+Result: no help entry found
+
+<!-- </details> -->
+
+<!-- <details><summary>Mechanic Mapping</summary>
+
+## Pause Mechanic
+
+- Command: `fpause`
+- State Transition: Unknown (paused/reverted)
+- Deterministic: Potentially via ticks or game state
+
+<!-- </details> -->
+
+## Next deterministic coding cycle
+
+### Task
+
+1. [ ] Add `pause` capability wrapper in `knowledge/scripts/dfhack/pause.lua`
+2. [ ] Add public test in `knowledge/tests/pause.lua`
+3. [ ] Run integration test with game state verification
+
+### Script template
+
 ```lua
--- Pause state test
--- Verifies `dfhack.isPaused()` correctly reflects game state
--- Run after executing `fpause` in-game
-"assert(dfhack.isPaused() == true, 'Game should be paused after fpause')"
--- Run after executing `advancetime` in-game
-"assert(dfhack.isPaused() == false, 'Game should resume after time advancement')"
+-- knowledge/scripts/dfhack/pause.lua
+-- Smallest deterministic pause wrapper
+local function dpause(isPaused)
+    -- Implementation TBD
+end
+
+-- Export function
+return { dpause = dpause }
+```
+
+### Test template
+
+```lua
+-- knowledge/tests/pause.lua
+import 'knowledge/scripts/dfhack/pause.lua'
+import '@test/test-utils'
+
+describe('pause capability', function()
+    it('should pause and resume game state', function()
+        local originalState = captureState()
+        dfhack.script.run('knowledge/scripts/dfhack/pause.lua')
+        local pausedState = captureState()
+        assert.not_same(pausedState, originalState)
+    end)
+end)
 ```
