@@ -1,7 +1,7 @@
 """Deterministic unit needs probe for Dwarf Fortress.
 
-Returns an empty JSON object when the DF runtime is not available or units are absent.
-Implemented as a minimal, non‑overlapping edit to the existing file.
+Returns a mapping from unit IDs to their need counters when the DF runtime
+is available; otherwise returns an empty dictionary or None on error.
 """
 from typing import Optional, Dict, Any
 from game_runner.episode import _dfhack_run
