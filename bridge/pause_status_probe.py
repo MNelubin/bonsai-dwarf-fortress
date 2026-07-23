@@ -11,7 +11,7 @@ from game_runner.episode import _dfhack_run
 def _lua_pause_snapshot() -> str:
     """Return the pause state via Lua.
 
-    The Lua expression checks ``df.global.pause`` (true when the game is paused) and prints a
+    The Lua expression evaluates ``df.global.pause`` (true when the game is paused) and prints a
     JSON object with the "paused" key.
     """
     return (
