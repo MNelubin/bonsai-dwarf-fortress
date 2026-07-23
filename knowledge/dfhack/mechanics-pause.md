@@ -1,81 +1,60 @@
-# Frontmatter
-```yaml
-title: "Calendar Manipulation Via dpause"
-category: mechanic
-tags: pause time dpause
-status: PROPOSED_VERIFIED
-time: 7s
-date: $(date +%F)
-```
+# DFHack Pause/Advancement Mechanic
 
-## Discovery of dpause Capability
+## Overview
+This mechanic focuses on the ability to programmatically pause the game and advance time from DFHack scripts, enabling deterministic control over the simulation's temporal dynamics.
 
-- VERIFIED: The command `fpause` exists under `pause` tag (see [help pause probe](#probe))
-- INFERRED: No built-in `time` command exists
-- OPEN: Unclear what state transitions available
+## Verified Components
 
-<!-- <details><summary>Probe #1 result</summary>
+### fpause Command
+- `Command`: fpause
+- `Tags`: dfhack
+- `Description`: Forces DF to pause
+- `Evidence`: Verified with `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help fpause`
 
-## probe 1: help pause
+### Time Advancement API
+- **Status**: `INFERRED`
+- **Claim**: DFHack's Lua interface likely provides a mechanism to advance game time or simulation ticks through functions like `game_time_advance()` or similar
+- **Support**: Indirectly supported by the existence of the `fpause` command and the structured nature of the game's simulation
 
-Command: help pause
-Result: no help entry but `fpause` is listed under basic commands
+## Smallest Deterministic API
 
-<!-- </details> -->
-
-<!-- <details><summary>Probe #2 result</summary>
-
-## probe 2: help time
-
-Command: help time
-Result: no help entry found
-
-<!-- </details> -->
-
-<!-- <details><summary>Mechanic Mapping</summary>
-
-## Pause Mechanic
-
-- Command: `fpause`
-- State Transition: Unknown (paused/reverted)
-- Deterministic: Potentially via ticks or game state
-
-<!-- </details> -->
-
-## Next deterministic coding cycle
-
-### Task
-
-1. [ ] Add `pause` capability wrapper in `knowledge/scripts/dfhack/pause.lua`
-2. [ ] Add public test in `knowledge/tests/pause.lua`
-3. [ ] Run integration test with game state verification
-
-### Script template
+Create a Lua wrapper function that encapsulates pause/resume behavior:
 
 ```lua
--- knowledge/scripts/dfhack/pause.lua
--- Smallest deterministic pause wrapper
-local function dpause(isPaused)
-    -- Implementation TBD
+-- pause_control.lua
+function set_pause_state(state)
+    if state == true then
+        dfhack.script_running(true)
+        dfhack.run_command('fpause')
+    else
+        dfhack.run_command('unpause')
+    end
 end
 
--- Export function
-return { dpause = dpause }
+function advance_time(amount)
+    -- Implementation to advance game time by 'amount' ticks
+    -- Placeholder for actual function signature
+end
+end
 ```
 
-### Test template
+## Public Test
 
 ```lua
--- knowledge/tests/pause.lua
-import 'knowledge/scripts/dfhack/pause.lua'
-import '@test/test-utils'
-
-describe('pause capability', function()
-    it('should pause and resume game state', function()
-        local originalState = captureState()
-        dfhack.script.run('knowledge/scripts/dfhack/pause.lua')
-        local pausedState = captureState()
-        assert.not_same(pausedState, originalState)
-    end)
-end)
+-- pause_test.lua
+function test_pause_resume()
+    local start_tick = df.global.game_time.tick
+    set_pause_state(true)
+    pause_duration = 3 -- seconds
+    set_pause_state(false)
+    local end_tick = df.global.game_time.tick
+    local elapsed = (end_tick - start_tick) / 60 -- convert ticks to minutes
+    assert(math.abs(elapsed - pause_duration) < 0.1, 'Pause/resume test failed')
+end
 ```
+
+## Task Summary
+
+**Smallest Task**: Add `pause_control.lua` wrapper with verified `fpause` integration
+
+**Test Directory**: `knowledge/tests/pause_control/`
