@@ -22,6 +22,7 @@ class EvaluatorConfig:
     control_url: str
     lab_token: str
     baseline_repo: Path
+    baseline_remote: str
     runs_dir: Path
     poll_seconds: int
     controller_timeout_seconds: int
@@ -36,6 +37,10 @@ class EvaluatorConfig:
             lab_token=os.environ["BONSAI_LAB_TOKEN"],
             baseline_repo=Path(
                 os.environ.get("BONSAI_BASELINE_REPO", "/srv/bonsai-agent/workspace")
+            ),
+            baseline_remote=os.environ.get(
+                "BONSAI_BASELINE_REMOTE",
+                "https://github.com/MNelubin/bonsai-dwarf-fortress.git",
             ),
             runs_dir=Path(
                 os.environ.get("BONSAI_EVALUATOR_RUNS_DIR", "/srv/bonsai-evaluator/runs")
@@ -163,7 +168,15 @@ def prepare_checkout(config: EvaluatorConfig, job: dict[str, Any]) -> Path:
         )
     except subprocess.CalledProcessError:
         subprocess.run(
-            ["git", "-C", str(target), "fetch", "--depth=1", "origin", commit],
+            [
+                "git",
+                "-C",
+                str(target),
+                "fetch",
+                "--depth=1",
+                config.baseline_remote,
+                commit,
+            ],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

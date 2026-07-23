@@ -1,17 +1,61 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from bonsai_lab_agent.evaluator import (
+    EvaluatorConfig,
     controller_command,
     evaluation_outcome,
     fixture_observations,
+    prepare_checkout,
     run_controller,
     tagged_json,
 )
+
+
+def test_prepare_checkout_fetches_missing_commit_from_trusted_remote(tmp_path):
+    source = tmp_path / "source"
+    remote = tmp_path / "remote.git"
+    baseline = tmp_path / "baseline"
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "test"], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.invalid"],
+        check=True,
+    )
+    (source / "value.txt").write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "value.txt"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "one"], check=True)
+    subprocess.run(["git", "init", "--bare", "-q", str(remote)], check=True)
+    subprocess.run(["git", "-C", str(source), "push", str(remote), "HEAD:main"], check=True)
+    subprocess.run(["git", "clone", "-q", "--branch", "main", str(remote), str(baseline)], check=True)
+    (source / "value.txt").write_text("two\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "commit", "-qam", "two"], check=True)
+    subprocess.run(["git", "-C", str(source), "push", str(remote), "HEAD:main"], check=True)
+    commit = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
+    config = EvaluatorConfig(
+        control_url="http://control.invalid",
+        lab_token="token",
+        baseline_repo=baseline,
+        baseline_remote=str(remote),
+        runs_dir=tmp_path / "runs",
+        poll_seconds=1,
+        controller_timeout_seconds=1,
+        probe_bin="probe",
+        dfhack_run="dfhack-run",
+    )
+
+    checkout = prepare_checkout(config, {"id": "job", "base_commit": commit})
+
+    assert subprocess.check_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+    ).strip() == commit
 
 
 def test_python_callable_controller_obeys_jsonl_contract(tmp_path):
