@@ -33,7 +33,7 @@ def _lua_labor_snapshot():
     )
 
 
-def probe_labor(timeout: int = 20) -> Optional[Dict[int, Set[str]]]:
+def probe_labor(timeout: int = 25) -> Optional[Dict[int, Set[str]]]:
     """Query the live DFHack process for the current labor state of all units.
 
     Args:
