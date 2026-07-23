@@ -1,15 +1,17 @@
-# Date & Time Mechanics
+# set-timeskip-duration
 
-## Total Days Query
+Tags: calendar | time (from help output)
 
-DFHack provides access to the game calendar via `dfhack.calendar` API.
+## VERIFIED: set-timeskip-duration usage
 
-This probe demonstrates the API is available:
+Command: "set-timeskip-duration"
 
-::lua print(dfhack.calendar.getTotalDays())::
-Verified functional without runtime error.
+Usage: set-timeskip-duration --clear
+       set-timeskip-duration <duration options>
 
-### API Semantics
+Options include --ticks <num>, --years <num>, --months <num>, --days <num>, --hours <num>
 
-`dfhack.calendar.getTotalDays()` returns a number (ticks since world start).
-The function appears to be deterministic and requires no additional parameters.
+Example: "set-timeskip-duration --ticks 851249"
+Sets timeskip end to: 2 years, 1 month, 9 days, 8 hours, 58 minutes, and 48 seconds from now
+
+Note: Change persists until game close or --clear
