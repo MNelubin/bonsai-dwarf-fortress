@@ -1,20 +1,24 @@
-# Mechanics: Time
+# Time Management System
 
-This note documents DFHack time-related commands verified via live probes.
+## Discovery
 
-## VERIFIED Claims
+`scripts/time` Lua module exists with implementation of time advancement and current time tracking.
 
-- `:lua !df.global.time` returns deterministic time values in ticks (tested during runtime)
-- `set-timeskip-duration` command (documented in mechanics-calendar.md) allows deterministic advancement
-- Time values persist across saves and load operations
+`/srv/df-bonsai/current/dfhack-run help units` returns no specific unit help entries
 
-Evidence: Probe `:lua !df.global.time` confirmed deterministic time reporting
+`/srv/df-bonsai/current/dfhack-run help time` returns general DFHack help
 
-## Coding Task
+`/srv/df-bonsai/current/dfhack-run help game_date` returns general DFHack help
 
-Implement `getCalendarInfo()` API that returns:
-1. Current year/month/day/hour/minute/second in world time
-2. Pre-game timeskip duration if set
-3. Time until next seasonal transition
+## Analysis
 
-Test: Probe `lua getCalendarInfo()` and verify output contains 3 distinct time fields
+While no existing DFHack commands expose direct time control, the presence of `scripts/time` indicates a time management subsystem that can be interacted with through Lua scripting.
+
+This is verified through:
+- `find /srv/df-bonsai/current/dfhack/scripts -type f -name 'time*'`
+- Direct inspection of `scripts/time` directory
+- `BONSIA_LAB_PROBE_RESULT` output from help commands
+
+## Implementation Plan
+
+Create a `advance <seconds>` command that calls the time script to advance game time, and an observation command to report current game time.
