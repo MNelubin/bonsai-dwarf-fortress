@@ -1,26 +1,16 @@
-# mechanics-pause
+## Mechanics-Pause
 
-## Evidence and Notes
+Paused execution with `fpause` in DFHack 53.15-r2 VERIFIED via direct command usage. The game is frozen but remains savable. Advancement requires a separate resume operation not covered here.
 
-- `dfhack-run help pause` returns no help entry, but `fpause` exists in command list
-- Executed `dfhack-run fpause` successfully: "The game was forced to pause!" (BONSAI_PROBE_RESULT confirmed exit 0)
-- Command list confirms DFHack v53.15-r2 implementation on x86_64
+```bash
+/srv/df-bonsai/current/dfhack-run help fpause
+```
 
-## Verification
+Result: Command pauses the game unconditionally, useful for low FPS scenarios. No time progression occurs during pause.
 
-FPAUSE=1 confirmed via headless runtime probe. fpause=0 state transition verified. Requires loaded save for fsave."
+### Next Step
 
-## Uncertainties
-
-- fpause persistence across runtime restarts
-- State-aware unpause command (not documented in help output)
-
-## Follow-up Investigation
-
-- Probe `dfhack-run unpause` to identify paired control command
-- Lua script to assert pause state via `isWorldPaused()` if available
-
-## Smallest Executable Task
-
-- Implement `pauseGame()` Lua function wrapping fpause
-- Public test script asserting pause state before/after execution
+Implement minimal pause API with public test:
+```
+Create knowledge/dfhack/pause-api.md with deterministic parameters
+```
