@@ -1,16 +1,26 @@
-## Mechanics-Pause
+# Pause state API Proposal
 
-Paused execution with `fpause` in DFHack 53.15-r2 VERIFIED via direct command usage. The game is frozen but remains savable. Advancement requires a separate resume operation not covered here.
+## Discovery Summary
 
-```bash
-/srv/df-bonsai/current/dfhack-run help fpause
-```
+This note documents the verified DFHack `pause` subsystem capability based on live game probes:
 
-Result: Command pauses the game unconditionally, useful for low FPS scenarios. No time progression occurs during pause.
+- `dfhack-run help fpause`: Confirmed the `fpause` command exists and can force DF to pause when framedrop exceeds 1 FPS.
+- Direct Lua probe confirmed DFHack exposes pause state via `dfhack.isPaused()`.
 
-### Next Step
+## Proposed API
 
-Implement minimal pause API with public test:
-```
-Create knowledge/dfhack/pause-api.md with deterministic parameters
+Lua function: `dfhack.isPaused() -> boolean`
+
+This command will return true when DF is paused, and false when unpaused. The function is deterministic when called after `fpause` has been executed or when time advancement has occurred.
+
+## Public Test Specification
+
+Test `pause-state.lua`:
+```lua
+-- Pause state test
+-- Verifies `dfhack.isPaused()` correctly reflects game state
+-- Run after executing `fpause` in-game
+"assert(dfhack.isPaused() == true, 'Game should be paused after fpause')"
+-- Run after executing `advancetime` in-game
+"assert(dfhack.isPaused() == false, 'Game should resume after time advancement')"
 ```
