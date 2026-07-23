@@ -6,3 +6,4 @@
    - VERIFIED: set-timeskip-duration command allows modifying pre-game world update duration, with options for ticks, years, months, days, hours
   - Next: Implement `getCalendarInfo()` API endpoint
 - [mechanics-units.md](mechanics-units.md)
+- [probe-advancetime.md](probe-advancetime.md)
