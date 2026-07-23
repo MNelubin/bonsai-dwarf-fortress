@@ -11,23 +11,31 @@ from bridge.animal_breeding_probe import probe_breeding_pairs
 
 
 class AnimalBreedingProbePublicTest(unittest.TestCase):
-    """Basic sanity‑check for ``probe_breeding_pairs``."""
-
+    """Basic sanity‑check that ``probe_breeding_pairs`` returns the expected contract.
+    """
     def test_probe_returns_schema_or_none(self) -> None:
-        """Call the probe and check the output contract."""
+        """Call the probe and ensure the output matches the contract.
+
+        The probe may legitimately return ``None`` (e.g. when DF is not running), so both
+        outcomes are allowed.
+        """
         result = probe_breeding_pairs()
         if result is None:
             self.assertIsNone(result)
-        else:
-            self.assertIsInstance(result, dict)
-            self.assertIn('breeding_pairs', result)
-            count = result['breeding_pairs']
-            self.assertIsInstance(count, int)
+            return
+        # Expect {'breeding_pairs': <int>}
+        self.assertIsInstance(result, dict)
+        self.assertIn('breeding_pairs', result)
+        count = result['breeding_pairs']
+        self.assertIsInstance(count, int)
 
     def test_custom_timeout_is_accepted(self) -> None:
-        """Ensure a non‑default timeout parameter does not raise."""
-        probe_breeding_pairs(timeout=1)
+        """Ensure a non‑default timeout argument does not raise.
 
+        The implementation catches all exceptions and returns ``None``, so the test only checks
+        for a successful call.
+        """
+        probe_breeding_pairs(timeout=1)
 
 if __name__ == '__main__':
     unittest.main()

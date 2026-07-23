@@ -1,36 +1,40 @@
 """
 Deterministic animal breeding probe for Dwarf Fortress.
 
-Queries the DF runtime for information about animal breeding pairs and
-returns a JSON‑serialisable dictionary with a single key "breeding_pairs".
-The implementation follows the pattern used by other probes in the repository
-and does not affect existing public interfaces.
+This probe returns the count of animal breeding pairs currently active in the
+fort's animal economy.  It provides a single‑key JSON‑serialisable result and
+conforms to the repository's probe conventions.
 """
 from typing import Optional, Dict
 from game_runner.episode import _dfhack_run
 
+# Updated docstring to clarify purpose.
+
 
 def _lua_animal_breeding_snapshot() -> str:
-    """Return animal breeding data via Lua.
+    """Generate a Lua script that counts animal breeding pairs.
 
-The Lua expression iterates ``df.global.world.animalec.animal_stocks.all`` and
-counts each breeding pair (two adult animals of opposite sex sharing the same
-stock ID).  The result is printed as JSON so the Python side can parse it safely.
-"""
+    The script walks through ``df.global.world.animalec.animal_stocks.all``
+    and increments a counter for each stock containing at least one adult
+    male and one adult female.
+    """
     return ("""
     local json = require('json');
     local breed_count = 0;
     if df.global and df.global.world and df.global.world.animalec then
         for _, stock in ipairs(df.global.world.animalec.animal_stocks.all) do
-            local adults = {};
+            local male_cnt = 0;
+            local female_cnt = 0;
             for _, animal in ipairs(stock.animals) do
                 if animal.age then
-                    adults[animal.sex] = adults[animal.sex] or 0;
-                    adults[animal.sex] = adults[animal.sex] + 1;
+                    if animal.sex == 0 then
+                        male_cnt = male_cnt + 1;
+                    elseif animal.sex == 1 then
+                        female_cnt = female_cnt + 1;
+                    end
                 end
             end
-            -- A breeding pair requires at least one male and one female adult.
-            if adults[0] and adults[1] and adults[0] > 0 and adults[1] > 0 then
+            if male_cnt > 0 and female_cnt > 0 then
                 breed_count = breed_count + 1;
             end
         end
@@ -41,21 +45,18 @@ stock ID).  The result is printed as JSON so the Python side can parse it safely
 
 
 def probe_breeding_pairs(timeout: int = 20) -> Optional[Dict[str, int]]:
-    """Query the live DFHack process for the number of active breeding pairs.
+    """Return the number of active animal breeding pairs.
 
     Args:
         timeout: Maximum seconds to wait for the DFHack subprocess.
 
     Returns:
-        ``{'breeding_pairs': <int>}`` on success, or ``None`` if the probe fails
-        or the result cannot be parsed as JSON.
+        ``{'breeding_pairs': <int>}`` on success, or ``None`` if the probe fails.
     """
     try:
         raw = _dfhack_run(_lua_animal_breeding_snapshot(), timeout=timeout)
     except Exception:
         return None
-    if isinstance(raw, dict):
-        if "_dfhack_error" in raw or "_raw" in raw:
-            return None
+    if isinstance(raw, dict) and "_dfhack_error" not in raw and "_raw" not in raw:
         return raw
     return None
