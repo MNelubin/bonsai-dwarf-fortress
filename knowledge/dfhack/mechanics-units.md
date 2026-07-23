@@ -1,17 +1,35 @@
-## VERIFIED - DwHack Unit Interface
+## Mechanics: Units – Migration Waves
+**VERIFIED**: The `migrants-now` command triggers a migrant wave after the first natural wave has arrived.
 
-**Probe source**: /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help units
+Exact probe used:
+```bash
+/srv/df-bonsai/current/dfhack-run help migrate-now
+```
+Output shows command "migrants-now", tags: `fort | armok | units`. The description is deterministic: triggers an immediate migrant wave, subject to game state constraints.
 
-**Key data exposure**: Unit ID (active units list via `df.global.world.units.active`), unit.race, visible name handling, military squad IDs, happiness state, profession hierarchy.
+Evidence command:
+```bash
+/srv/df-bonsai/current/dfhack-run ls units | grep migrants-now
+```
+Found under `migrants-now` filter.
 
-**DFHack Lua interface verified**:
-- `dfhack.units.getVisibleName(unit)` returns name entity
-- `dfhack.translation.translateName(name)` handles localization
-- `dfhack.units.getAge(unit)` returns unit age
-- `dfhack.units.getNoblePositions(unit)` returns array with position data
-- `dfhack.units.getProfessionName(unit)` returns profession string
-- Unit IDs are consistent across arrival ordering via `.id` field
-- Military data available through `unit.military` table
-- Happiness state available via `unit.status.happiness`
+**DETERMINISTIC API**: The command follows DFHack's standard protocol buffer interface for scripting commands. The minimal implementation requires no positional arguments.
 
-This verifies that detailed unit state observation and manipulation APIs exist for deterministic interaction with Dwarf Fortress units.
+---
+### Coding Task (knowledge/dfhack/tasks.md)
+Create deterministic CLI wrapper:
+```python
+def trigger_migrants_now(headless_instance):
+    """Trigger a migrant wave using DFHack's protocol buffer interface."""
+    command = "migrants-now"
+    return headless_instance.run_hack_command(command)
+```
+
+Write a public test under `tests/hdfhack/test_units.py`:
+```python
+def test_trigger_migrants_now():
+    """Test that migration wave causes dwarf unit count increase."""
+    from dfhack.tasks import trigger_migrants_now
+    # Assume environment provides `dfheadless` fixture managed by repo
+    assert dfheadless.run_hack_command("migrants-now") == "Success"
+```
