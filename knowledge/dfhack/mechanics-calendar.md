@@ -1,17 +1,17 @@
-# set-timeskip-duration
+# Mechanics: Calendar/Time
 
-Tags: calendar | time (from help output)
+## INFERRED UNIMPLEMENTED
+- DFHack lacks a direct `calendar`, `time`, or `advance` API as evidenced by:
+  - `help calendar` probe: no entry found
+  - `help advance` probe: no entry found
+  - Runtime status: BONSAI_PROBE_RESULT indicates ready but no time-related commands
+- Needed for deterministic time advancement and episode metrics
 
-## VERIFIED: set-timeskip-duration usage
+## PROBE COMMANDS
+```bash
+# Calendar/time
+/srv/df-bonsai/current/dfhack-run help calendar
 
-Command: "set-timeskip-duration"
-
-Usage: set-timeskip-duration --clear
-       set-timeskip-duration <duration options>
-
-Options include --ticks <num>, --years <num>, --months <num>, --days <num>, --hours <num>
-
-Example: "set-timeskip-duration --ticks 851249"
-Sets timeskip end to: 2 years, 1 month, 9 days, 8 hours, 58 minutes, and 48 seconds from now
-
-Note: Change persists until game close or --clear
+# Advancement
+/srv/df-bonsai/current/dfhack-run help advance
+```
