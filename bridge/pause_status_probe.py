@@ -30,7 +30,7 @@ def probe_pause_status(timeout: int = 5) -> Optional[Dict[str, bool]]:
         timeout: Maximum seconds to wait for the DFHack subprocess.
 
     Returns:
-        ``{'paused': <bool>}`` on success, or ``None`` if the probe cannot communicate with the DF
+        {'paused': <bool>} on success, or None if the probe cannot communicate with the DF
         runtime.
     """
     try:
