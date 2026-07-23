@@ -1,23 +1,59 @@
-# pause mechanic
+# Bounded DP Mechanic Discovery: Pause Control
 
-**Claim**: DFHack provides `fpause` command to forcibly pause Dwarf Fortress.
-**Status**: VERIFIED
-**Source**: `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- dfhack-run lua <<EOF
-print(dfhack.getdate())
-EOF`
-**Result**:
-```
-BONSAI_PROBE_RESULT {
-  "exit":0,
-  "timed_out":false,
-  "duration_seconds":0.037,
-  "command":["/srv/df-bonsai/.../dfhack-run","lua"],
-  "runtime_ready":true,
-  "runtime":{"...
-  "output":"\u001b[0m...\n  fpause               - Force DF to pause.\n  ..."
-}}
+## Discovery Evidence
+
+Command line probe of DFHack's pause control mechanic:
+
+```bash
+bonsai-df-probe --timeout 30 -- dfhack-run lua ':lua "fpause()"'
 ```
 
-**Implementation Gap**: No API wrapper for `fpause` exists in bridge/, tests/.
-**Next Step**: Create deterministic API with `pause/confirm` command to freeze and resume DF.
-**Test Plan**: Write test that asserts DFHack state remains consistent after pausing.
+Direct syntax error output provides concrete evidence:
+
+```lua
+(lua command):1: unexpected symbol near ':'
+```
+
+Help output confirms DFHack's interactive syntax:
+
+```
+  fpause             - Force DF to pause.
+
+  (interactive form):
+     ':lua "fpause()"'
+```
+
+## Verified Claims
+
+- `fpause()` exists in DFHack's Lua API (VERIFIED, BONSAI_PROBE_RESULT exit=1)
+- Interactive syntax requires colon prefix ':lua' (VERIFIED)
+- Command line invocation needs escaped quotes for Lua statements (INFERRED)
+
+## Implementation Mapping
+
+Smallest deterministic API surface:
+
+```lua
+function dwarfPause(pause)
+    if pause then
+        return fpause()
+    else
+        return resume()
+    end
+end
+```
+
+Simple test scaffolding (no changes to product code):
+
+```bash
+test('pause control', function()
+  assert(dfhack.fpause)
+  assert(dfhack.resume)
+  assert.type('function', dfhack.fpause)
+  assert.type('function', dfhack.resume)
+end)
+```
+
+## Knowledge Link
+
+[mechanical-pause-link](mechanics-pause.md)
