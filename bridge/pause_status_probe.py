@@ -11,17 +11,14 @@ from game_runner.episode import _dfhack_run
 def _lua_pause_snapshot() -> str:
     """Return the pause state via Lua.
 
-    The Lua expression evaluates ``df.global.pause`` (true when the game is paused) and prints a
-    JSON object with the "paused" key.
+    This version uses a ternary expression for readability and ensures the JSON output uses lower‑case
+    keys.
     """
     return (
         """
         local json = require('json');
-        local paused = false;
-        if df.global and df.global.pause then
-            paused = df.global.pause;
-        end
-        print(json.encode{{paused = paused}});
+        local paused = df.global and df.global.pause;
+        print(json.encode({paused = paused}));
         """
     )
 
@@ -33,13 +30,14 @@ def probe_pause_status(timeout: int = 5) -> Optional[Dict[str, bool]]:
         timeout: Maximum seconds to wait for the DFHack subprocess.
 
     Returns:
-        ``{'paused': <bool>}`` on success, or ``None`` if the probe fails or the DF runtime is
-        unavailable.
+        ``{'paused': <bool>}`` on success, or ``None`` if the probe cannot communicate with the DF
+        runtime.
     """
     try:
         raw = _dfhack_run(_lua_pause_snapshot(), timeout=timeout)
     except Exception:
         return None
+    # Accept raw JSON dict or stringified JSON that can be parsed by the internal helper
     if isinstance(raw, dict):
         if "_dfhack_error" in raw or "_raw" in raw:
             return None
