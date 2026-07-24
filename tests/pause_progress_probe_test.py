@@ -6,7 +6,6 @@ and an integer count, or None when the probe cannot communicate with the DF runt
 No live Dwarf Fortress process is required because the implementation already returns None on
 transport failure, making the test deterministic in the coding‑graph environment.
 """
-
 import unittest
 from bridge.pause_progress_probe import probe_pause_jobs
 
@@ -16,7 +15,8 @@ class PauseProgressProbePublicTest(unittest.TestCase):
     def test_probe_returns_schema_or_none(self) -> None:
         """Call the probe and ensure the output matches the contract.
 
-        The probe may legitimately return ``None`` (e.g. when DF is not running), so both outcomes are allowed.
+        The probe may legitimately return ``None`` (e.g. when DF is not running), so both
+        outcomes are allowed.
         """
         result = probe_pause_jobs()
         if result is None:
@@ -35,7 +35,6 @@ class PauseProgressProbePublicTest(unittest.TestCase):
         for a successful call.
         """
         probe_pause_jobs(timeout=1)
-
 
 if __name__ == '__main__':
     unittest.main()
