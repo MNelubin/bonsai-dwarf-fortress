@@ -1,6 +1,6 @@
 """Deterministic world age probe for Dwarf Fortress.
 
-This module queries the DF runtime for the current world age in years and returns a JSON\u2011serialisable
+This module queries the DF runtime for the current world age in years and returns a JSON‑serialisable
 dictionary with a single key "world_age".  The implementation follows the pattern used by other
 probes in the repository and does not affect existing public interfaces.
 """
@@ -12,7 +12,7 @@ def _lua_world_age_snapshot() -> str:
     """Return the current world age via Lua.
 
     The Lua code extracts ``df.global.world_info.age`` (number of years since
-    world creation) and prints it as a simple JSON object.  Lower\u2011case keys are
+    world creation) and prints it as a simple JSON object.  Lower‑case keys are
     used to keep the output consistent with the rest of the bridge.
     """
     return (
