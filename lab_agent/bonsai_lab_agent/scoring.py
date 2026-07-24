@@ -45,7 +45,7 @@ STRESS_DANGER_THRESHOLD = 100_000
 # no-op is σ≈0 across episodes (scored surface is deterministic); ref is filled once
 # the reference policy (action verbs) exists. Horizons are fort-days*1200 ticks.
 CALIBRATION = {
-    3600:  {"noop": 0.26786, "ref": None},   # 3 fort-days  (no-op measured K=3, mad=0)
+    3600:  {"noop": 0.26786, "ref": 0.32341},  # 3 fort-days  (both measured LIVE; ref = bonsai-ref-setup builds 5 stockpiles -> nbuild 1->6; discrimination +0.056, σ≈0 so trustworthy)
     12000: {"noop": None,    "ref": None},   # 10 fort-days
     36000: {"noop": None,    "ref": None},   # 30 fort-days
 }
