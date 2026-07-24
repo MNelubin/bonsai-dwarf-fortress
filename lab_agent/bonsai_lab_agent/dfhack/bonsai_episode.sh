@@ -10,7 +10,8 @@ click(){ printf '%s\n' "$1" > click_target.txt; run click-text >/dev/null 2>&1; 
 getnum(){ run lua "print(($1))" | grep -aoE '[-]?[0-9]+' | head -1; }
 click_until(){ for t in $(seq 1 ${3:-10}); do scr | grep -qiE "$2" && return 0; click "$1"; sleep 3; done; scr | grep -qiE "$2"; }
 S=$(sup); for p in $(pgrep -x dwarfort); do [ "$p" != "$S" ] && kill -9 $p 2>/dev/null; done; sleep 1
-( sleep 260; SS=$(ss -ltnp 2>/dev/null|grep 127.0.0.1:5000|grep -oE 'pid=[0-9]+'|cut -d= -f2|head -1); for p in $(pgrep -x dwarfort); do [ "$p" != "$SS" ] && kill -9 $p 2>/dev/null; done ) >/dev/null 2>&1 &
+WD_TIME=$((220 + HORIZON / 60))   # scale watchdog with horizon (boot+load+advance); 36000 -> ~820s
+( sleep $WD_TIME; SS=$(ss -ltnp 2>/dev/null|grep 127.0.0.1:5000|grep -oE 'pid=[0-9]+'|cut -d= -f2|head -1); for p in $(pgrep -x dwarfort); do [ "$p" != "$SS" ] && kill -9 $p 2>/dev/null; done ) >/dev/null 2>&1 &
 setsid env DFHACK_PORT=$PORT DF_PRELOAD=$PWD/detshim2.so LD_PRELOAD=$PWD/detshim2.so HOME=$PWD/spike-home XDG_RUNTIME_DIR=$PWD/spike-home DFHACK_HEADLESS=1 DFHACK_DISABLE_CONSOLE=1 SDL_AUDIODRIVER=dummy TERM=dumb ./dfhack --exec > boot_mine.log 2>&1 </dev/null &
 disown
 for i in $(seq 1 50); do ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT && break; sleep 2; done; sleep 3
