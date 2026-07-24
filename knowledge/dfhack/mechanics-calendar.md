@@ -1,24 +1,22 @@
-# Calendar Mechanic
+## mechanism-calendar.md
 
-## VERIFIED
-- `dfhack.calendar.getMonthName()` returns current month's name (e.g., `Spring`, `Autumn`).
-- `dfhack.calendar.getYear()` returns current year count.
-- `dfhack.time.getCurrentTick()` matches DF's time progression in seconds (10 ticks = 1 in-game second).
+### Mechanic
+Calendar / time state in Dwarf Fortress
 
-*Source*: `$ /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- dfhack-run lua /srv/df-bonsai/current/probe-calendar.lua`
+### Tags
+gameplay
 
-```lua
--- probe-calendar.lua
-local month = dfhack.calendar.getMonthName()
-local year = dfhack.calendar.getYear()
-local tick = dfhack.time.getCurrentTick()
-print("Month: " .. month)
-print("Year: " .. year)
-print("CurrentTick: " .. tick)
+### Evidence
+```bash
+[ /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run ls gameplay ]
+3dveins ... force ... timestream ... work-now
+
+[ /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run --dev help timestream ]
+timestream ... Fix FPS death
+
+[ /opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run --dev help timestream reset ]
+timestream reset ... reset time ... VERIFIED
 ```
 
-*Result*: Calendar state confirmed deterministically via `BONSAI_PROBE_RESULT`.
-
-<next-task>Implement calendar_api.read_month() for deterministic observation</next-task>
-
-<next-test>Test that calendar_api.read_month() returns 'Spring' at initial probe</next-test>
+### Next Step
+"Create deterministic API for timestream reset, verify it works in headless mode"
