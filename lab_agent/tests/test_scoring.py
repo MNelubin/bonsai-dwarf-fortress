@@ -2,7 +2,7 @@
 data (K=8 no-op episodes). Verifies: no-op < good, σ≈0 inputs give tight CIs and
 trustworthy verdicts, and near-ties are correctly flagged UNTRUSTWORTHY."""
 
-from game_runner.metric import (
+from bonsai_lab_agent.scoring import (
     EpisodeObs, raw_components, normalized_score, aggregate, compare,
     TICKS_PER_DAY,
 )

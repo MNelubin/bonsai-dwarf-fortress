@@ -4,12 +4,12 @@ Runs ON the DF host (CT123). Delegates the fragile boot/load/advance to the
 battle-tested bash runner `bonsai_episode.sh` (keeps the supervised df-runtime DF
 on port 5000 alive, runs the scored episode on 5001 with a watchdog, robust
 verify-retry load), then parses its ground-truth OBS lines into EpisodeObs and
-scores via metric.py.
+scores via scoring.py.
 
 FORMAT: wildlife/monsters ON by default (the real game). suppress_wildlife=True is
 a deterministic DEBUG mode (zeroes the spawn pool) for regressioning the scorer.
 Scoring is STATISTICAL: K episodes -> robust median + distribution-free CI + trust
-gate (see metric.py); a good policy must win over the DISTRIBUTION of random events.
+gate (see scoring.py); a good policy must win over the DISTRIBUTION of random events.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import os
 import re
 import subprocess
 
-from game_runner import metric
-from game_runner.metric import EpisodeObs, raw_components, aggregate, compare
+from bonsai_lab_agent import scoring
+from bonsai_lab_agent.scoring import EpisodeObs, raw_components, aggregate, compare
 
 DF_DIR = os.environ.get("BONSAI_DF_DIR", "/srv/df-bonsai/current")
 EPISODE_SH = os.path.join(DF_DIR, "bonsai_episode.sh")
@@ -102,10 +102,10 @@ def evaluate_policy(horizon_ticks: int, k: int, noop_composite: float,
                     ref_composite: float, suppress_wildlife: bool = False):
     """Run K episodes of the CURRENT scenario and return the aggregated normalized
     score (median + CI). The policy's actions are applied inside bonsai_episode.sh
-    (v1 = no-op; action verbs added next). Returns metric.RunStats."""
+    (v1 = no-op; action verbs added next). Returns scoring.RunStats."""
     pairs = run_k(horizon_ticks, k, suppress_wildlife)
     scores = [
-        metric.normalized_score(h, t0, horizon_ticks, noop_composite, ref_composite)
+        scoring.normalized_score(h, t0, horizon_ticks, noop_composite, ref_composite)
         for t0, h in pairs
     ]
     return aggregate(scores)
