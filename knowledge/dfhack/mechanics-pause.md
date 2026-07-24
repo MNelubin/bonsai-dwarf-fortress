@@ -1,20 +1,18 @@
-VERIFIED: DFHack pause mechanic
+## Pause/State Observation
 
-1. Examined DFHack command registry: `dfhack-run help paused` returned "No help entry found"
-2. Confirmed presence of `fpause` command:
-   - `dfhack-run help fpause` VERIFIED: "Forces DF to pause"
-   - `dfhack-run fpause` VERIFIED runtime response: "The game was forced to pause!"
-3. Probed DFHack version: 53.15-r2 (release)
+### VERIFIED
+`fpause` - Forces DF to pause. This is useful when your FPS drops below 1 and you lose control of the game.
 
-## API Interface
-- Command: `fpause` (forces DF to pause)
-- Requires DFhack runtime availability
-- Does not require save file access
+### INFERRED
+`dfhack.isPaused()` - Suggested API for checking pause state
 
-## Potential API Design
-```lua
-pauseGame(resume = false)
-  -- Returns boolean if successful
-```
+### OPEN
+Unified API for deterministic job progression needs further probes.
 
-Next task: Implement pause/resume capability via Lua interface with unit test for game state verification.
+#### Probe evidence:
+- `dfhack-run help fpause` confirms forced pause functionality
+- `dfhack-run help is-paused` not yet verified
+
+#### Next steps:
+1. Add pause_game API to bridge with deterministic state
+2. Implement Pause assertion test halting time progression
