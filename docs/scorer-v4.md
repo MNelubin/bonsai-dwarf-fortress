@@ -56,14 +56,28 @@ totals, raw item total, raw stress sum.
    `dfhack/*` scripts into `/srv/df-bonsai/current/hack/scripts/` +
    `bonsai_episode.sh` into `/srv/df-bonsai/current/`.
 3. **Patch `evaluator.evaluate_job`**: after `prepare_checkout` + `controller_command`,
-   call `game_scorer.score_submission(controller_fn, horizon_ticks=H, k=K,
-   noop_composite=CAL[H].noop, ref_composite=CAL[H].ref)` where `controller_fn(obs)`
-   invokes the agent's controller (reuse the jsonl-v1 protocol: write the pinned T0
-   obs, read back action intents). Return its result dict instead of the smoke result.
-   Set `regime_key = hash(save_sha256, df/dfhack ver, plugin_set, scorer weights, H)`;
-   **reset `best_score`/champion when `regime_key` changes** (else the smoke-era 1.0
-   freezes the champion forever). Relax the `score∈[0,1]` clamp check in
-   `control_plane main.py:524` if needed (v4 stays in [0,1]).
+   replace the fixture/smoke path with (all building blocks exist + tested):
+   ```python
+   from bonsai_lab_agent import game_scorer
+   from bonsai_lab_agent.controller_invoke import make_controller_fn
+   from bonsai_lab_agent.scoring import CALIBRATION
+   H = 3600                                   # active ladder rung (3600/12000/36000)
+   cal = CALIBRATION[H]                        # {noop, ref}; must be calibrated for H
+   controller_fn = make_controller_fn(command, str(repo), config.controller_timeout_seconds)
+   result = game_scorer.score_submission(
+       controller_fn, horizon_ticks=H, k=5,
+       noop_composite=cal["noop"], ref_composite=cal["ref"])
+   return {**result, "submission_id": submission_id,
+           "result_hash": hashlib.sha256(json.dumps(result["summary"], sort_keys=True,
+                                                     default=str).encode()).hexdigest()}
+   ```
+   Optionally keep the contract smoke as a cheap gate-0 (run it first; only score
+   gameplay if it passes). Set `regime_key = hash(save_sha256, df/dfhack ver,
+   plugin_set, scorer weights, H)`; **reset `best_score`/champion when `regime_key`
+   changes** (else the smoke-era 1.0 freezes the champion forever). v4 scores stay in
+   `[0,1]` so the `control_plane main.py:524` clamp is fine.
+   CAVEAT: `score_submission` runs K live DF episodes (~2–10 min each depending on H
+   and host load), so raise the evaluator job timeout / heartbeat accordingly.
 4. **Restore autonomy**: start `bonsai-df-runtime`, `bonsai-evaluator`,
    `bonsai-lab-agent` (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
    The K2 agent now climbs the REAL score.
