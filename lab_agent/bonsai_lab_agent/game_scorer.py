@@ -20,17 +20,38 @@ Flow per episode (on the DF host, port 5001, supervised DF kept alive on 5000):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 from typing import Any, Callable
 
 from bonsai_lab_agent import scoring
-from bonsai_lab_agent.scoring import EpisodeObs, aggregate, raw_components
+from bonsai_lab_agent.scoring import EpisodeObs, aggregate, raw_components, DEFAULT_WEIGHTS
 from bonsai_lab_agent import live_episode
 
 SUITE_NAME = "gameplay_survival_development"
 SUITE_VERSION = "4"
+
+
+def regime_key(*, scenario_id: str, save_sha256: str | None, df_version: str,
+               dfhack_version: str, plugin_set_hash: str | None, horizon_ticks: int,
+               k: int, weights: dict | None = None) -> str:
+    """Stable identifier for the scoring regime. The orchestrator MUST reset the
+    champion / best_score whenever this changes — otherwise a score from a different
+    save, engine version, horizon, or metric weighting is compared against a stale
+    high-water mark (the smoke-era 1.0 would freeze the champion forever). Any change
+    to the pinned scenario, DF/DFHack build, plugin set, horizon, K, suite, or metric
+    weights yields a new key."""
+    payload = {
+        "suite": SUITE_NAME, "suite_version": SUITE_VERSION,
+        "scenario_id": scenario_id, "save_sha256": save_sha256,
+        "df_version": df_version, "dfhack_version": dfhack_version,
+        "plugin_set_hash": plugin_set_hash,
+        "horizon_ticks": horizon_ticks, "k": k,
+        "weights": weights or DEFAULT_WEIGHTS,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:16]
 
 # The action verbs the evaluator will dispatch deterministically. Anything else the
 # controller emits is ignored (logged), never executed — the agent cannot run

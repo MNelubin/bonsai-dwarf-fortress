@@ -80,3 +80,15 @@ def test_score_submission_all_episodes_failed(monkeypatch):
     assert res["verdict"] == "episode_failed"
     assert res["failure_kind"] == "runtime"
     assert not res["summary"]["trustworthy"]
+
+
+def test_regime_key_stable_and_sensitive():
+    base = dict(scenario_id="s1", save_sha256="abc", df_version="53.15",
+                dfhack_version="53.15-r2", plugin_set_hash="p1", horizon_ticks=3600, k=5)
+    k0 = game_scorer.regime_key(**base)
+    assert k0 == game_scorer.regime_key(**base)                                  # stable
+    assert k0 != game_scorer.regime_key(**{**base, "horizon_ticks": 12000})      # horizon
+    assert k0 != game_scorer.regime_key(**{**base, "scenario_id": "s2"})         # scenario
+    assert k0 != game_scorer.regime_key(**{**base, "df_version": "54.0"})        # engine
+    assert k0 != game_scorer.regime_key(
+        **{**base, "weights": {"provisioning": 0.5, "comfort": 0.2, "development": 0.3}})  # weights
