@@ -1,34 +1,21 @@
 # Mechanics: Buildings
 
-This note documents the DFHack building commands observed in the live runtime.
+## Probe: DFHack design tools
 
-## Command Overview
+We ran the following command to inspect available DFHack tools:
 
-- **burial**: Creates tomb zones for unzoned coffins. Tags: buildings, fort, productivity
-- **burrow**: Quickly adjusts burrow tiles and units. Tags: auto, design, fort, productivity, units
-- **buildingplan**: Plans building placement before materials are available. Tags: buildings, design, fort, productivity
-- **build-now**: Instantly completes building construction jobs. Tags: armok, buildings, fort
-
-## VERIFIED Claims
-
-Each command exists in the DFHack runtime and has associated tags. Verified via `dfhack-run ls fort`:
-```
-BONSAI_PROBE_RESULT {
-  "command": ["/srv/df-bonsai/releases/df-53.15-steam-23622201_dfhack-53.15-r2/dfhack-run", "ls", "fort"],
-  "output": "burial               Create tomb zones for unzoned coffins.\n  ..."
-}
+```bash
+/sopt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run ls design
 ```
 
-## Coding Task
+This command revealed a tag `buildings` and a tool `stockpiles` (`Import, export, or modify stockpile settings.`).
 
-Create a Lua script to list all buildings with construction status in JSON format. The script should:
-1. Iterate over all tiles
-2. Extract building identifiers and construction progress
-3. Output to a temporary file in /tmp
+## Notes
 
-Test: Run `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 120 -- dfhack-run lua building-probe.lua` and verify the JSON file contains at least 100 building entries.
+- The `stockpiles` tool appears to be the primary interface for modifying building stockpiles in DFHack.
+- No dedicated note currently exists for the building subsystem in the knowledge base.
+- The presence of the `stockpiles` tool suggests a bounded, deterministic API for manipulating building stockpiles.
 
-## TODO
-- [x] Add command examples
-- [x] Write Lua script
-- [x] Create test harness
+## Next Step
+
+The smallest executable coding task is to implement a deterministic API wrapper around the `stockpiles` DFHack tool with subcommands `list`, `import`, and `export`, followed by a simple public test that runs the API with the `list` subcommand and asserts that the output contains JSON-formatted data with at least one stockpile setting.

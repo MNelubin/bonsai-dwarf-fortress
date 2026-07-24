@@ -12,3 +12,4 @@ Unified API for deterministic job progression needs further probes.
 <next-task>Add pause_game API to bridge with deterministic state</next-task>
 
 <next-test>Pause assertion test halting time progression</next-test>
+- [Mechanics: Buildings](#mechanics-buildings)
