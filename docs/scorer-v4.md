@@ -47,6 +47,34 @@ totals, raw item total, raw stress sum.
 
 ## Deployment / cutover (execute once a live discrimination proof passes)
 
+**STATUS: pre-staged + verified.** All trusted modules (`scoring.py`, `live_episode.py`,
+`game_scorer.py`, `controller_invoke.py`, `game_evaluate.py`) are deployed to the
+installed package `/opt/bonsai-lab-agent/venv/.../bonsai_lab_agent/` and import cleanly
+alongside the running evaluator (additive — cannot break it). The DFHack scripts +
+`bonsai_episode.sh` are in `/srv/df-bonsai/current/`. Discrimination is proven and
+H=3600 + H=12000 are live-calibrated. **The entire cutover is now a single reversible
+flip** owned by the operator:
+
+- **Flip (safest, env-gated, defaults to smoke):** at `evaluator.py:~447`, replace
+  `result = evaluate_job(config, job)` with:
+  ```python
+  if os.environ.get("BONSAI_SUITE") == "v4":
+      from bonsai_lab_agent import game_evaluate
+      result = game_evaluate.evaluate_job_v4(config, job)
+  else:
+      result = evaluate_job(config, job)          # smoke default (unchanged)
+  ```
+  Then set `BONSAI_SUITE=v4` (and optionally `BONSAI_SCORE_HORIZON`, `BONSAI_SCORE_K`)
+  in the `bonsai-evaluator` systemd env, and restart. Revert = unset the env var.
+- Reset `best_score`/champion when `result["regime_key"]` changes (the smoke-era 1.0
+  otherwise freezes the champion forever — `game_evaluate` already attaches `regime_key`).
+- Raise the evaluator job timeout / heartbeat: `score_submission` runs K live episodes
+  (~2–5 min each at H=3600/12000; H=36000 ~10 min under load).
+- Restore autonomy: start `bonsai-df-runtime`, `bonsai-evaluator`, `bonsai-lab-agent`
+  (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
+
+### Legacy step detail (superseded by the pre-staged flip above)
+
 1. **Verify discrimination live** (blocker): run `bonsai_episode.sh 36000 0` (no-op)
    and `... 36000 0 bonsai-ref-setup` (reference) with `bonsai-df-runtime` UP and the
    reaper/evaluator/orchestrator stopped; confirm reference composite > no-op with the
