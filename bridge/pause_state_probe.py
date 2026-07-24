@@ -11,7 +11,7 @@ def _lua_pause_state_snapshot() -> str:
     return ("""
     local json = require('json');
     local paused = df.global.pause;
-    print(json.encode{{paused=paused}});
+    print(json.encode{{paused = paused}});
     """)
 
 
