@@ -1,0 +1,76 @@
+"""Drop-in v4 evaluate_job for the trusted evaluator (the production cutover).
+
+ADDITIVE: this is a NEW module — it does NOT modify evaluator.py. The cutover is a
+single change in evaluator.main(): call `game_evaluate.evaluate_job_v4(config, job)`
+instead of `evaluate_job(config, job)` (or gate it behind BONSAI_SUITE=v4). Reversible
+by reverting that one line.
+
+It reuses the evaluator's own checkout/controller helpers (lazy-imported so this module
+stays importable + unit-testable without the server-only evaluator present), invokes the
+untrusted controller for action intents, and scores real gameplay via game_scorer. A
+regime_key is attached so the orchestrator resets the champion when the scoring regime
+changes (else the smoke-era 1.0 freezes it forever).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from typing import Any
+
+from bonsai_lab_agent import game_scorer
+from bonsai_lab_agent.controller_invoke import make_controller_fn
+from bonsai_lab_agent.scoring import CALIBRATION
+
+DEFAULT_HORIZON = int(os.environ.get("BONSAI_SCORE_HORIZON", "3600"))
+DEFAULT_K = int(os.environ.get("BONSAI_SCORE_K", "5"))
+DF_VERSION = os.environ.get("BONSAI_DF_VERSION", "53.15")
+DFHACK_VERSION = os.environ.get("BONSAI_DFHACK_VERSION", "53.15-r2")
+
+
+def _uncalibrated(submission_id, horizon: int) -> dict[str, Any]:
+    return {
+        "submission_id": submission_id,
+        "suite_name": game_scorer.SUITE_NAME, "suite_version": game_scorer.SUITE_VERSION,
+        "score": 0.0, "verdict": "uncalibrated_horizon", "failure_kind": "config",
+        "summary": {"horizon_ticks": horizon,
+                    "reason": "no live CALIBRATION endpoints for this horizon"},
+        "metrics": [],
+    }
+
+
+def evaluate_job_v4(config, job: dict[str, Any]) -> dict[str, Any]:
+    """Score one submission by running K real gameplay episodes. Signature matches the
+    smoke `evaluate_job(config, job)` so it is a drop-in replacement."""
+    # lazy import: keeps this module importable without the server-only evaluator
+    from bonsai_lab_agent.evaluator import prepare_checkout, controller_command
+
+    payload = job.get("payload") or {}
+    submission_id = payload.get("submission_id")
+    manifest = payload.get("controller_manifest") or {}
+    horizon = int(payload.get("horizon_ticks") or DEFAULT_HORIZON)
+    k = int(payload.get("k") or DEFAULT_K)
+
+    cal = CALIBRATION.get(horizon)
+    if not cal or cal.get("noop") is None or cal.get("ref") is None:
+        return _uncalibrated(submission_id, horizon)
+
+    repo = prepare_checkout(config, job)
+    command = controller_command(repo, manifest)
+    controller_fn = make_controller_fn(command, str(repo), config.controller_timeout_seconds)
+
+    result = game_scorer.score_submission(
+        controller_fn, horizon_ticks=horizon, k=k,
+        noop_composite=cal["noop"], ref_composite=cal["ref"])
+
+    result["submission_id"] = submission_id
+    result["regime_key"] = game_scorer.regime_key(
+        scenario_id=payload.get("scenario_id", "bonsaifort2"),
+        save_sha256=payload.get("save_sha256"),
+        df_version=DF_VERSION, dfhack_version=DFHACK_VERSION,
+        plugin_set_hash=payload.get("plugin_set_hash"),
+        horizon_ticks=horizon, k=k)
+    result["result_hash"] = hashlib.sha256(
+        json.dumps(result["summary"], sort_keys=True, default=str).encode()).hexdigest()
+    return result
