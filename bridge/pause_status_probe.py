@@ -45,3 +45,4 @@ def probe_pause_status(timeout: int = 5) -> Optional[Dict[str, bool]]:
     return None
 
 # deterministic edit marker
+# end of module
