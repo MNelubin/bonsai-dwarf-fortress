@@ -47,13 +47,16 @@ totals, raw item total, raw stress sum.
 
 ## Deployment / cutover (execute once a live discrimination proof passes)
 
-**STATUS: pre-staged + verified.** All trusted modules (`scoring.py`, `live_episode.py`,
-`game_scorer.py`, `controller_invoke.py`, `game_evaluate.py`) are deployed to the
-installed package `/opt/bonsai-lab-agent/venv/.../bonsai_lab_agent/` and import cleanly
-alongside the running evaluator (additive — cannot break it). The DFHack scripts +
-`bonsai_episode.sh` are in `/srv/df-bonsai/current/`. Discrimination is proven and
-H=3600 + H=12000 are live-calibrated. **The entire cutover is now a single reversible
-flip** owned by the operator:
+**STATUS: pre-staged, verified, and proven end-to-end.** All trusted modules (`scoring.py`,
+`live_episode.py`, `game_scorer.py`, `controller_invoke.py`, `game_evaluate.py`) are
+deployed to the installed package and import cleanly alongside the running evaluator
+(additive — cannot break it). The DFHack scripts + `bonsai_episode.sh` are in
+`/srv/df-bonsai/current/`. Discrimination is proven and **all three rungs are
+live-calibrated** (H=3600/12000/36000, all +0.055 no-op→ref). The **full v4 path was
+proven end-to-end on the server** (a real controller → `make_controller_fn` → sanitize
+→ live episode → score 0.857 for a 4-stockpile policy). `score_submission` heartbeats
+between episodes via `on_episode`, so a long K-run eval keeps its job lease.
+**The entire cutover is a single reversible flip** owned by the operator:
 
 - **Flip (safest, env-gated, defaults to smoke):** at `evaluator.py:~447`, replace
   `result = evaluate_job(config, job)` with:
