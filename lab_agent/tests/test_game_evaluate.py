@@ -21,7 +21,7 @@ def _fake_evaluator(monkeypatch):
 
 def test_uncalibrated_horizon_returns_config_failure(monkeypatch):
     _fake_evaluator(monkeypatch)
-    job = {"payload": {"submission_id": "s1", "horizon_ticks": 36000}}  # not calibrated
+    job = {"payload": {"submission_id": "s1", "horizon_ticks": 9999}}  # not in CALIBRATION
     res = game_evaluate.evaluate_job_v4(FakeConfig(), job)
     assert res["verdict"] == "uncalibrated_horizon"
     assert res["failure_kind"] == "config"
