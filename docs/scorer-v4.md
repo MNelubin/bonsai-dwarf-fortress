@@ -60,7 +60,7 @@ flip** owned by the operator:
   ```python
   if os.environ.get("BONSAI_SUITE") == "v4":
       from bonsai_lab_agent import game_evaluate
-      result = game_evaluate.evaluate_job_v4(config, job)
+      result = game_evaluate.evaluate_job_v4(config, job, api=api)
   else:
       result = evaluate_job(config, job)          # smoke default (unchanged)
   ```

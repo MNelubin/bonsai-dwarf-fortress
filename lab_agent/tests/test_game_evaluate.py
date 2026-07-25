@@ -58,3 +58,25 @@ def test_default_horizon_and_k(monkeypatch):
     game_evaluate.evaluate_job_v4(FakeConfig(), {"payload": {"submission_id": "s3"}})
     assert captured["horizon_ticks"] == game_evaluate.DEFAULT_HORIZON  # 3600 (calibrated)
     assert captured["k"] == game_evaluate.DEFAULT_K
+
+
+def test_evaluate_job_v4_heartbeats_between_episodes(monkeypatch):
+    _fake_evaluator(monkeypatch)
+    beats = []
+
+    class FakeApi:
+        def heartbeat(self, job, progress):
+            beats.append(progress)
+
+    def fake_score(cf, on_episode=None, **kw):
+        if on_episode:
+            on_episode(1, kw["k"])            # simulate one episode completing
+        return {"suite_name": "x", "suite_version": "4", "score": 0.5, "verdict": "v",
+                "failure_kind": None, "summary": {}, "metrics": []}
+
+    monkeypatch.setattr(game_scorer, "score_submission", fake_score)
+    game_evaluate.evaluate_job_v4(
+        FakeConfig(), {"payload": {"submission_id": "s", "horizon_ticks": 3600, "k": 5}},
+        api=FakeApi())
+    assert len(beats) == 1
+    assert beats[0]["phase"] == "gameplay" and beats[0]["of"] == 5

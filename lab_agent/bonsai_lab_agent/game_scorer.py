@@ -126,19 +126,27 @@ def run_scored_episode(controller_fn: Callable[[dict], list[dict]],
 def score_submission(controller_fn: Callable[[dict], list[dict]], *,
                      horizon_ticks: int, k: int,
                      noop_composite: float, ref_composite: float,
-                     suppress_wildlife: bool = False) -> dict[str, Any]:
+                     suppress_wildlife: bool = False,
+                     on_episode: Callable[[int, int], None] | None = None) -> dict[str, Any]:
     """Run K real episodes and produce the v4 result dict for evaluate_job.
 
     Score is baseline-subtracted (agent-noop)/(ref-noop), clamped [0,1], reported as
     the K-run median with a distribution-free CI. `trustworthy` is False when the CI
     is too wide to distinguish the agent from the no-op baseline (evaluator should
-    raise K or refuse to promote)."""
+    raise K or refuse to promote). `on_episode(done, total)` is called after each
+    episode — evaluate_job_v4 wires it to the evaluator heartbeat so a long K-run eval
+    (~2-20 min) does not outlive its job lease."""
     pairs = []
     for _ in range(k):
         try:
             pairs.append(run_scored_episode(controller_fn, horizon_ticks, suppress_wildlife))
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
+        if on_episode is not None:
+            try:
+                on_episode(len(pairs), k)
+            except Exception:
+                pass
 
     scores = [
         scoring.normalized_score(h, t0, horizon_ticks, noop_composite, ref_composite)

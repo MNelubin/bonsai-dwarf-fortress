@@ -40,9 +40,11 @@ def _uncalibrated(submission_id, horizon: int) -> dict[str, Any]:
     }
 
 
-def evaluate_job_v4(config, job: dict[str, Any]) -> dict[str, Any]:
-    """Score one submission by running K real gameplay episodes. Signature matches the
-    smoke `evaluate_job(config, job)` so it is a drop-in replacement."""
+def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
+    """Score one submission by running K real gameplay episodes. Signature is
+    drop-in compatible with the smoke `evaluate_job(config, job)`; pass the optional
+    `api` (EvaluatorApi) so the long K-run eval heartbeats the job lease between
+    episodes (a gameplay eval takes ~2-20 min vs the smoke's seconds)."""
     # lazy import: keeps this module importable without the server-only evaluator
     from bonsai_lab_agent.evaluator import prepare_checkout, controller_command
 
@@ -60,9 +62,18 @@ def evaluate_job_v4(config, job: dict[str, Any]) -> dict[str, Any]:
     command = controller_command(repo, manifest)
     controller_fn = make_controller_fn(command, str(repo), config.controller_timeout_seconds)
 
+    on_episode = None
+    if api is not None:
+        def on_episode(done: int, total: int) -> None:
+            try:
+                api.heartbeat(job, {"phase": "gameplay", "episode": done, "of": total,
+                                    "horizon_ticks": horizon})
+            except Exception:
+                pass
+
     result = game_scorer.score_submission(
         controller_fn, horizon_ticks=horizon, k=k,
-        noop_composite=cal["noop"], ref_composite=cal["ref"])
+        noop_composite=cal["noop"], ref_composite=cal["ref"], on_episode=on_episode)
 
     result["submission_id"] = submission_id
     result["regime_key"] = game_scorer.regime_key(

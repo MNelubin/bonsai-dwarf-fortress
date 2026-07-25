@@ -82,6 +82,19 @@ def test_score_submission_all_episodes_failed(monkeypatch):
     assert not res["summary"]["trustworthy"]
 
 
+def test_score_submission_calls_on_episode(monkeypatch):
+    """on_episode(done, total) fires after every episode (evaluate_job_v4 wires it to
+    the heartbeat so a long K-run eval keeps its job lease alive)."""
+    T0 = game_scorer.PINNED_T0
+    monkeypatch.setattr(game_scorer, "run_scored_episode",
+                        lambda cf, h, suppress=False: (T0, _GOOD_H))
+    calls = []
+    game_scorer.score_submission(lambda o: [], horizon_ticks=36000, k=3,
+                                 noop_composite=0.2, ref_composite=0.6,
+                                 on_episode=lambda d, t: calls.append((d, t)))
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
 def test_regime_key_stable_and_sensitive():
     base = dict(scenario_id="s1", save_sha256="abc", df_version="53.15",
                 dfhack_version="53.15-r2", plugin_set_hash="p1", horizon_ticks=3600, k=5)
