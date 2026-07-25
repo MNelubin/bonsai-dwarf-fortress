@@ -69,8 +69,13 @@ between episodes via `on_episode`, so a long K-run eval keeps its job lease.
   ```
   Then set `BONSAI_SUITE=v4` (and optionally `BONSAI_SCORE_HORIZON`, `BONSAI_SCORE_K`)
   in the `bonsai-evaluator` systemd env, and restart. Revert = unset the env var.
-- Reset `best_score`/champion when `result["regime_key"]` changes (the smoke-era 1.0
-  otherwise freezes the champion forever — `game_evaluate` already attaches `regime_key`).
+- **Champion reset is NOT required for the flip.** Promotion (`promoter.inspect_candidate`)
+  is currently `gate_mode: bootstrap_static_v1` — it gates on STATIC SAFETY only (secret
+  scan, syntax parse, size limit) and does **not** compare the evaluation score against a
+  champion/best_score. So flipping to v4 simply changes the *recorded* score (smoke →
+  gameplay); promotion behaviour is unchanged and nothing is "frozen" by the smoke-era
+  1.0. `game_evaluate` still attaches `regime_key` — reset the champion on its change
+  ONLY once promotion becomes score-gated (a separate future evolution).
 - Raise the evaluator job timeout / heartbeat: `score_submission` runs K live episodes
   (~2–5 min each at H=3600/12000; H=36000 ~10 min under load).
 - Restore autonomy: start `bonsai-df-runtime`, `bonsai-evaluator`, `bonsai-lab-agent`
