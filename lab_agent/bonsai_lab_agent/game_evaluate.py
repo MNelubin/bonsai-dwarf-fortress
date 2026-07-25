@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from typing import Any
 
 from bonsai_lab_agent import game_scorer
@@ -27,6 +28,10 @@ DEFAULT_HORIZON = int(os.environ.get("BONSAI_SCORE_HORIZON", "3600"))
 DEFAULT_K = int(os.environ.get("BONSAI_SCORE_K", "5"))
 DF_VERSION = os.environ.get("BONSAI_DF_VERSION", "53.15")
 DFHACK_VERSION = os.environ.get("BONSAI_DFHACK_VERSION", "53.15-r2")
+# Renew the job lease well inside the control plane's lease_seconds (=120s) — a single
+# episode (up to ~10 min at H=36000) far exceeds it, so per-episode heartbeats alone
+# would let the lease expire mid-episode and the job get re-leased.
+HEARTBEAT_INTERVAL = int(os.environ.get("BONSAI_HEARTBEAT_SECONDS", "45"))
 
 
 def _uncalibrated(submission_id, horizon: int) -> dict[str, Any]:
@@ -63,6 +68,8 @@ def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
     controller_fn = make_controller_fn(command, str(repo), config.controller_timeout_seconds)
 
     on_episode = None
+    stop = threading.Event()
+    hb_thread = None
     if api is not None:
         def on_episode(done: int, total: int) -> None:
             try:
@@ -71,9 +78,27 @@ def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
             except Exception:
                 pass
 
-    result = game_scorer.score_submission(
-        controller_fn, horizon_ticks=horizon, k=k,
-        noop_composite=cal["noop"], ref_composite=cal["ref"], on_episode=on_episode)
+        def _keepalive() -> None:
+            # renew the lease every HEARTBEAT_INTERVAL s for the WHOLE eval — a single
+            # episode can exceed lease_seconds (120), so per-episode heartbeats alone
+            # would let the lease expire mid-episode.
+            while not stop.wait(HEARTBEAT_INTERVAL):
+                try:
+                    api.heartbeat(job, {"phase": "gameplay", "keepalive": True})
+                except Exception:
+                    pass
+
+        hb_thread = threading.Thread(target=_keepalive, daemon=True)
+        hb_thread.start()
+
+    try:
+        result = game_scorer.score_submission(
+            controller_fn, horizon_ticks=horizon, k=k,
+            noop_composite=cal["noop"], ref_composite=cal["ref"], on_episode=on_episode)
+    finally:
+        stop.set()
+        if hb_thread is not None:
+            hb_thread.join(timeout=2)
 
     result["submission_id"] = submission_id
     result["regime_key"] = game_scorer.regime_key(

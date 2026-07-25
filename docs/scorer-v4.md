@@ -76,8 +76,12 @@ between episodes via `on_episode`, so a long K-run eval keeps its job lease.
   gameplay); promotion behaviour is unchanged and nothing is "frozen" by the smoke-era
   1.0. `game_evaluate` still attaches `regime_key` — reset the champion on its change
   ONLY once promotion becomes score-gated (a separate future evolution).
-- Raise the evaluator job timeout / heartbeat: `score_submission` runs K live episodes
-  (~2–5 min each at H=3600/12000; H=36000 ~10 min under load).
+- **Job lease is handled — no control-plane change needed.** The control plane's
+  `lease_seconds=120` would expire mid-episode (an H=36000 episode is ~10 min), but
+  `evaluate_job_v4(config, job, api=api)` runs a background thread that heartbeats every
+  `HEARTBEAT_INTERVAL` (45s, env-tunable) for the whole eval, renewing the lease. Just
+  pass `api=api` at the flip (the snippet above does). Optionally still raise
+  `lease_seconds` for headroom, but it is not required.
 - Restore autonomy: start `bonsai-df-runtime`, `bonsai-evaluator`, `bonsai-lab-agent`
   (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
 

@@ -80,3 +80,27 @@ def test_evaluate_job_v4_heartbeats_between_episodes(monkeypatch):
         api=FakeApi())
     assert len(beats) == 1
     assert beats[0]["phase"] == "gameplay" and beats[0]["of"] == 5
+
+
+def test_evaluate_job_v4_keepalive_thread_renews_lease(monkeypatch):
+    """A background thread heartbeats every HEARTBEAT_INTERVAL for the whole eval so a
+    long episode (> the 120s lease) does not let the lease expire."""
+    import time as _t
+    _fake_evaluator(monkeypatch)
+    monkeypatch.setattr(game_evaluate, "HEARTBEAT_INTERVAL", 0.05)
+    beats = []
+
+    class FakeApi:
+        def heartbeat(self, job, progress):
+            beats.append(progress)
+
+    def slow_score(cf, on_episode=None, **kw):
+        _t.sleep(0.3)                       # simulate a long eval (several keepalives)
+        return {"suite_name": "x", "suite_version": "4", "score": 0.5, "verdict": "v",
+                "failure_kind": None, "summary": {}, "metrics": []}
+
+    monkeypatch.setattr(game_scorer, "score_submission", slow_score)
+    game_evaluate.evaluate_job_v4(
+        FakeConfig(), {"payload": {"submission_id": "s", "horizon_ticks": 36000}},
+        api=FakeApi())
+    assert sum(1 for b in beats if b.get("keepalive")) >= 1
