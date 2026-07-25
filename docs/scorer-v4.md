@@ -1,5 +1,27 @@
 # Real gameplay scorer — suite v4 (`gameplay_survival_development`)
 
+## TL;DR for the operator
+
+**Done & proven** (branch `scorer-build`, ~19 commits, all trusted modules pre-staged +
+verified on the server; 36 unit tests): a statistical DF gameplay scorer that replaces
+the degenerate ~1.0 smoke score. Discrimination proven live (no-op 0 → developing 0.857
+→ reference 1.0), validated end-to-end k=1 **and** k=3 (trustworthy), calibrated at all
+three horizons, heartbeat-safe for the 120s job lease, needs **no control-plane changes**.
+
+**To go live — a single reversible flip** (details below): add the `BONSAI_SUITE==v4`
+gate at `evaluator.py:~447`, set `BONSAI_SUITE=v4` in the `bonsai-evaluator` env, restart,
+restore autonomy. Revert = unset the env var.
+
+**Two decisions only you can make** (everything technical is closed):
+1. **Interaction model** — v4 uses one-shot SETUP (controller returns T0 development
+   intents). Your 93 submissions use a step-loop `advance` baseline that develops nothing
+   → would score 0. Fix cheaply by (a) pointing the objective prompt at "return a T0
+   setup plan" + giving `player.baseline` a couple of `create_stockpile`/`set_labor`
+   intents, or (b) building the hybrid interactive loop (bigger). See "Interaction model".
+2. **When to flip** — verify one real eval, then restore autonomy.
+
+Everything else in this doc is the how/why.
+
 Replaces the degenerate smoke score (`evaluator.evaluation_outcome`, an API-contract
 arithmetic `0.2 + 0.2·deterministic + 0.2·valid_actions + 0.4·live_ready` that always
 lands ~1.0 and is explicitly "not a 30-day gameplay score") with a **statistical
