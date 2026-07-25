@@ -82,6 +82,15 @@ def test_score_submission_all_episodes_failed(monkeypatch):
     assert not res["summary"]["trustworthy"]
 
 
+def test_controller_observation_is_policy_compatible():
+    obs = game_scorer.controller_observation(game_scorer.PINNED_T0)
+    assert obs["cur_tick"] == game_scorer.PINNED_T0.abs_tick
+    assert obs["gametype"] == "DWARF_FORTRESS"
+    assert len(obs["units"]) == 7                     # legacy step-loop policies read units
+    assert "create_stockpile" in obs["available_actions"]
+    assert obs["hunger_sum"] == 7                     # v4 scored fields still present
+
+
 def test_score_submission_calls_on_episode(monkeypatch):
     """on_episode(done, total) fires after every episode (evaluate_job_v4 wires it to
     the heartbeat so a long K-run eval keeps its job lease alive)."""

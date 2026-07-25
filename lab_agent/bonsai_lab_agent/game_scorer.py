@@ -72,6 +72,24 @@ PINNED_T0 = EpisodeObs(
 )
 
 
+def controller_observation(t0: EpisodeObs) -> dict:
+    """The observation handed to the untrusted controller at T0. Includes the v4 scored
+    fields PLUS a policy-friendly view (`cur_tick`, `gametype`, `paused`, `units`) so both
+    the legacy step-loop policies (which read `cur_tick`/`units`) and new setup policies
+    can consume it, plus `available_actions` for discoverability. NOTE: v4 uses a one-shot
+    SETUP model — the controller's returned action intents are applied once at T0, then the
+    episode advances to the horizon; a policy that only returns `advance` therefore develops
+    nothing and scores at the no-op baseline. See docs/scorer-v4.md 'Interaction model'."""
+    d = dict(t0.__dict__)
+    d["cur_tick"] = t0.abs_tick
+    d["gametype"] = "DWARF_FORTRESS"
+    d["paused"] = True
+    d["units"] = [{"id": -(i + 1), "civ_id": 1, "killed": False}
+                  for i in range(t0.cohort_size)]
+    d["available_actions"] = sorted(ALLOWED_VERBS)
+    return d
+
+
 def sanitize_actions(raw_actions: list[dict]) -> list[dict]:
     """Keep only well-formed, allow-listed action intents. The evaluator never
     trusts the agent's actions verbatim; this is the anti-forgery gate."""
@@ -105,7 +123,7 @@ def run_scored_episode(controller_fn: Callable[[dict], list[dict]],
     T0 observation; the evaluator sanitizes + writes them; bonsai-apply-actions.lua
     dispatches them deterministically after the runner samples T0, then advances.
     Returns the (T0, H) EpisodeObs pair sampled live."""
-    actions = sanitize_actions(controller_fn(t0_obs.__dict__))
+    actions = sanitize_actions(controller_fn(controller_observation(t0_obs)))
     _write_actions(actions)
     p = subprocess.run(
         ["bash", live_episode.EPISODE_SH, str(horizon_ticks),

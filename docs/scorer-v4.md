@@ -122,6 +122,38 @@ between episodes via `on_episode`, so a long K-run eval keeps its job lease.
    `bonsai-lab-agent` (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
    The K2 agent now climbs the REAL score.
 
+## Interaction model — the ONE integration decision left for the owner
+
+This is not a bug; it's a design reconciliation the owner should make before/at the flip.
+
+- **v4 uses a one-shot SETUP model:** the controller is invoked once with the pinned T0
+  observation and returns action *intents* (`set_labor`, `designate_dig`,
+  `create_stockpile`, `add_workorder`); the evaluator dispatches them at T0, then the
+  episode advances to the horizon and is scored.
+- **The existing 93 agent submissions all use `player.baseline:baseline_policy`**, a
+  **step-loop** policy that returns `{"command": "advance", ...}` repeatedly (advance,
+  check survivors, advance…). Under v4's one-shot setup, a policy that returns only
+  `advance` develops nothing → **scores at the no-op baseline (0)**. So out of the box,
+  v4 would score every current submission ~0 (no learning gradient) until the agent
+  writes policies that return development intents.
+- v4 now hands the controller a **policy-compatible + discoverable** observation
+  (`controller_observation`): the v4 scored fields PLUS `cur_tick`/`gametype`/`paused`/
+  `units` (so legacy policies don't crash) PLUS `available_actions` (so the agent can
+  discover the verbs). But the *interaction model* still differs.
+
+**Owner's choice:**
+1. **Keep one-shot setup (recommended, already built):** point the objective/prompt at
+   "return a T0 setup plan of development intents"; update `player.baseline` to emit a
+   couple of `create_stockpile`/`set_labor` intents (so the floor isn't a flat 0), and
+   let the agent climb from there. Minimal work — the scorer already supports this.
+2. **Add a hybrid interactive loop:** extend the episode driver so the controller is
+   re-invoked each chunk (observe → intents → apply → advance chunk → observe…), which
+   also honors step-loop `advance` returns. This matches the legacy convention but is a
+   real change to the episode driver (keep DF alive across steps; observe/apply/advance
+   as separate ops) + live testing. Left unbuilt — it's a design decision, not a defect.
+
+Everything else in the cutover is closed; this is the substantive call the owner makes.
+
 ## Known follow-ups
 - `dug_tiles` is observed as 0 (TODO: T0 tiletype snapshot + diff over the fort z-range).
 - `add_workorder` uses `CustomReaction` (v50 has no `BrewDrink` job_type name); refine
