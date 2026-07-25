@@ -47,7 +47,7 @@ STRESS_DANGER_THRESHOLD = 100_000
 CALIBRATION = {
     3600:  {"noop": 0.26786, "ref": 0.32341},  # 3 fort-days  (both measured LIVE; ref = bonsai-ref-setup builds 5 stockpiles -> nbuild 1->6; discrimination +0.056, σ≈0 so trustworthy)
     12000: {"noop": 0.27857, "ref": 0.33413},  # 10 fort-days (both measured LIVE; discrimination +0.056)
-    36000: {"noop": None,    "ref": None},   # 30 fort-days (~10min/episode under host load; calibrate when load is low)
+    36000: {"noop": 0.33726, "ref": 0.39270},  # 30 fort-days (both measured LIVE; +0.055; no-op baseline shifts up as dwarves accumulate food -> per-horizon calibration matters)
 }
 
 
