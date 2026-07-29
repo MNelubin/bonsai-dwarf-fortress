@@ -84,7 +84,17 @@ class DFSession:
         if "READY" not in out:
             raise SessionError(f"boot failed: {(out + p.stderr)[-300:]}")
         self.booted = True
-        self.boot_frame = self.frame()
+        # READY only means the load finished; the first RPC after it can still come
+        # back empty (observed live: SessionError 'no number from frame_counter'
+        # immediately after a successful boot). Retry rather than lose the session.
+        for attempt in range(6):
+            try:
+                self.boot_frame = self.frame()
+                return
+            except SessionError:
+                if attempt == 5:
+                    raise
+                time.sleep(2)
 
     def close(self) -> None:
         """Kill our DF (never the supervised one). Safe to call twice."""

@@ -8,12 +8,31 @@ if not f then print("APPLY no-actions"); return end
 local w = df.global.world
 local cits = dfhack.units.getCitizens(true)
 local u1 = cits[1]
-local c = {set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0, advance = 0}
+local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
+            build_workshop = 0, advance = 0 }
 
 local function split(line)
     local t = {}
     for tok in string.gmatch(line, "[^\t]+") do t[#t + 1] = tok end
     return t
+end
+
+-- Placement cursor, persisted in a Lua global for the whole episode (globals survive
+-- between dfhack-run calls). Without it every create_stockpile call recomputed the same
+-- spots relative to the first citizen, so only the FIRST round ever placed anything and
+-- the development term could be earned exactly once per episode.
+_G.BONSAI_PLACE = _G.BONSAI_PLACE or { stock = 0, shop = 0, dig = nil }
+local P = _G.BONSAI_PLACE
+
+-- A ring of candidate build sites around the wagon, walked outwards. Keeps successive
+-- placements on fresh ground instead of colliding with what is already there.
+local function site(n, radius)
+    if not u1 then return nil end
+    local ring = radius + math.floor(n / 8) * 3
+    local a = (n % 8) * (math.pi / 4)
+    return math.floor(u1.pos.x + ring * math.cos(a)),
+           math.floor(u1.pos.y + ring * math.sin(a)),
+           u1.pos.z
 end
 
 for line in f:lines() do
@@ -29,35 +48,107 @@ for line in f:lines() do
             end
         end)
     elseif verb == "designate_dig" then
+        -- Digging in DF needs REACHABILITY. The old dispatch stamped dig flags on a
+        -- 5x5x13 block straight down from a dwarf standing on the surface: the top layer
+        -- is open air (a dig flag there is a no-op) and everything below is sealed rock
+        -- nobody can walk to, so a live 10-fort-day episode excavated exactly zero tiles
+        -- however many tiles were "designated".
+        --
+        -- So designate what a player would: a staircase down from the dwarf, then a room
+        -- carved off each landing. Every tile is connected to the one above it.
         pcall(function()
             local n = tonumber(a[2]) or 25
-            if u1 then
-                local dug = 0
-                for dz = 0, 12 do for dx = -2, 2 do for dy = -2, 2 do
-                    if dug < n then pcall(function()
-                        local des = dfhack.maps.getTileFlags(u1.pos.x + dx, u1.pos.y + dy, u1.pos.z - dz)
-                        if des then des.dig = df.tile_dig_designation.Default; dug = dug + 1 end
-                    end) end
-                end end end
-                c.designate_dig = c.designate_dig + dug
+            if not u1 then return end
+            -- Pin the shaft head for the whole episode. Citizen[1] WANDERS, so using
+            -- its live position started a fresh one-tile shaft at a new spot on every
+            -- call (observed: 96,91 then 95,98) - orphaned designations that connect
+            -- to nothing and can never be reached, hence zero tiles actually dug.
+            P.dig = P.dig or { u1.pos.x, u1.pos.y, u1.pos.z }
+            local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
+            local placed = 0
+            local DIG = df.tile_dig_designation
+            local function mark(x, y, z, kind)
+                if placed >= n then return end
+                pcall(function()
+                    local des = dfhack.maps.getTileFlags(x, y, z)
+                    if not des then return end
+                    local tt = dfhack.maps.getTileType(x, y, z)
+                    local sh = tt and df.tiletype.attrs[tt].shape
+                    -- only solid rock is diggable; flagging air or an existing floor
+                    -- silently achieves nothing
+                    if kind == DIG.Default and sh ~= df.tiletype_shape.WALL then return end
+                    des.dig = kind
+                    placed = placed + 1
+                end)
             end
+            -- shaft: down-stair at the surface, up/down stairs beneath it
+            mark(ox, oy, oz, DIG.DownStair)
+            local depth = 0
+            for dz = 1, 10 do
+                mark(ox, oy, oz - dz, DIG.UpDownStair)
+                depth = dz
+                if placed >= n then break end
+            end
+            -- rooms off each landing, spiralling out so successive calls extend the fort
+            -- rather than re-designating the same tiles
+            P.digring = (P.digring or 0)
+            for dz = 1, depth do
+                for r = 1 + P.digring, 3 + P.digring do
+                    for _, d in ipairs({ { r, 0 }, { -r, 0 }, { 0, r }, { 0, -r } }) do
+                        mark(ox + d[1], oy + d[2], oz - dz, DIG.Default)
+                        if placed >= n then break end
+                    end
+                    if placed >= n then break end
+                end
+                if placed >= n then break end
+            end
+            if placed > 0 then P.digring = P.digring + 1 end
+            c.designate_dig = c.designate_dig + placed
         end)
     elseif verb == "create_stockpile" then
         pcall(function()
             local n = tonumber(a[2]) or 1
-            if u1 then for i = 0, n - 1 do pcall(function()
-                local b = dfhack.buildings.constructBuilding{type = df.building_type.Stockpile,
-                    abstract = true, pos = {x = u1.pos.x + 3 + i * 3, y = u1.pos.y, z = u1.pos.z},
-                    width = 2, height = 2}
-                if b then c.create_stockpile = c.create_stockpile + 1 end
-            end) end end
+            for _ = 1, n do
+                local x, y, z = site(P.stock, 4)
+                if x then
+                    local ok = pcall(function()
+                        local b = dfhack.buildings.constructBuilding{
+                            type = df.building_type.Stockpile, abstract = true,
+                            pos = { x = x, y = y, z = z }, width = 2, height = 2 }
+                        if b then c.create_stockpile = c.create_stockpile + 1 end
+                    end)
+                    P.stock = P.stock + 1
+                    if not ok then break end
+                end
+            end
+        end)
+    elseif verb == "build_workshop" then
+        -- Without a workshop no manager order can ever be worked, so `workorders_done`
+        -- was structurally pinned at 0 and half the development weight was unearnable.
+        pcall(function()
+            local name = a[2] or "Carpenters"
+            local sub = df.workshop_type[name]
+            if sub == nil then sub = df.workshop_type.Carpenters end
+            local x, y, z = site(P.shop, 8)
+            if x then
+                local b = dfhack.buildings.constructBuilding{
+                    type = df.building_type.Workshop, subtype = sub,
+                    pos = { x = x, y = y, z = z } }
+                if b then c.build_workshop = c.build_workshop + 1 end
+                P.shop = P.shop + 1
+            end
         end)
     elseif verb == "add_workorder" then
         pcall(function()
-            local amount = tonumber(a[2]) or 10
+            local amount = tonumber(a[3]) or tonumber(a[2]) or 10
+            -- The old dispatch used job_type.CustomReaction with no reaction attached:
+            -- such an order can never be matched to work, so amount_left never fell and
+            -- the observable stayed 0 no matter what the agent did. Name a real job.
+            local jname = (a[2] and df.job_type[a[2]] ~= nil) and a[2] or "ConstructBed"
             local mo = df.manager_order:new()
-            mo.job_type = df.job_type.CustomReaction
-            mo.amount_left = amount; mo.amount_total = amount
+            mo.job_type = df.job_type[jname]
+            mo.amount_left = amount
+            mo.amount_total = amount
             w.manager_orders.all:insert("#", mo)
             c.add_workorder = c.add_workorder + 1
         end)

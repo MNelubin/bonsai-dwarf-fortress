@@ -56,7 +56,11 @@ def regime_key(*, scenario_id: str, save_sha256: str | None, df_version: str,
 # The action verbs the evaluator will dispatch deterministically. Anything else the
 # controller emits is ignored (logged), never executed — the agent cannot run
 # arbitrary DFHack. Kept in sync with bonsai-apply-actions.lua.
-ALLOWED_VERBS = {"set_labor", "designate_dig", "create_stockpile", "add_workorder", "advance"}
+# `build_workshop` exists because without a workshop no manager order can ever be
+# worked, so `workorders_done` was structurally pinned at 0 and half the development
+# weight was unearnable however well the agent played.
+ALLOWED_VERBS = {"set_labor", "designate_dig", "create_stockpile", "add_workorder",
+                 "build_workshop", "advance"}
 
 DF_DIR = os.environ.get("BONSAI_DF_DIR", "/srv/df-bonsai/current")
 ACTIONS_FILE = os.path.join(DF_DIR, "agent_actions.txt")

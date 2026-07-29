@@ -47,13 +47,22 @@ def chunk_plan(horizon_ticks: int, rounds: int = DEFAULT_ROUNDS) -> list[int]:
     return [base + (1 if i < extra else 0) for i in range(rounds)]
 
 
-def obs_to_episode_obs(d: dict, cohort_ids: set[str]) -> EpisodeObs:
+def obs_to_episode_obs(d: dict, cohort_ids: set[str], t0_solid: int | None = None) -> EpisodeObs:
     """Convert a raw OBS dict into the scored observation.
 
     Cohort survival is the intersection with the T0 id-set, so migrants and births
     cannot inflate it and the denominator stays pinned to the starting seven.
+
+    `dug_tiles` is derived from the drop in the fort's solid-tile count since T0 —
+    digging turns walls into floors. The observer emits `nsolid`; before it did, the
+    field parsed as 0 forever and a third of the development term was blind no matter
+    how much the agent mined.
     """
     live = set(d.get("cids", "").split(",")) - {""}
+    solid = int(d.get("nsolid", -1))
+    dug = int(d.get("dug", 0))
+    if t0_solid is not None and t0_solid >= 0 and solid >= 0:
+        dug = max(0, t0_solid - solid)
     return EpisodeObs(
         abs_tick=int(d.get("t", 0)),
         cohort_alive=len(cohort_ids & live) if cohort_ids else len(live),
@@ -61,7 +70,7 @@ def obs_to_episode_obs(d: dict, cohort_ids: set[str]) -> EpisodeObs:
         hunger_sum=int(d.get("hsum", 0)), thirst_sum=int(d.get("tsum", 0)),
         stress_danger=int(d.get("strdang", 0)),
         food_count=int(d.get("nfood", 0)), drink_count=int(d.get("ndrink", 0)),
-        buildings=int(d.get("nbuild", 0)), dug_tiles=int(d.get("dug", 0)),
+        buildings=int(d.get("nbuild", 0)), dug_tiles=dug,
         workorders_done=int(d.get("worders", 0)),
     )
 
@@ -96,14 +105,15 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
 
         t0_raw = sess.observe()
         cohort_ids = set(t0_raw.get("cids", "").split(",")) - {""}
-        t0 = obs_to_episode_obs(t0_raw, cohort_ids)
+        t0_solid = int(t0_raw.get("nsolid", -1))
+        t0 = obs_to_episode_obs(t0_raw, cohort_ids, t0_solid)
         _emit(recorder, "on_start", t0_raw, t0, horizon_ticks, rounds)
 
         cur_raw = t0_raw
         chunks = chunk_plan(horizon_ticks, rounds)
         remaining = horizon_ticks
         for i, chunk in enumerate(chunks):
-            cur = obs_to_episode_obs(cur_raw, cohort_ids)
+            cur = obs_to_episode_obs(cur_raw, cohort_ids, t0_solid)
             cobs = game_scorer.controller_observation(cur)
             cobs["round"] = i
             cobs["rounds_total"] = len(chunks)
@@ -134,10 +144,10 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
                   applied, err, decide_ms, cur_raw)
             # The metric track is FREE: the driver already had to observe here, so the
             # recorder samples the scored observables at no extra RPC cost.
-            post = obs_to_episode_obs(cur_raw, cohort_ids)
+            post = obs_to_episode_obs(cur_raw, cohort_ids, t0_solid)
             _emit(recorder, "on_post_round", i, post.abs_tick, post)
 
-        h = obs_to_episode_obs(cur_raw, cohort_ids)
+        h = obs_to_episode_obs(cur_raw, cohort_ids, t0_solid)
         _emit(recorder, "on_end", h)
         return t0, h
     finally:

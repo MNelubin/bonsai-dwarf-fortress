@@ -3,6 +3,7 @@ faked, so these run anywhere — no live Dwarf Fortress needed."""
 
 import pytest
 
+from bonsai_lab_agent import game_scorer
 from bonsai_lab_agent import stepped_episode as se
 from bonsai_lab_agent.session import SessionError
 
@@ -10,10 +11,11 @@ from bonsai_lab_agent.session import SessionError
 class FakeSession:
     """A fort that develops one building per applied action and burns food over time."""
 
-    def __init__(self, cohort=("11", "12", "13"), die_after=None):
+    def __init__(self, cohort=("11", "12", "13"), die_after=None, solid=None):
         self.cohort = list(cohort)
         self.die_after = die_after
         self.tick = 2016801
+        self.solid = solid          # None = observer emits no nsolid (old build)
         self.buildings = 1
         self.advances = []
         self.applied = []
@@ -49,6 +51,7 @@ class FakeSession:
             "strdang": "0", "nfood": "12", "ndrink": "12",
             "nbuild": str(self.buildings), "worders": "0",
             "cids": ",".join(alive),
+            **({"nsolid": str(self.solid)} if self.solid is not None else {}),
         }
 
 
@@ -235,3 +238,57 @@ def test_suppress_wildlife_is_forwarded():
     se.run_stepped_episode(lambda obs: [], horizon_ticks=300, rounds=1,
                            session=s, suppress_wildlife=True)
     assert s.wildlife_suppressed
+
+
+# ------------------------------------------------------------------ development signals
+def test_dug_tiles_comes_from_the_drop_in_solid_rock():
+    """Digging turns walls into floors, so a falling solid-tile count IS excavation.
+    Regression: the observer never emitted this and dug_tiles parsed as 0 forever, which
+    left a third of the 50%-weighted development term blind however much the agent mined."""
+    class Mining(FakeSession):
+        def advance(self, ticks):
+            self.solid -= 40                       # dwarves chew through rock
+            return super().advance(ticks)
+
+    s = Mining(solid=10_000)
+    t0, h = se.run_stepped_episode(lambda o: [{"command": "designate_dig", "args": [50]}],
+                                   horizon_ticks=1200, rounds=4, session=s)
+    assert t0.dug_tiles == 0
+    assert h.dug_tiles == 160                      # 4 rounds x 40 tiles
+
+
+def test_dug_tiles_never_goes_negative():
+    """Construction ADDS walls. A fort that built more than it dug must read 0, not a
+    negative that would flatter the development score."""
+    class Building(FakeSession):
+        def advance(self, ticks):
+            self.solid += 25
+            return super().advance(ticks)
+
+    _, h = se.run_stepped_episode(lambda o: [], horizon_ticks=600, rounds=2,
+                                  session=Building(solid=1000))
+    assert h.dug_tiles == 0
+
+
+def test_recordings_without_nsolid_still_score():
+    """Older observers emit no nsolid; the field must degrade to 0, not crash."""
+    _, h = se.run_stepped_episode(lambda o: [], horizon_ticks=600, rounds=2,
+                                  session=FakeSession(solid=None))
+    assert h.dug_tiles == 0
+
+
+def test_build_workshop_is_dispatched():
+    """Without a workshop no manager order can be worked, so this verb is what makes the
+    workorders half of the development term earnable at all."""
+    s = FakeSession()
+    se.run_stepped_episode(
+        lambda o: [{"command": "build_workshop", "args": ["Carpenters"]},
+                   {"command": "add_workorder", "args": ["ConstructBed", 5]}],
+        horizon_ticks=600, rounds=2, session=s)
+    verbs = [a["verb"] for batch in s.applied for a in batch]
+    assert verbs == ["build_workshop", "add_workorder"] * 2
+
+
+def test_controller_sees_the_new_verb():
+    obs = game_scorer.controller_observation(game_scorer.PINNED_T0)
+    assert "build_workshop" in obs["available_actions"]
