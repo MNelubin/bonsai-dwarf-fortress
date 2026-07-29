@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<title>Bonsai face-to-face</title>
+<!--
+  Side-by-side comparison of two recorded episodes.
+
+  Two viewers share one timeline, so the same tick is on screen in both panes. The
+  honesty guardrails live here as loudly as in compare.py:
+
+    * a regime_key mismatch is refused, not rendered - different save, engine build,
+      horizon or metric weighting puts the two runs on different scales;
+    * one episode of a non-reproducible game is an anecdote. Paste each model's K-run
+      scores and the header says plainly whether the gap clears the noise.
+
+  Usage: compare.html?a=<rec-url>&b=<rec-url>[&al=label&bl=label]
+-->
+<style>
+  :root { --bg:#12110f; --panel:#1a1815; --line:#2e2a25; --ink:#d8d0c4;
+          --dim:#8b8377; --accent:#c9a227; --bad:#b4574a; --good:#6d9b5a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); height:100vh;
+         font:13px/1.5 ui-monospace,"SF Mono",Consolas,monospace;
+         display:grid; grid-template-rows:auto auto 1fr; overflow:hidden; }
+  header { display:flex; gap:14px; align-items:center; flex-wrap:wrap;
+           padding:9px 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+  h1 { font-size:13px; margin:0; letter-spacing:.06em; }
+  #verdict { padding:8px 14px; background:#161410; border-bottom:1px solid var(--line);
+             font-size:12px; }
+  #verdict .sep { color:var(--good); } #verdict .same { color:var(--accent); }
+  #verdict .warn { color:var(--bad); }
+  .panes { display:grid; grid-template-columns:1fr 1fr; min-height:0; }
+  .pane { display:flex; flex-direction:column; min-width:0; border-right:1px solid var(--line); }
+  .pane h2 { margin:0; padding:6px 10px; font-size:12px; background:var(--panel);
+             border-bottom:1px solid var(--line); font-weight:600; }
+  iframe { flex:1; border:0; width:100%; background:var(--bg); }
+  input[type=range] { width:320px; accent-color:var(--accent); }
+  input[type=text] { background:#232019; color:var(--ink); border:1px solid var(--line);
+                     padding:3px 6px; font:inherit; border-radius:3px; width:150px; }
+  button { background:#232019; color:var(--ink); border:1px solid var(--line);
+           padding:4px 10px; font:inherit; cursor:pointer; border-radius:3px; }
+  button:hover { border-color:var(--accent); }
+  .meta { color:var(--dim); font-size:12px; }
+  .fill { display:grid; place-items:center; height:100%; padding:40px; text-align:center;
+          color:var(--dim); }
+</style>
+
+<header>
+  <h1>FACE-TO-FACE</h1>
+  <div><button id="play">▶</button></div>
+  <input type="range" id="scrub" min="0" max="0" value="0">
+  <span id="pos" class="meta">—</span>
+  <span class="meta">K-run scores:</span>
+  <input type="text" id="sa" placeholder="A: 0.83,0.79,0.85">
+  <input type="text" id="sb" placeholder="B: 0.41,0.38,0.44">
+  <button id="judge">judge</button>
+</header>
+<div id="verdict" class="meta">Load two recordings with <code>?a=…&amp;b=…</code></div>
+<div class="panes">
+  <div class="pane"><h2 id="ha">A</h2><iframe id="fa"></iframe></div>
+  <div class="pane"><h2 id="hb">B</h2><iframe id="fb"></iframe></div>
+</div>
+
+<script>
+"use strict";
+const q = new URLSearchParams(location.search);
+const A = q.get("a"), B = q.get("b");
+const AL = q.get("al") || "A", BL = q.get("bl") || "B";
+const $ = (id) => document.getElementById(id);
+let playing = null;
+
+$("ha").textContent = AL; $("hb").textContent = BL;
+
+if (!A || !B) {
+  document.querySelector(".panes").innerHTML =
+    `<div class="fill" style="grid-column:1/-1"><div>
+      <strong>Pass two recordings</strong><br><br>
+      <code>compare.html?a=run1.rec.jsonl.gz&amp;b=run2.rec.jsonl.gz&amp;al=k2-v7&amp;bl=champion</code>
+      <br><br>Serve this directory over http — file:// blocks fetch.
+    </div></div>`;
+} else {
+  $("fa").src = `viewer.html?rec=${encodeURIComponent(A)}`;
+  $("fb").src = `viewer.html?rec=${encodeURIComponent(B)}`;
+  // A recording is fetched AFTER the iframe's load event, so waiting on `load` would
+  // wire up an empty viewer. Each pane announces itself when its recording is parsed.
+  let ready = 0;
+  window.addEventListener("message", (e) => {
+    if (e.data && e.data.type === "bonsai:loaded" && ++ready === 2) wire();
+  });
+  setTimeout(() => { if (ready < 2) wire(); }, 8000);   // don't hang on a dead pane
+}
+
+const win = (f) => $(f).contentWindow.BONSAI;
+
+function wire() {
+  const a = win("fa"), b = win("fb");
+  if (!a || !b) {
+    $("verdict").innerHTML =
+      `<span class="warn">A pane failed to load its recording.</span> ` +
+      `Check the file paths and that this directory is served over http.`;
+    return;
+  }
+  const rk = [a.meta && a.meta.regime_key, b.meta && b.meta.regime_key];
+  if (rk[0] !== rk[1]) {
+    $("verdict").innerHTML =
+      `<span class="warn">REFUSED — different scoring regimes (${rk[0]} vs ${rk[1]}).</span> ` +
+      `Different save, engine build, horizon or metric weighting: these numbers are not ` +
+      `on the same scale, so a side-by-side would mislead.`;
+    return;
+  }
+  const n = Math.min(a.frames.length, b.frames.length);
+  if (!n) {
+    $("verdict").innerHTML = `<span class="warn">Neither recording carries a map track.</span> ` +
+      `Curves and decisions are still readable in each pane.`;
+    return;
+  }
+  $("scrub").max = n - 1;
+  if (a.frames.length !== b.frames.length) {
+    $("verdict").innerHTML = `<span class="warn">Unequal frame counts ` +
+      `(${a.frames.length} vs ${b.frames.length})</span> — timeline clipped to ${n}.`;
+  } else {
+    $("verdict").innerHTML = `Regime <b>${rk[0]}</b> · ${n} frames each · ` +
+      `<span class="same">paste K-run scores above to get a verdict</span>`;
+  }
+  sync(0);
+}
+
+function sync(i) {
+  i = +i;
+  $("scrub").value = i;
+  for (const f of ["fa", "fb"]) {
+    const w = win(f);
+    if (w && w.frames.length) w.show(Math.min(i, w.frames.length - 1));
+  }
+  const a = win("fa");
+  $("pos").textContent = a && a.frames[i]
+    ? `frame ${i + 1} · tick ${a.frames[i].tick}` : `frame ${i + 1}`;
+}
+
+$("scrub").oninput = (e) => sync(e.target.value);
+$("play").onclick = () => {
+  if (playing) { clearInterval(playing); playing = null; $("play").textContent = "▶"; return; }
+  $("play").textContent = "❚❚";
+  playing = setInterval(() => {
+    const i = +$("scrub").value;
+    if (i >= +$("scrub").max) { clearInterval(playing); playing = null; $("play").textContent = "▶"; return; }
+    sync(i + 1);
+  }, 400);
+};
+document.onkeydown = (e) => {
+  if (e.key === "ArrowRight") sync(+$("scrub").value + 1);
+  else if (e.key === "ArrowLeft") sync(+$("scrub").value - 1);
+  else if (e.key === " ") { e.preventDefault(); $("play").click(); }
+};
+
+// ---- the distribution verdict: mirrors compare.py's rule exactly ----
+const nums = (s) => s.split(/[,\s]+/).map(Number).filter((x) => !Number.isNaN(x));
+const median = (x) => { const s = [...x].sort((p, q) => p - q); const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+
+$("judge").onclick = () => {
+  const av = nums($("sa").value), bv = nums($("sb").value);
+  if (!av.length || !bv.length) {
+    $("verdict").innerHTML = `<span class="warn">One episode of a non-reproducible game is ` +
+      `an anecdote, not a measurement.</span> Paste each model's K-run scores to get a verdict.`;
+    return;
+  }
+  const am = median(av), bm = median(bv);
+  const spread = (x) => x.length > 1 ? Math.max(...x) - Math.min(...x) : 0;
+  const gap = Math.abs(am - bm), noise = Math.max(spread(av), spread(bv));
+  const enough = Math.min(av.length, bv.length) >= 3;
+  const sep = gap > noise && enough;
+  const winner = am > bm ? AL : BL;
+  $("verdict").innerHTML = sep
+    ? `<span class="sep">${winner} wins</span> — medians ${am.toFixed(3)} vs ${bm.toFixed(3)}; ` +
+      `gap ${gap.toFixed(3)} clears the wider within-model spread ${noise.toFixed(3)} ` +
+      `(n=${av.length}/${bv.length}).`
+    : `<span class="same">No separation</span> — medians ${am.toFixed(3)} vs ${bm.toFixed(3)}; ` +
+      `gap ${gap.toFixed(3)} is ${enough ? "inside" : "unverifiable against"} the within-model ` +
+      `spread ${noise.toFixed(3)}` +
+      (enough ? ". These two are not distinguishable on this evidence — raise K."
+              : ` (need at least 3 runs a side, have ${av.length}/${bv.length}).`);
+};
+</script>

@@ -1,0 +1,7 @@
+# Built from Dwarf Fortress's own asset files, which are proprietary (Bay 12 / Kitfox).
+# They are NOT redistributable, so they stay out of the repo — build them locally from
+# your own DF install with the pipeline in README.md.
+atlas.png
+sprites.json
+tilemap.json
+viewer.html

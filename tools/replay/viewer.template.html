@@ -119,14 +119,29 @@
 <div id="tip"></div>
 
 <script id="enums" type="application/json">__ENUMS__</script>
+<script id="sprites" type="application/json">__SPRITES__</script>
+<script id="tilemap" type="application/json">__TILEMAP__</script>
 <script>
 "use strict";
 const ENUMS = JSON.parse(document.getElementById("enums").textContent);
 
 // ---------------------------------------------------------------- tile appearance
-// Glyph from SHAPE, colour from MATERIAL - DF's own decomposition. An unrecognised
-// shape falls through to '?' rather than vanishing, so a DF upgrade that adds tile
-// types shows up as visible noise instead of silent holes in the fort.
+// Sprites come from the game's OWN graphics raws (see tools/replay/extract_sprites.py):
+// [TILE_GRAPHICS:PAGE:col:row:TOKEN] packed into one atlas, and tilemap.json says which
+// token family each tiletype uses. Nothing about the look is invented here.
+//
+// The glyph fallback below is only for tiletypes with no sprite (94% are mapped) and
+// for recordings viewed without an atlas. Glyph from SHAPE, colour from MATERIAL — DF's
+// own decomposition — so an unmapped tile shows as visible terrain, not a hole.
+const SPRITES = JSON.parse(document.getElementById("sprites").textContent || "null");
+const TILEMAP = JSON.parse(document.getElementById("tilemap").textContent || "null");
+const ATLAS = new Image();
+let atlasReady = false;
+if (SPRITES && SPRITES.atlas) {
+  ATLAS.onload = () => { atlasReady = true; if (FRAMES.length) drawMap(); };
+  ATLAS.src = SPRITES.atlas;
+}
+
 const GLYPH = {
   EMPTY: " ", NONE: " ", ENDLESS_PIT: " ",
   FLOOR: ".", RAMP_TOP: ".", BROOK_TOP: "≈", BROOK_BED: "=",
@@ -146,6 +161,93 @@ const COLOR = {
   HFS: "#8a4fa8", UNDERWORLD_GATE: "#8a4fa8", FEATURE: "#4aa8a0",
 };
 const tileInfo = (tt) => ENUMS.tt[tt] || ["NONE", "NONE", "tiletype " + tt];
+
+// Deterministic per-cell variant pick. DF varies floors and walls for texture; using a
+// position hash (rather than a random) keeps a tile looking the same in every frame,
+// otherwise the whole fort would shimmer as you scrub the timeline.
+function vhash(x, y, z) {
+  let h = (x * 73856093) ^ (y * 19349663) ^ (z * 83492791);
+  h = (h ^ (h >>> 13)) >>> 0;
+  return h;
+}
+
+const DIRS = [["N", 0, -1], ["S", 0, 1], ["W", -1, 0], ["E", 1, 0]];
+
+function spriteToken(tt, x, y, z, f, W, H, zi) {
+  const m = TILEMAP && TILEMAP.tiles[tt];
+  if (!m) return null;
+  const fam = m.f, kind = m.k, toks = SPRITES.tokens;
+  const pick = (...cands) => cands.find((c) => c && toks[c]) || null;
+
+  if (kind === "plain") return pick(fam);
+
+  if (kind === "floor9") {
+    // _1.._9 is a 3x3 blend set, not variants: 5 is the interior tile and the rest are
+    // edges. Interior + its B/C/D alternates is the honest choice until we also record
+    // neighbouring floor materials.
+    const alt = ["_5", "_5B", "_5C", "_5D"][vhash(x, y, z) & 3];
+    return pick(fam + alt, fam + "_5", fam + "_1");
+  }
+
+  if (kind === "stair") {
+    const shape = tileInfo(tt)[0];
+    const suf = shape === "STAIR_UP" ? "_UP" : shape === "STAIR_DOWN" ? "_DOWN" : "_UPDOWN";
+    return pick(fam + suf, fam + "_UPDOWN");
+  }
+
+  const solid = (nx, ny) => {
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H) return true;   // off-map reads as solid
+    const n = f.grid[zi * W * H + ny * W + nx];
+    const nm = TILEMAP.tiles[n];
+    return !!nm && (nm.k === "wall" || nm.k === "tree");
+  };
+  const on = DIRS.filter(([, dx, dy]) => solid(x + dx, y + dy)).map(([d]) => d);
+
+  if (kind === "wall") {
+    // STONE_WALL_N_S_W_E, with _1.._4 texture variants on the common forms
+    const key = on.join("_");
+    const v = (vhash(x, y, z) % 4) + 1;
+    return pick(fam + "_" + key + "_" + v, fam + "_" + key, fam + "_N_S_W_E_1",
+                fam + "_N_S_W_E", fam + "_N_S_1", fam + "_N_S");
+  }
+  if (kind === "tree") {
+    // TREE_BRANCH_NSWE — same idea, but CONCATENATED rather than underscore-separated
+    const key = on.join("");
+    return pick(fam + "_" + key, fam, fam + "_NSWE");
+  }
+  if (kind === "ramp") {
+    // ramps name their neighbours by corner
+    const c = [];
+    if (solid(x - 1, y - 1)) c.push("NW");
+    if (solid(x + 1, y - 1)) c.push("NE");
+    if (solid(x - 1, y + 1)) c.push("SW");
+    if (solid(x + 1, y + 1)) c.push("SE");
+    return pick(fam + "_" + c.join("_"), fam + "_OTHER", fam.replace("_WITH_WALL", "_OTHER"));
+  }
+  return null;
+}
+
+// Tinting: DF ships many terrain sprites desaturated and colours them by the tile's
+// material (the raws call these PALETTE sprites). Tinted results are cached per
+// token+colour — without the cache this is a per-tile offscreen composite every frame.
+const tintCache = new Map();
+function tintedSprite(token, color) {
+  const key = token + "|" + color;
+  let c = tintCache.get(key);
+  if (c) return c;
+  const T = SPRITES.tile, [sx, sy] = SPRITES.tokens[token];
+  c = document.createElement("canvas");
+  c.width = c.height = T;
+  const g = c.getContext("2d");
+  g.drawImage(ATLAS, sx * T, sy * T, T, T, 0, 0, T, T);
+  g.globalCompositeOperation = "multiply";
+  g.fillStyle = color;
+  g.fillRect(0, 0, T, T);
+  g.globalCompositeOperation = "destination-in";     // keep the sprite's own alpha
+  g.drawImage(ATLAS, sx * T, sy * T, T, T, 0, 0, T, T);
+  tintCache.set(key, c);
+  return c;
+}
 
 // ---------------------------------------------------------------- state
 let EV = [], FRAMES = [], META = null, ROUNDS = [], STATS = [];
@@ -224,6 +326,24 @@ function build() {
   }
   drawCharts();
   show(0);
+
+  // Small deliberate API for embedders (the side-by-side comparison view drives two
+  // of these from one timeline). Top-level `let` bindings are NOT window properties,
+  // so they have to be published explicitly; and the recording arrives asynchronously
+  // after the iframe's load event, so the parent needs a signal rather than a guess.
+  window.BONSAI = {
+    get frames() { return FRAMES; },
+    get meta() { return META; },
+    get cur() { return cur; },
+    show,
+  };
+  try {
+    if (window.parent !== window) {
+      window.parent.postMessage(
+        { type: "bonsai:loaded", frames: FRAMES.length,
+          regime_key: META.regime_key, episode_id: META.episode_id }, "*");
+    }
+  } catch { /* cross-origin embed: the parent will fall back to polling */ }
 }
 
 // ---------------------------------------------------------------- rendering
@@ -248,15 +368,31 @@ function drawMap() {
   ctx.fillStyle = "#0d0c0b"; ctx.fillRect(0, 0, cv.width, cv.height);
   ctx.font = `${px}px ui-monospace, Consolas, monospace`;
   ctx.textBaseline = "top"; ctx.textAlign = "center";
+  ctx.imageSmoothingEnabled = false;
+  const sprites = atlasReady && SPRITES && TILEMAP;
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const tt = f.grid[zi * W * H + y * W + x];
       const [shape, mat] = tileInfo(tt);
+      if (sprites) {
+        const tok = spriteToken(tt, x + f.origin[0], y + f.origin[1], curZ, f, W, H, zi);
+        if (tok) {
+          const T = SPRITES.tile, [ax, ay] = SPRITES.tokens[tok];
+          const m = TILEMAP.tiles[tt];
+          if (m.t) {
+            ctx.drawImage(tintedSprite(tok, COLOR[mat] || "#8d8880"),
+                          0, 0, T, T, x * px, y * px, px, px);
+          } else {
+            ctx.drawImage(ATLAS, ax * T, ay * T, T, T, x * px, y * px, px, px);
+          }
+          continue;
+        }
+      }
       const g = GLYPH[shape] ?? "?";
       if (g === " ") continue;
       ctx.fillStyle = COLOR[mat] || "#6b665e";
-      if (shape === "WALL") {                     // walls read better as solid blocks
+      if (shape === "WALL") {
         ctx.fillRect(x * px, y * px, px, px);
       } else {
         ctx.fillText(g, x * px + px / 2, y * px);
