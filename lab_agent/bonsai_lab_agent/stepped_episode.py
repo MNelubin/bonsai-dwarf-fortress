@@ -132,6 +132,10 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
 
             _emit(recorder, "on_round", i, cobs, raw_actions, clean, dispatch,
                   applied, err, decide_ms, cur_raw)
+            # The metric track is FREE: the driver already had to observe here, so the
+            # recorder samples the scored observables at no extra RPC cost.
+            post = obs_to_episode_obs(cur_raw, cohort_ids)
+            _emit(recorder, "on_post_round", i, post.abs_tick, post)
 
         h = obs_to_episode_obs(cur_raw, cohort_ids)
         _emit(recorder, "on_end", h)
