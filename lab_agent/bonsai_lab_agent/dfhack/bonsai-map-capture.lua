@@ -137,8 +137,12 @@ pcall(function()
     end)
     local dead = 0
     pcall(function() if dfhack.units.isDead(u) then dead = 1 end end)
-    us[#us+1] = string.format('[%d,%d,%d,%d,%d,%d,%d]',
-      u.id, u.pos.x, u.pos.y, u.pos.z, u.profession, job, dead)
+    -- Citizen flag: without it a viewer cannot tell the seven dwarves from the
+    -- wandering wildlife, since both can carry profession STANDARD.
+    local cit = 0
+    pcall(function() if dfhack.units.isCitizen(u) then cit = 1 end end)
+    us[#us+1] = string.format('[%d,%d,%d,%d,%d,%d,%d,%d]',
+      u.id, u.pos.x, u.pos.y, u.pos.z, u.profession, job, dead, cit)
   end
 end)
 
