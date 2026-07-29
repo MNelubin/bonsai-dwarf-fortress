@@ -92,9 +92,20 @@ def controller_observation(t0: EpisodeObs) -> dict:
 
 def sanitize_actions(raw_actions: list[dict]) -> list[dict]:
     """Keep only well-formed, allow-listed action intents. The evaluator never
-    trusts the agent's actions verbatim; this is the anti-forgery gate."""
+    trusts the agent's actions verbatim; this is the anti-forgery gate.
+
+    The input comes from untrusted code and may be ANY shape — a bare int, a string,
+    None. Anything that is not a list/tuple of dicts yields no actions rather than
+    raising, so a malformed controller costs the agent its actions, not the episode.
+    A single bare dict is accepted as a one-action list (a very natural thing for a
+    policy to return, and what controller_invoke already normalizes).
+    """
+    if isinstance(raw_actions, dict):
+        raw_actions = [raw_actions]
+    if not isinstance(raw_actions, (list, tuple)):
+        return []
     clean = []
-    for a in raw_actions or []:
+    for a in raw_actions:
         if not isinstance(a, dict):
             continue
         verb = a.get("command") or a.get("name")

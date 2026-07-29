@@ -1,6 +1,8 @@
 """Tests for the v4 gameplay scorer: action sanitation (anti-forgery) and the
 K-run scoring/aggregation flow (episode driving mocked — no live DF needed)."""
 
+import pytest
+
 from bonsai_lab_agent import game_scorer
 from bonsai_lab_agent.scoring import EpisodeObs, raw_components
 
@@ -18,6 +20,22 @@ def test_sanitize_actions_allowlist():
     assert [a["verb"] for a in clean] == \
         ["set_labor", "designate_dig", "create_stockpile", "add_workorder"]
     assert clean[-1]["args"] == []
+
+
+@pytest.mark.parametrize("garbage", [None, 42, "not a list", 3.14, True, {"nope": 1}])
+def test_sanitize_actions_survives_any_shape(garbage):
+    """The controller is untrusted code — it can return literally anything. A bad shape
+    must cost the agent its actions, never raise into the evaluator. (Regression: a bare
+    int used to raise TypeError out of the anti-forgery gate.)"""
+    assert game_scorer.sanitize_actions(garbage) == []
+
+
+def test_sanitize_actions_accepts_a_bare_dict():
+    """Returning one action unwrapped is natural for a policy; it must not be silently
+    dropped, but the verb is still allow-listed."""
+    assert game_scorer.sanitize_actions({"command": "set_labor", "args": ["MINE", True]}) == \
+        [{"verb": "set_labor", "args": ["MINE", True]}]
+    assert game_scorer.sanitize_actions({"command": "rm -rf", "args": ["/"]}) == []
 
 
 def test_write_actions_format(tmp_path, monkeypatch):
