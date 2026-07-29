@@ -32,36 +32,38 @@ import sys
 RULES: list[tuple[str, tuple[str, ...] | None, str, str, bool]] = [
     # shape,        materials (None = any),                family,               kind,     tint
     ("WALL",  ("SOIL",),                                   "SOIL_WALL",          "wall",   False),
-    ("WALL",  ("STONE", "LAVA_STONE"),                     "STONE_WALL",         "wall",   True),
-    ("WALL",  ("MINERAL",),                                "ORE_VEIN_WALL",      "wall",   True),
+    ("WALL",  ("STONE", "LAVA_STONE"),                     "STONE_WALL",         "wall",   False),
+    ("WALL",  ("MINERAL",),                                "ORE_VEIN_WALL",      "wall",   False),
     ("WALL",  ("ROOT",),                                   "ROOT_WALL",          "wall",   False),
     ("WALL",  ("TREE",),                                   "TREE_BASE_TRUNK",    "tree",   False),
     ("WALL",  ("FROZEN_LIQUID",),                          "ICE_WALL",           "wall",   False),
     ("WALL",  ("CONSTRUCTION",),                           "ROCK_BLOCKS_WALL",   "wall",   True),
     ("WALL",  ("MAGMA",),                                  "MAGMA_WALL",         "wall",   False),
     ("WALL",  ("MUSHROOM", "PLANT"),                       "WOODEN_WALL",        "wall",   False),
-    ("WALL",  None,                                        "STONE_WALL",         "wall",   True),
+    ("WALL",  None,                                        "STONE_WALL",         "wall",   False),
 
-    ("FORTIFICATION", None,                                "FORTIFICATION",      "plain",  True),
+    ("FORTIFICATION", None,                                "FORTIFICATION",      "plain",  False),
 
+    # Grass is drawn from the GRASS page via [PLANT_GRAPHICS], not from the FLOORS
+    # page. Using the TILE_GRAPHICS "GRASS_*" tokens picked entirely wrong sprites.
     ("FLOOR", ("GRASS_LIGHT", "GRASS_DARK", "GRASS_DRY", "GRASS_DEAD"),
-                                                           "GRASS",              "floor9", False),
+                                                           "PLANT_GRASS",        "var4",   False),
     ("FLOOR", ("SOIL",),                                   "DIRT_FLOOR",         "floor9", False),
-    ("FLOOR", ("STONE", "LAVA_STONE", "MINERAL"),          "STONE_FLOOR",        "floor9", True),
+    ("FLOOR", ("STONE", "LAVA_STONE", "MINERAL"),          "STONE_FLOOR",        "floor9", False),
     ("FLOOR", ("CONSTRUCTION",),                           "FLOOR_STONE_BLOCK",  "plain",  True),
     ("FLOOR", ("ASHES",),                                  "FLOOR_ASHES",        "plain",  False),
     ("FLOOR", ("FROZEN_LIQUID",),                          "SMOOTH_ICE_FLOOR",   "plain",  False),
     ("FLOOR", ("TREE",),                                   "WOOD_FLOOR",         "plain",  False),
-    ("FLOOR", None,                                        "STONE_FLOOR",        "floor9", True),
+    ("FLOOR", None,                                        "STONE_FLOOR",        "floor9", False),
 
-    ("PEBBLES", None,                                      "PEBBLES_FLOOR",      "floor9", True),
-    ("BOULDER", None,                                      "BOULDER",            "plain",  True),
+    ("PEBBLES", None,                                      "PEBBLES_FLOOR",      "floor9", False),
+    ("BOULDER", None,                                      "BOULDER",            "plain",  False),
 
     ("RAMP",  ("GRASS_LIGHT", "GRASS_DARK", "GRASS_DRY", "GRASS_DEAD"),
                                                            "GRASS_RAMP_WITH_WALL", "ramp", False),
     ("RAMP",  ("SOIL",),                                   "SOIL_RAMP_WITH_WALL",  "ramp", False),
     ("RAMP",  ("TREE",),                                   "TREE_BASE_TRUNK",      "tree", False),
-    ("RAMP",  None,                                        "STONE_RAMP_WITH_WALL", "ramp", True),
+    ("RAMP",  None,                                        "STONE_RAMP_WITH_WALL", "ramp", False),
 
     ("STAIR_UP",     ("SOIL",),                            "DIRT_STAIR",         "stair",  False),
     ("STAIR_DOWN",   ("SOIL",),                            "DIRT_STAIR",         "stair",  False),
@@ -76,8 +78,8 @@ RULES: list[tuple[str, tuple[str, ...] | None, str, str, bool]] = [
     ("BRANCH",       None,                                 "TREE_BRANCH",        "tree",   False),
     ("TRUNK_BRANCH", None,                                 "TREE_BRANCH",        "tree",   False),
     ("TWIG",         None,                                 "TREE_LEAFLESS_TWIGS", "tree",  False),
-    ("SAPLING",      None,                                 "TREE_SAPLING",       "plain",  False),
-    ("SHRUB",        None,                                 "SHRUB_SINGLE",       "plain",  False),
+    ("SAPLING",      None,                                 "PLANT_SAPLING",      "plain",  False),
+    ("SHRUB",        None,                                 "PLANT_SHRUB",        "plain",  False),
 
     ("BROOK_TOP",    None,                                 "BROOK_TOP",          "plain",  False),
     ("BROOK_BED",    None,                                 "BROOK_BED",          "plain",  False),
@@ -92,6 +94,7 @@ KIND_PROBES = {                      # a token that must exist for the family to
     "tree": ("_NS", "_N", ""),
     "ramp": ("_NW_NE", "_NW", "_N"),
     "floor9": ("_5", "_1"),
+    "var4": ("_1", "_2"),
     "stair": ("_UP",),
     "plain": ("",),
 }

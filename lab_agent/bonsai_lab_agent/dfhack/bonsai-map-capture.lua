@@ -141,8 +141,10 @@ pcall(function()
     -- wandering wildlife, since both can carry profession STANDARD.
     local cit = 0
     pcall(function() if dfhack.units.isCitizen(u) then cit = 1 end end)
-    us[#us+1] = string.format('[%d,%d,%d,%d,%d,%d,%d,%d]',
-      u.id, u.pos.x, u.pos.y, u.pos.z, u.profession, job, dead, cit)
+    -- race is what lets a viewer draw the right creature sprite; without it every
+    -- animal has to be a generic marker
+    us[#us+1] = string.format('[%d,%d,%d,%d,%d,%d,%d,%d,%d]',
+      u.id, u.pos.x, u.pos.y, u.pos.z, u.profession, job, dead, cit, u.race or -1)
   end
 end)
 

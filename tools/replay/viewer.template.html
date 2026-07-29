@@ -173,20 +173,50 @@ function vhash(x, y, z) {
 
 const DIRS = [["N", 0, -1], ["S", 0, 1], ["W", -1, 0], ["E", 1, 0]];
 
+function variantOf(tt) {
+  const v = ENUMS.tt[tt];
+  return v && v.length > 3 && v[3] >= 0 ? v[3] : null;
+}
+
 function spriteToken(tt, x, y, z, f, W, H, zi) {
   const m = TILEMAP && TILEMAP.tiles[tt];
   if (!m) return null;
   const fam = m.f, kind = m.k, toks = SPRITES.tokens;
   const pick = (...cands) => cands.find((c) => c && toks[c]) || null;
+  const gx = x, gy = y;                       // already map coordinates
+  const lx = x - f.origin[0], ly = y - f.origin[1];
+  const varIdx = variantOf(tt);
 
   if (kind === "plain") return pick(fam);
 
+  if (kind === "var4") {
+    // DF's own variant index, not a hash. Eight grass tiletypes are four sprites x two
+    // shades; hashing them collapsed the game's pattern into uniform noise.
+    const i = varIdx !== null ? varIdx : (vhash(gx, gy, z) & 3);
+    return pick(`${fam}_${i + 1}`, fam + "_1");
+  }
+
   if (kind === "floor9") {
-    // _1.._9 is a 3x3 blend set, not variants: 5 is the interior tile and the rest are
-    // edges. Interior + its B/C/D alternates is the honest choice until we also record
-    // neighbouring floor materials.
-    const alt = ["_5", "_5B", "_5C", "_5D"][vhash(x, y, z) & 3];
-    return pick(fam + alt, fam + "_5", fam + "_1");
+    // _1.._9 is a 3x3 EDGE-BLEND patch on the sheet, not nine variants: _5 is the solid
+    // centre and the eight around it feather outwards. Drawing _5 everywhere is what
+    // made an isolated stone tile sit on grass as a hard square.
+    const famAt = (dx, dy) => {
+      const nx = lx + dx, ny = ly + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) return null;
+      const m2 = TILEMAP.tiles[f.grid[zi * W * H + ny * W + nx]];
+      return m2 ? m2.f : null;
+    };
+    const n = famAt(0, -1) !== fam, so = famAt(0, 1) !== fam;
+    const w = famAt(-1, 0) !== fam, e = famAt(1, 0) !== fam;
+    // A lone tile has every side different; a corner edge would erase it almost
+    // entirely, so an isolated patch keeps the solid centre.
+    let idx;
+    if (n && so && w && e) idx = 5;
+    else idx = ((n ? 1 : so ? 3 : 2) - 1) * 3 + (w ? 1 : e ? 3 : 2);
+    if (idx !== 5) return pick(`${fam}_${idx}`, fam + "_5");
+    const alts = ["_5", "_5B", "_5C", "_5D"];
+    const i = varIdx !== null ? varIdx : (vhash(gx, gy, z) & 3);
+    return pick(fam + alts[i & 3], fam + "_5", fam + "_1");
   }
 
   if (kind === "stair") {
@@ -196,33 +226,27 @@ function spriteToken(tt, x, y, z, f, W, H, zi) {
   }
 
   const solid = (nx, ny) => {
-    if (nx < 0 || ny < 0 || nx >= W || ny >= H) return true;   // off-map reads as solid
-    const n = f.grid[zi * W * H + ny * W + nx];
-    const nm = TILEMAP.tiles[n];
+    if (nx < 0 || ny < 0 || nx >= W || ny >= H) return true;
+    const nm = TILEMAP.tiles[f.grid[zi * W * H + ny * W + nx]];
     return !!nm && (nm.k === "wall" || nm.k === "tree");
   };
-  const on = DIRS.filter(([, dx, dy]) => solid(x + dx, y + dy)).map(([d]) => d);
+  const on = DIRS.filter(([, dx, dy]) => solid(lx + dx, ly + dy)).map(([d]) => d);
 
   if (kind === "wall") {
-    // STONE_WALL_N_S_W_E, with _1.._4 texture variants on the common forms
     const key = on.join("_");
-    const v = (vhash(x, y, z) % 4) + 1;
-    return pick(fam + "_" + key + "_" + v, fam + "_" + key, fam + "_N_S_W_E_1",
-                fam + "_N_S_W_E", fam + "_N_S_1", fam + "_N_S");
+    const v = (vhash(gx, gy, z) % 4) + 1;
+    return pick(`${fam}_${key}_${v}`, `${fam}_${key}`, fam + "_N_S_W_E_1", fam + "_N_S_W_E");
   }
   if (kind === "tree") {
-    // TREE_BRANCH_NSWE — same idea, but CONCATENATED rather than underscore-separated
-    const key = on.join("");
-    return pick(fam + "_" + key, fam, fam + "_NSWE");
+    return pick(`${fam}_${on.join("")}`, fam, fam + "_NSWE");
   }
   if (kind === "ramp") {
-    // ramps name their neighbours by corner
     const c = [];
-    if (solid(x - 1, y - 1)) c.push("NW");
-    if (solid(x + 1, y - 1)) c.push("NE");
-    if (solid(x - 1, y + 1)) c.push("SW");
-    if (solid(x + 1, y + 1)) c.push("SE");
-    return pick(fam + "_" + c.join("_"), fam + "_OTHER", fam.replace("_WITH_WALL", "_OTHER"));
+    if (solid(lx - 1, ly - 1)) c.push("NW");
+    if (solid(lx + 1, ly - 1)) c.push("NE");
+    if (solid(lx - 1, ly + 1)) c.push("SW");
+    if (solid(lx + 1, ly + 1)) c.push("SE");
+    return pick(`${fam}_${c.join("_")}`, fam + "_OTHER", fam.replace("_WITH_WALL", "_OTHER"));
   }
   return null;
 }
@@ -371,32 +395,76 @@ function drawMap() {
   ctx.imageSmoothingEnabled = false;
   const sprites = atlasReady && SPRITES && TILEMAP;
 
+  const OPAQUE = sprites ? new Set(SPRITES.opaque || Object.keys(SPRITES.tokens)) : null;
+  const tokAt = (x, y) => {
+    if (x < 0 || y < 0 || x >= W || y >= H) return null;
+    let tt = f.grid[zi * W * H + y * W + x];
+    // a ramp top caps the ramp below and shows it; leaving it blank punched holes
+    if (tileInfo(tt)[0] === "RAMP_TOP" && zi > 0) tt = f.grid[(zi - 1) * W * H + y * W + x];
+    return spriteToken(tt, x + f.origin[0], y + f.origin[1], curZ, f, W, H, zi);
+  };
+  const blit = (tok, x, y) => {
+    const T = SPRITES.tile, [ax, ay] = SPRITES.tokens[tok];
+    ctx.drawImage(ATLAS, ax * T, ay * T, T, T, x * px, y * px, px, px);
+  };
+
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const tt = f.grid[zi * W * H + y * W + x];
       const [shape, mat] = tileInfo(tt);
       if (sprites) {
-        const tok = spriteToken(tt, x + f.origin[0], y + f.origin[1], curZ, f, W, H, zi);
+        const tok = tokAt(x, y);
         if (tok) {
-          const T = SPRITES.tile, [ax, ay] = SPRITES.tokens[tok];
+          // DF composites a tile: an opaque floor, then features on top. Shrubs are
+          // 634/1024 opaque, saplings 319, boulders 743 — drawn alone they sit on the
+          // page background instead of on the ground. The recording carries no per-tile
+          // floor material, so take the ground the neighbours agree on.
+          if (!OPAQUE.has(tok)) {
+            const votes = {};
+            for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0],[-1,-1],[1,-1],[-1,1],[1,1]]) {
+              const t = tokAt(x + dx, y + dy);
+              if (t && OPAQUE.has(t)) votes[t] = (votes[t] || 0) + 1;
+            }
+            let best = null, n = 0;
+            for (const k in votes) if (votes[k] > n) { best = k; n = votes[k]; }
+            if (best) blit(best, x, y);
+          }
           const m = TILEMAP.tiles[tt];
-          if (m.t) {
+          if (m && m.t) {
+            const T = SPRITES.tile;
             ctx.drawImage(tintedSprite(tok, COLOR[mat] || "#8d8880"),
                           0, 0, T, T, x * px, y * px, px, px);
           } else {
-            ctx.drawImage(ATLAS, ax * T, ay * T, T, T, x * px, y * px, px, px);
+            blit(tok, x, y);
           }
           continue;
         }
       }
+      if (sprites) {
+        // Open space: DF shows the levels below, dimmed with distance. Without this an
+        // open tile is a black void and the fort reads as full of holes.
+        let shown = false;
+        for (let zoff = 1; zoff <= 3 && !shown; zoff++) {
+          const zj = zi - zoff;
+          if (zj < 0) break;
+          let bt = f.grid[zj * W * H + y * W + x];
+          const bs = tileInfo(bt)[0];
+          if (bs === "EMPTY" || bs === "NONE" || bs === "ENDLESS_PIT" || bs === "RAMP_TOP") continue;
+          const btok = spriteToken(bt, x + f.origin[0], y + f.origin[1], curZ - zoff,
+                                   { ...f, grid: f.grid }, W, H, zj);
+          if (!btok) continue;
+          blit(btok, x, y);
+          ctx.fillStyle = `rgba(0,0,0,${0.45 * zoff})`;
+          ctx.fillRect(x * px, y * px, px, px);
+          shown = true;
+        }
+        if (shown) continue;
+      }
       const g = GLYPH[shape] ?? "?";
       if (g === " ") continue;
       ctx.fillStyle = COLOR[mat] || "#6b665e";
-      if (shape === "WALL") {
-        ctx.fillRect(x * px, y * px, px, px);
-      } else {
-        ctx.fillText(g, x * px + px / 2, y * px);
-      }
+      if (shape === "WALL") ctx.fillRect(x * px, y * px, px, px);
+      else ctx.fillText(g, x * px + px / 2, y * px);
     }
   }
 
@@ -416,13 +484,20 @@ function drawMap() {
   }
 
   // units last, on top
+  const dwarfTok = sprites && SPRITES.tokens["CREATURE_DWARF"] ? "CREATURE_DWARF" : null;
   for (const u of f.units) {
     const [, x, y, z, , , dead, cit] = u;
     if (z !== curZ) continue;
     const isCit = cit === undefined ? isT0Cohort(u[0]) : !!cit;
-    ctx.fillStyle = dead ? "#b4574a" : isCit ? "#e8dcc0" : "#6f8f7a";
-    ctx.fillText(dead ? "%" : isCit ? "@" : "·",
-                 (x - f.origin[0]) * px + px / 2, (y - f.origin[1]) * px);
+    const ux = x - f.origin[0], uy = y - f.origin[1];
+    if (isCit && !dead && dwarfTok) {
+      blit(dwarfTok, ux, uy);
+      continue;
+    }
+    // wildlife: the recording carries no creature race yet, so mark it rather than
+    // guess a species
+    ctx.fillStyle = dead ? "#b4574a" : isCit ? "#e8dcc0" : "#b45a46";
+    ctx.fillRect(ux * px + px * 0.35, uy * px + px * 0.35, px * 0.3, px * 0.3);
   }
 }
 

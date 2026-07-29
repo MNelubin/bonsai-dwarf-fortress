@@ -15,7 +15,11 @@ spec = {int(k): v for k, v in d["tiletype_special"].items()}
 
 tt, sp = {}, {}
 for k, v in d["tiletype"].items():
-    tt[int(k)] = [shape.get(int(v["sh"]), "NONE"), mat.get(int(v["mat"]), "NONE"), v["n"]]
+    # variant (0..3) is DF's OWN sprite-variant index. Dropping it and substituting a
+    # position hash is why grass rendered as uniform noise instead of the game's pattern:
+    # eight distinct grass tiletypes all collapsed onto one sprite.
+    tt[int(k)] = [shape.get(int(v["sh"]), "NONE"), mat.get(int(v["mat"]), "NONE"),
+                  v["n"], int(v["v"])]
     s = spec.get(int(v["sp"]), "NONE")
     if s not in ("NONE", "NORMAL"):
         sp[int(k)] = s
