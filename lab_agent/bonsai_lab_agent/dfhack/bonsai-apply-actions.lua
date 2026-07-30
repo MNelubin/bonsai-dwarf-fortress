@@ -78,6 +78,14 @@ for line in f:lines() do
                     -- silently achieves nothing
                     if kind == DIG.Default and sh ~= df.tiletype_shape.WALL then return end
                     des.dig = kind
+                    -- Setting the tile flag is NOT enough. DF only rescans blocks that
+                    -- are flagged as carrying new designations, so writing designations
+                    -- through DFHack without this produced a perfectly valid staircase
+                    -- that generated ZERO dig jobs: measured 11 tiles marked, 0 jobs,
+                    -- 0 rock removed over 3000 ticks, while `dig-now` on the same
+                    -- designations excavated 35 tiles immediately.
+                    local blk = dfhack.maps.getTileBlock(x, y, z)
+                    if blk then blk.flags.designated = true end
                     placed = placed + 1
                 end)
             end
@@ -102,7 +110,12 @@ for line in f:lines() do
                 end
                 if placed >= n then break end
             end
-            if placed > 0 then P.digring = P.digring + 1 end
+            if placed > 0 then
+                P.digring = P.digring + 1
+                -- ask the engine to run its dig-job scan on the next tick
+                pcall(function() df.global.process_dig = true end)
+                pcall(function() df.global.process_jobs = true end)
+            end
             c.designate_dig = c.designate_dig + placed
         end)
     elseif verb == "create_stockpile" then
