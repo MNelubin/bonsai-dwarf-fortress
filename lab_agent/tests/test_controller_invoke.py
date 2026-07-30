@@ -59,7 +59,7 @@ def test_crash_returns_empty(tmp_path):
 def test_end_to_end_with_scorer(tmp_path, monkeypatch):
     """The controller's intents flow through sanitize -> score. Mock the episode so
     no DF is needed; assert the controller path is exercised and produces a score."""
-    from bonsai_lab_agent import game_scorer
+    from bonsai_lab_agent import game_scorer, stepped_episode
     from bonsai_lab_agent.scoring import EpisodeObs, raw_components
 
     s = _script(tmp_path, MOCK_LIST)
@@ -70,11 +70,11 @@ def test_end_to_end_with_scorer(tmp_path, monkeypatch):
                         buildings=6, dug_tiles=150, workorders_done=15)
     seen = {}
 
-    def fake_ep(controller_fn, horizon, suppress=False):
+    def fake_ep(controller_fn, **kw):
         seen["actions"] = controller_fn(T0.__dict__)   # exercise the real controller
         return T0, good_h
 
-    monkeypatch.setattr(game_scorer, "run_scored_episode", fake_ep)
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode", fake_ep)
     ref = raw_components(good_h, T0, 36000)["composite"]
     res = game_scorer.score_submission(cfn, horizon_ticks=36000, k=3,
                                        noop_composite=0.26786, ref_composite=ref)

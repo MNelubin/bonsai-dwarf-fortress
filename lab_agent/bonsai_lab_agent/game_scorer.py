@@ -160,6 +160,8 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
                      horizon_ticks: int, k: int,
                      noop_composite: float, ref_composite: float,
                      suppress_wildlife: bool = False,
+                     rounds: int = 24,
+                     recorder_factory: Callable[[int], Any] | None = None,
                      on_episode: Callable[[int, int], None] | None = None) -> dict[str, Any]:
     """Run K real episodes and produce the v4 result dict for evaluate_job.
 
@@ -169,11 +171,20 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
     raise K or refuse to promote). `on_episode(done, total)` is called after each
     episode — evaluate_job_v4 wires it to the evaluator heartbeat so a long K-run eval
     (~2-20 min) does not outlive its job lease."""
+    # Episodes run through the STEPPED driver (interaction model B): the controller is
+    # re-invoked every round against the live fort. This has to match the driver the
+    # CALIBRATION endpoints were measured under — scoring one-shot episodes against
+    # stepped baselines compares an agent to a fort that had different agency.
+    from bonsai_lab_agent import stepped_episode
+
     pairs = []
     for _ in range(k):
         try:
-            pairs.append(run_scored_episode(controller_fn, horizon_ticks, suppress_wildlife))
-        except (RuntimeError, subprocess.TimeoutExpired):
+            pairs.append(stepped_episode.run_stepped_episode(
+                controller_fn, horizon_ticks=horizon_ticks, rounds=rounds,
+                suppress_wildlife=suppress_wildlife,
+                recorder=recorder_factory(len(pairs)) if recorder_factory else None))
+        except Exception:                       # noqa: BLE001 - one bad episode, not the run
             pass
         if on_episode is not None:
             try:
@@ -201,7 +212,9 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
         "failure_kind": failure_kind,
         "summary": {
             "episodes_run": st.n, "episodes_requested": k,
-            "horizon_ticks": horizon_ticks, "format": "full" if not suppress_wildlife else "nowild",
+            "horizon_ticks": horizon_ticks, "rounds": rounds,
+            "driver": "stepped_v1",
+            "format": "full" if not suppress_wildlife else "nowild",
             "per_episode_scores": [round(s, 4) for s in scores],
             "median": round(st.median, 4), "mad": round(st.mad, 4),
             "ci": [round(st.ci_low, 4), round(st.ci_high, 4)], "ci_half": round(st.ci_half, 4),

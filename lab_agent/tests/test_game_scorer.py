@@ -3,7 +3,7 @@ K-run scoring/aggregation flow (episode driving mocked — no live DF needed).""
 
 import pytest
 
-from bonsai_lab_agent import game_scorer
+from bonsai_lab_agent import game_scorer, stepped_episode
 from bonsai_lab_agent.scoring import EpisodeObs, raw_components
 
 
@@ -58,11 +58,11 @@ _GOOD_H = EpisodeObs(abs_tick=2052801, cohort_alive=7, cohort_size=7, hunger_sum
 def test_score_submission_good_policy(monkeypatch):
     T0 = game_scorer.PINNED_T0
 
-    def fake_ep(controller_fn, horizon, suppress=False):
+    def fake_ep(controller_fn, **kw):
         controller_fn(T0.__dict__)  # exercise the controller path
         return T0, _GOOD_H
 
-    monkeypatch.setattr(game_scorer, "run_scored_episode", fake_ep)
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode", fake_ep)
     ref = raw_components(_GOOD_H, T0, 36000)["composite"]
     res = game_scorer.score_submission(
         lambda obs: [{"command": "create_stockpile", "args": [5]}],
@@ -80,8 +80,8 @@ def test_score_submission_noop_scores_zero(monkeypatch):
     noop_h = EpisodeObs(abs_tick=2052801, cohort_alive=7, cohort_size=7, hunger_sum=252007,
                         thirst_sum=104000, stress_danger=0, food_count=12, drink_count=12,
                         buildings=1, dug_tiles=0, workorders_done=0)
-    monkeypatch.setattr(game_scorer, "run_scored_episode",
-                        lambda cf, h, suppress=False: (T0, noop_h))
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode",
+                        lambda cf, **kw: (T0, noop_h))
     noop = raw_components(noop_h, T0, 36000)["composite"]
     ref = raw_components(_GOOD_H, T0, 36000)["composite"]
     res = game_scorer.score_submission(lambda obs: [], horizon_ticks=36000, k=5,
@@ -90,9 +90,9 @@ def test_score_submission_noop_scores_zero(monkeypatch):
 
 
 def test_score_submission_all_episodes_failed(monkeypatch):
-    def boom(cf, h, suppress=False):
+    def boom(cf, **kw):
         raise RuntimeError("load failed")
-    monkeypatch.setattr(game_scorer, "run_scored_episode", boom)
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode", boom)
     res = game_scorer.score_submission(lambda obs: [], horizon_ticks=3600, k=3,
                                        noop_composite=0.2, ref_composite=0.6)
     assert res["verdict"] == "episode_failed"
@@ -113,8 +113,8 @@ def test_score_submission_calls_on_episode(monkeypatch):
     """on_episode(done, total) fires after every episode (evaluate_job_v4 wires it to
     the heartbeat so a long K-run eval keeps its job lease alive)."""
     T0 = game_scorer.PINNED_T0
-    monkeypatch.setattr(game_scorer, "run_scored_episode",
-                        lambda cf, h, suppress=False: (T0, _GOOD_H))
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode",
+                        lambda cf, **kw: (T0, _GOOD_H))
     calls = []
     game_scorer.score_submission(lambda o: [], horizon_ticks=36000, k=3,
                                  noop_composite=0.2, ref_composite=0.6,
