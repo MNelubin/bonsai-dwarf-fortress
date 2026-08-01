@@ -37,11 +37,15 @@ boot)
   echo "SUPERVISED_PID=$(sup)"
   kill_mine; sleep 1
 
-  # Detached watchdog: must OUTLIVE this script (the session stays up afterwards),
-  # so setsid it. Never kills the supervised DF - it re-reads port 5000 at fire time.
-  setsid bash -c "sleep $WD; SS=\$(ss -ltnp 2>/dev/null|grep 127.0.0.1:5000|grep -oE 'pid=[0-9]+'|cut -d= -f2|head -1); \
-    for p in \$(pgrep -x dwarfort); do [ \"\$p\" != \"\$SS\" ] && kill -9 \$p 2>/dev/null; done" >/dev/null 2>&1 &
-  disown 2>/dev/null || true
+  # Detached watchdog. It must OUTLIVE this script (the session stays up afterwards),
+  # so setsid it — but it is armed AFTER the boot below, against that one PID.
+  #
+  # It used to kill "any dwarfort that is not the supervised one", which meant a
+  # watchdog left over from an EARLIER session would murder a later, unrelated run when
+  # its timer expired. That is what killed both full-year episodes: a 30-minute
+  # watchdog armed during a short ladder run fired half an hour later, in the middle of
+  # a year-long episode it knew nothing about. Any long run was a lottery against every
+  # timer still ticking from every boot before it.
 
   setsid env DFHACK_PORT=$PORT DF_PRELOAD=$PWD/detshim2.so LD_PRELOAD=$PWD/detshim2.so \
     HOME=$PWD/spike-home XDG_RUNTIME_DIR=$PWD/spike-home DFHACK_HEADLESS=1 \
@@ -51,6 +55,14 @@ boot)
 
   for i in $(seq 1 50); do ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT && break; sleep 2; done
   ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT || { echo "BOOTFAIL:noport"; exit 1; }
+
+  # Arm the watchdog on THIS DF only, and let it stand down quietly if the session
+  # already ended cleanly.
+  MYPID=$(ss -ltnp 2>/dev/null | grep 127.0.0.1:$PORT | grep -oE 'pid=[0-9]+' | cut -d= -f2 | head -1)
+  if [ -n "$MYPID" ]; then
+    setsid bash -c "sleep $WD; kill -9 $MYPID 2>/dev/null" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
   sleep 3
 
   click_until "Continue active game" "Planets of Dawning" 10 || { echo "LOADFAIL:worldlist"; exit 1; }
