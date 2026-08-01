@@ -77,8 +77,8 @@ class DFSession:
         """Boot DF, load the pinned save, prep it, and leave it paused and ready."""
         p = subprocess.run(
             ["bash", SESSION_SH, "boot", str(self.watchdog_seconds), self.save],
-            capture_output=True, text=True, timeout=timeout, cwd=self.df_dir,
-            env=self._env(),
+            capture_output=True, text=True, errors="replace", timeout=timeout,
+            cwd=self.df_dir, env=self._env(),
         )
         out = _ANSI.sub("", p.stdout)
         if "READY" not in out:
@@ -114,8 +114,13 @@ class DFSession:
     def run(self, *args: str, timeout: int = RPC_TIMEOUT) -> str:
         """One dfhack-run RPC. Returns stdout with ANSI colour stripped."""
         try:
+            # errors="replace": DFHack echoes dwarf names in CP437, and a single
+            # non-UTF-8 byte (0x8c, seen live) makes strict decoding raise and kills
+            # the RPC. A year-long episode makes ~30x more calls than a 10-day one,
+            # which is why this only ever surfaced on the long runs.
             p = subprocess.run([DFHACK_RUN, *args], capture_output=True, text=True,
-                               timeout=timeout, cwd=self.df_dir, env=self._env())
+                               errors="replace", timeout=timeout,
+                               cwd=self.df_dir, env=self._env())
         except subprocess.TimeoutExpired as e:
             raise SessionError(f"dfhack-run {args[0] if args else ''} timed out") from e
         return _ANSI.sub("", p.stdout)
@@ -132,13 +137,22 @@ class DFSession:
     def frame(self) -> int:
         return self.getnum("df.global.world.frame_counter")
 
-    def frame_and_paused(self) -> tuple[int, bool]:
-        """Frame counter and pause state in ONE round trip (halves advance polling)."""
-        out = self.lua("print(df.global.world.frame_counter, df.global.pause_state)")
-        m = _INT.search(out)
-        if not m:
-            raise SessionError(f"bad frame/pause reply: {out[:120]!r}")
-        return int(m.group()), ("true" in out.lower())
+    def frame_and_paused(self, tries: int = 4) -> tuple[int, bool]:
+        """Frame counter and pause state in ONE round trip (halves advance polling).
+
+        Retries an empty reply. This is polled thousands of times across a year-long
+        episode and DFHack occasionally answers with nothing; treating one blank as a
+        dead session threw away a 30-minute run (observed live: "bad frame/pause
+        reply: ''").
+        """
+        out = ""
+        for attempt in range(tries):
+            out = self.lua("print(df.global.world.frame_counter, df.global.pause_state)")
+            m = _INT.search(out)
+            if m:
+                return int(m.group()), ("true" in out.lower())
+            time.sleep(0.4 * (attempt + 1))
+        raise SessionError(f"bad frame/pause reply after {tries} tries: {out[:120]!r}")
 
     # ---------------------------------------------------------------- operations
     def observe(self) -> dict:
