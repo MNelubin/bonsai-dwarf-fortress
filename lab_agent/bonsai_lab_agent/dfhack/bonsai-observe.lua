@@ -96,8 +96,58 @@ pcall(function()
   nsolid = cnt
 end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwild=%d nitems=%d nunits=%d cids=%s",
+-- ---------------------------------------------------------------- threats & warnings
+-- A policy cannot react to an attack it cannot see. Before this the observation carried
+-- no danger signal at all, so "reacting to problems" was impossible in principle rather
+-- than merely unimplemented.
+local nhostile, ninjured, nannounce, ndanger = 0, 0, 0, 0
+local warn = {}
+pcall(function()
+  for _, u in ipairs(w.units.active) do
+    local ok = pcall(function()
+      if dfhack.units.isDead(u) then return end
+      -- hostile = alive, not ours, and either an invader or an active enemy
+      local mine = dfhack.units.isCitizen(u)
+      if not mine then
+        local hostile = false
+        pcall(function() hostile = dfhack.units.isInvader(u) end)
+        if not hostile then pcall(function() hostile = dfhack.units.isDanger(u) end) end
+        if hostile then nhostile = nhostile + 1 end
+      else
+        -- injured citizen: any bleeding or missing/broken part shows as a wound
+        local hurt = false
+        pcall(function() hurt = (#u.body.wounds > 0) end)
+        if not hurt then pcall(function() hurt = (u.body.blood_count < u.body.blood_max) end) end
+        if hurt then ninjured = ninjured + 1 end
+      end
+    end)
+    if not ok then break end
+  end
+end)
+
+-- The game's own announcement feed is where sieges, ambushes, deaths and cave-ins are
+-- reported. We surface a count plus the most recent lines so a policy can branch, and
+-- the replay can show WHEN the fort was told something was wrong.
+pcall(function()
+  local anns = w.status.announcements
+  nannounce = #anns
+  local from = math.max(0, nannounce - 12)
+  for i = from, nannounce - 1 do
+    local a = anns[i]
+    local txt = ""
+    pcall(function() txt = a.text or "" end)
+    local low = txt:lower()
+    if low:find("ambush") or low:find("siege") or low:find("attack") or low:find("has come")
+       or low:find("slain") or low:find("struck down") or low:find("cancel") then
+      ndanger = ndanger + 1
+      if #warn < 4 then warn[#warn+1] = (txt:gsub("[|=%s]+", "_")):sub(1, 48) end
+    end
+  end
+end)
+
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nhostile=%d ninjured=%d nannounce=%d ndanger=%d warn=%s nwild=%d nitems=%d nunits=%d cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, worders,
-  nsolid, nbbox,
+  nsolid, nbbox, nhostile, ninjured, nannounce, ndanger,
+  (#warn > 0 and table.concat(warn, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
   #w.items.all, #w.units.all, table.concat(cids, ",")))

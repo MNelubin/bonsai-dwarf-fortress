@@ -118,6 +118,16 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
             cobs["round"] = i
             cobs["rounds_total"] = len(chunks)
             cobs["ticks_remaining"] = remaining
+            # Threat channel. Kept OUT of EpisodeObs on purpose: these are decision
+            # inputs, not scored observables — scoring them would let an agent farm
+            # danger. The policy needs them to react; the metric must not see them.
+            cobs["hostiles"] = int(cur_raw.get("nhostile", 0))
+            cobs["injured"] = int(cur_raw.get("ninjured", 0))
+            cobs["danger_events"] = int(cur_raw.get("ndanger", 0))
+            cobs["warnings"] = [w for w in (cur_raw.get("warn", "none") or "").split(";")
+                                if w and w != "none"]
+            cobs["under_threat"] = (cobs["hostiles"] > 0 or cobs["injured"] > 0
+                                    or cobs["danger_events"] > 0)
 
             t_dec = time.time()
             raw_actions, err = _safe_controller(controller_fn, cobs)

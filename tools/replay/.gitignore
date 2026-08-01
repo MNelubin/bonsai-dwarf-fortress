@@ -5,3 +5,6 @@ atlas.png
 sprites.json
 tilemap.json
 viewer.html
+frames/
+report.html
+*.rec.jsonl.gz
