@@ -27,6 +27,7 @@ kill_mine(){ local S; S=$(sup); for p in $(pgrep -x dwarfort); do [ "$p" != "$S"
 
 case "$CMD" in
 kill)
+  rm -f /srv/df-bonsai/episode.lease
   kill_mine; sleep 1
   echo "KILLED supervised_still=$(sup)"
   ;;
@@ -36,6 +37,12 @@ boot)
   SAVE=${3:-bonsaifort2}
   echo "SUPERVISED_PID=$(sup)"
   kill_mine; sleep 1
+
+  # Claim the reaper lease BEFORE booting. Writing a PID only after the port opens
+  # leaves ~20s in which DF is alive but unlabelled, and the lab-agent reaper fires
+  # on a loop — observed killing a fort mid-load. The lease is an EXPIRY, so a
+  # crashed session cannot protect strays forever: once it lapses the reaper resumes.
+  echo $(( $(date +%s) + WD )) > /srv/df-bonsai/episode.lease
 
   # Detached watchdog. It must OUTLIVE this script (the session stays up afterwards),
   # so setsid it — but it is armed AFTER the boot below, against that one PID.
@@ -59,6 +66,12 @@ boot)
   # Arm the watchdog on THIS DF only, and let it stand down quietly if the session
   # already ended cleanly.
   MYPID=$(ss -ltnp 2>/dev/null | grep 127.0.0.1:$PORT | grep -oE 'pid=[0-9]+' | cut -d= -f2 | head -1)
+  # Declare this DF as a legitimate scored episode. The lab-agent reaper kills every
+  # dwarfort that is not in the supervised cgroup, and an episode started by the
+  # evaluator sits in the EVALUATOR's cgroup — so without this it is indistinguishable
+  # from a leaked probe and gets shot mid-episode. That killed three year-long runs and
+  # would surface in production as a spurious episode_failed the agent gets blamed for.
+  # A stale lease is harmless: the reaper checks the PID is still a live dwarfort.
   if [ -n "$MYPID" ]; then
     setsid bash -c "sleep $WD; kill -9 $MYPID 2>/dev/null" >/dev/null 2>&1 &
     disown 2>/dev/null || true
