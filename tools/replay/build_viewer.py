@@ -24,6 +24,7 @@ df_version:
     python build_tilemap.py enums_compact.json <out>/sprites.json <out>/tilemap.json
 """
 import base64
+import gzip
 import json
 import pathlib
 import sys
@@ -39,7 +40,19 @@ def load(path: pathlib.Path, what: str) -> str:
 
 
 def main() -> int:
-    sprites_dir = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else HERE
+    # Default to build/ rather than this directory. Both hold a full set of atlas.png +
+    # sprites.json + tilemap.json and they DIVERGE (the ones here are an earlier
+    # extraction, from before grass and the floor blend set were fixed). Everything else
+    # in the pipeline takes build/, so a bare `python build_viewer.py` used to silently
+    # produce a viewer from the stale set.
+    if len(sys.argv) > 1:
+        sprites_dir = pathlib.Path(sys.argv[1])
+    else:
+        sprites_dir = HERE / "build" if (HERE / "build" / "sprites.json").is_file() else HERE
+    stale = [p.name for p in (HERE / "atlas.png", HERE / "sprites.json", HERE / "tilemap.json")
+             if p.is_file() and sprites_dir != HERE]
+    if stale:
+        print(f"  note: ignoring an older extraction in {HERE}: {', '.join(stale)}")
     out_path = HERE / "viewer.html"
     template = (HERE / "viewer.template.html").read_text(encoding="utf-8")
 
@@ -61,10 +74,28 @@ def main() -> int:
         sprites["atlas"] = "data:image/png;base64," + b64
         sprites_raw = json.dumps(sprites, separators=(",", ":"))
 
+    # The palette table and the save's geology are what turn grey key art into rock and
+    # soil. Geology goes in already expanded from RLE: the browser would otherwise repeat
+    # the expansion on every load, and the JSON is only ~340 KB against a 2.5 MB viewer.
+    palette_raw = load(sprites_dir / "palette.json", "palette.json")
+    geology_raw = "null"
+    for name in ("geology.json.gz", "geology.json"):
+        gp = sprites_dir / name
+        if not gp.exists():
+            continue
+        opener = gzip.open if name.endswith(".gz") else open
+        with opener(gp, "rt", encoding="utf-8") as fh:
+            geology_raw = json.dumps(json.load(fh), separators=(",", ":"))
+        break
+    if geology_raw == "null":
+        print("  note: no geology dump — rock and soil will render in the grey key art")
+
     subs = {
         "__ENUMS__": json.dumps(enums, separators=(",", ":")),
         "__SPRITES__": sprites_raw,
         "__TILEMAP__": tilemap_raw,
+        "__PALETTE__": palette_raw,
+        "__GEOLOGY__": geology_raw,
     }
     html = template
     for placeholder, blob in subs.items():

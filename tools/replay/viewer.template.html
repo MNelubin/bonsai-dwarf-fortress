@@ -121,6 +121,8 @@
 <script id="enums" type="application/json">__ENUMS__</script>
 <script id="sprites" type="application/json">__SPRITES__</script>
 <script id="tilemap" type="application/json">__TILEMAP__</script>
+<script id="palette" type="application/json">__PALETTE__</script>
+<script id="geology" type="application/json">__GEOLOGY__</script>
 <script>
 "use strict";
 const ENUMS = JSON.parse(document.getElementById("enums").textContent);
@@ -135,6 +137,77 @@ const ENUMS = JSON.parse(document.getElementById("enums").textContent);
 // own decomposition — so an unmapped tile shows as visible terrain, not a hole.
 const SPRITES = JSON.parse(document.getElementById("sprites").textContent || "null");
 const TILEMAP = JSON.parse(document.getElementById("tilemap").textContent || "null");
+
+// ---------------------------------------------------------------- palette recolouring
+// DF v50 does not ship one sprite per stone. Natural rock, soil and wood are drawn ONCE
+// in a fixed set of key colours and the game swaps those colours at draw time for the
+// row belonging to the tile's material — palettes.png is 18 colours x 137 rows, row 0
+// being "the one used in the images themselves" (palette_default.txt:9). Drawing the key
+// art unswapped is why soil walls came out grey while the soil FLOOR beside them was
+// brown: the art is grey; the game is what makes it brown.
+//
+// A material's row is its descriptor colour + 1. descriptors.colors has exactly 136
+// entries whose ids are the PALETTE_COLOR names in the same order (colors[0] is AMBER,
+// declared as [PALETTE_COLOR:AMBER:1]), verified against BROWN=13, GRAY=50, TAN=101.
+// GEOLOGY carries that row per tile for the save, dumped once — geology is fixed at
+// worldgen, so it also describes recordings made before the map track knew about it.
+const PALETTE = JSON.parse(document.getElementById("palette").textContent || "null");
+const GEOLOGY = JSON.parse(document.getElementById("geology").textContent || "null");
+const PAL_TOKENS = PALETTE ? new Set(PALETTE.tokens) : null;
+const WOOD_ROW = 13;                                  // PALETTE_COLOR:BROWN:13
+const WOODY = new Set(["TREE", "MUSHROOM", "PLANT"]); // tiletype material classes
+let GEO_GRID = null;
+if (GEOLOGY) {
+  const [gw, gh, gd] = GEOLOGY.dims;
+  GEO_GRID = new Uint8Array(gw * gh * gd);
+  let at = 0;
+  for (let i = 0; i < GEOLOGY.prle.length; i += 2) {
+    GEO_GRID.fill(GEOLOGY.prle[i], at, at + GEOLOGY.prle[i + 1]);
+    at += GEOLOGY.prle[i + 1];
+  }
+}
+
+// Nearest key colour within a small tolerance. PNG re-encoding and anti-aliasing move a
+// pixel by a unit or two, and matching exactly left those pixels grey inside otherwise
+// recoloured art.
+const KEY_CACHE = new Map();
+function keyIndex(r, g, b) {
+  const k = (r << 16) | (g << 8) | b;
+  const hit = KEY_CACHE.get(k);
+  if (hit !== undefined) return hit;
+  let best = -1, bd = 7;
+  for (let i = 0; i < PALETTE.key.length; i++) {
+    const c = PALETTE.key[i];
+    const d = Math.max(Math.abs(r - c[0]), Math.abs(g - c[1]), Math.abs(b - c[2]));
+    if (d < bd) { best = i; bd = d; }
+  }
+  const out = bd <= 6 ? best : -1;
+  KEY_CACHE.set(k, out);
+  return out;
+}
+
+// One offscreen canvas per (token, row). A fort is thousands of tiles drawn from a
+// handful of materials, so the cache is small and the per-pixel work happens once.
+const SWAP_CACHE = new Map();
+function swapped(tok, row) {
+  const ck = tok + "#" + row;
+  const hit = SWAP_CACHE.get(ck);
+  if (hit) return hit;
+  const T = SPRITES.tile, [ax, ay] = SPRITES.tokens[tok];
+  const c = document.createElement("canvas");
+  c.width = T; c.height = T;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.drawImage(ATLAS, ax * T, ay * T, T, T, 0, 0, T, T);
+  const img = g.getImageData(0, 0, T, T), d = img.data, table = PALETTE.table[row];
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] <= 8) continue;
+    const j = keyIndex(d[i], d[i + 1], d[i + 2]);
+    if (j >= 0) { d[i] = table[j][0]; d[i + 1] = table[j][1]; d[i + 2] = table[j][2]; }
+  }
+  g.putImageData(img, 0, 0);
+  SWAP_CACHE.set(ck, c);
+  return c;
+}
 const ATLAS = new Image();
 let atlasReady = false;
 if (SPRITES && SPRITES.atlas) {
@@ -392,9 +465,26 @@ function drawMap() {
     if (tileInfo(tt)[0] === "RAMP_TOP" && zi > 0) tt = f.grid[(zi - 1) * W * H + y * W + x];
     return spriteToken(tt, x + f.origin[0], y + f.origin[1], curZ, f, W, H, zi);
   };
-  const blit = (tok, x, y) => {
-    const T = SPRITES.tile, [ax, ay] = SPRITES.tokens[tok];
+  const blit = (tok, x, y, row) => {
+    const T = SPRITES.tile;
+    if (PALETTE && row > 0 && PAL_TOKENS.has(tok)) {
+      ctx.drawImage(swapped(tok, row), 0, 0, T, T, x * px, y * px, px, px);
+      return;
+    }
+    const [ax, ay] = SPRITES.tokens[tok];
     ctx.drawImage(ATLAS, ax * T, ay * T, T, T, x * px, y * px, px, px);
+  };
+  // Which palette row a cell's material calls for; 0 leaves the art alone.
+  const paletteRow = (x, y, zz) => {
+    if (!GEO_GRID) return 0;
+    const tt = f.grid[(zz - f.origin[2]) * W * H + y * W + x];
+    // Wood is not geology: a trunk is coloured by its species and the dump knows the rock
+    // under the tree. One brown for every tree beats mudstone-coloured branches.
+    if (WOODY.has(tileInfo(tt)[1])) return WOOD_ROW;
+    const [gw, gh, gd] = GEOLOGY.dims, [gox, goy, goz] = GEOLOGY.origin;
+    const ix = x + f.origin[0] - gox, iy = y + f.origin[1] - goy, iz = zz - goz;
+    if (ix < 0 || iy < 0 || iz < 0 || ix >= gw || iy >= gh || iz >= gd) return 0;
+    return GEO_GRID[iz * gw * gh + iy * gw + ix];
   };
   // Feathers to lay over a floor9 tile where a different material abuts. Sides first so
   // a corner sits on top of the two sides it joins. Kept identical to render_frame.py's
@@ -437,7 +527,7 @@ function drawMap() {
       const btok = spriteToken(bt, x + f.origin[0], y + f.origin[1], curZ - zoff,
                                f, W, H, zj);
       if (!btok) continue;
-      blit(btok, x, y);
+      blit(btok, x, y, paletteRow(x, y, curZ - zoff));
       ctx.fillStyle = `rgba(0,0,0,${Math.min(0.78, 0.22 * zoff)})`;
       ctx.fillRect(x * px, y * px, px, px);
       return true;
@@ -456,6 +546,7 @@ function drawMap() {
           // 634/1024 opaque, saplings 319, boulders 743 — drawn alone they sit on the
           // page background instead of on the ground. The recording carries no per-tile
           // floor material, so take the ground the neighbours agree on.
+          const row = paletteRow(x, y, curZ);
           if (!OPAQUE.has(tok)) {
             const votes = {};
             for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0],[-1,-1],[1,-1],[-1,1],[1,1]]) {
@@ -468,18 +559,21 @@ function drawMap() {
             // no neighbour to borrow ground from — fall through to the level below, which
             // is what DF shows through a canopy. Without this a third of the canopy
             // levels rendered at 22-34% coverage, branches floating on black.
-            if (best) blit(best, x, y);
+            if (best) blit(best, x, y, row);
             else showBelow(x, y);
           }
           const m = TILEMAP.tiles[tt];
-          if (m && m.t) {
+          // The old tint multiplied grey art by one colour per material CLASS. Palette
+          // art gets the game's own per-material ramp instead, which preserves shading;
+          // the multiply survives only for the few tinted tokens that are not palette art.
+          if (m && m.t && !(PALETTE && PAL_TOKENS.has(tok))) {
             const T = SPRITES.tile;
             ctx.drawImage(tintedSprite(tok, COLOR[mat] || "#8d8880"),
                           0, 0, T, T, x * px, y * px, px, px);
           } else {
-            blit(tok, x, y);
+            blit(tok, x, y, row);
           }
-          for (const edge of edgeTokens(x, y)) blit(edge, x, y);
+          for (const edge of edgeTokens(x, y)) blit(edge, x, y, row);
           continue;
         }
       }
@@ -519,7 +613,7 @@ function drawMap() {
     const isCit = cit === undefined ? isT0Cohort(u[0]) : !!cit;
     const ux = x - f.origin[0], uy = y - f.origin[1];
     if (isCit && !dead && dwarfTok) {
-      blit(dwarfTok, ux, uy);
+      blit(dwarfTok, ux, uy, 0);
       continue;
     }
     // wildlife: the recording carries no creature race yet, so mark it rather than

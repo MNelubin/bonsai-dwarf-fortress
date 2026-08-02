@@ -32,6 +32,44 @@ THIN_AT = float(os.environ.get("BONSAI_THIN_AT", "0.5"))
 # scattered across the grass.
 DEPTH = int(os.environ.get("BONSAI_DEPTH", "8"))
 
+# Palette row used for wood when the recording does not say which tree it is. DF colours
+# a trunk by its species; the geology dump knows the rock under the tree, not the tree,
+# and painting a branch mudstone-grey is worse than painting every tree brown.
+WOOD_ROW = 13                                        # PALETTE_COLOR:BROWN:13
+WOODY = {"TREE", "MUSHROOM", "PLANT"}                # tiletype material classes
+
+
+def load_palette(build):
+    """Key colours, the 137-row swap table, and which tokens take part. None if absent."""
+    p = build / "palette.json"
+    if not p.is_file():
+        return None
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["key"] = [tuple(c) for c in d["key"]]
+    d["tokens"] = set(d["tokens"])
+    return d
+
+
+def load_geology(build):
+    """Per-tile palette row for the save, expanded from the RLE dump. None if absent."""
+    for name in ("geology.json.gz", "geology.json"):
+        p = build / name
+        if not p.is_file():
+            continue
+        opener = gzip.open if name.endswith(".gz") else open
+        with opener(p, "rt", encoding="utf-8") as fh:
+            d = json.load(fh)
+        w, h, dep = d["dims"]
+        grid = [0] * (w * h * dep)
+        i, rle = 0, d["prle"]
+        for k in range(0, len(rle), 2):
+            v, n = rle[k], rle[k + 1]
+            grid[i:i + n] = [v] * n
+            i += n
+        d["grid"] = grid
+        return d
+    return None
+
 
 def vhash(x: int, y: int, z: int) -> int:
     h = (x * 73856093) ^ (y * 19349663) ^ (z * 83492791)
@@ -89,6 +127,8 @@ def main() -> int:
     atlas = Image.open(build / "atlas.png").convert("RGBA")
     T, toks = sprites["tile"], sprites["tokens"]
     OPAQUE = set(sprites.get("opaque") or toks)
+    PAL = load_palette(build)
+    GEO = load_geology(build)
 
     events, frames = load_frames(rec_path)
     if not frames:
@@ -209,10 +249,66 @@ def main() -> int:
                 want.append(idx)
         return [t for t in (f"{fam}_{i}" for i in want) if t in toks]
 
-    def blit(tok, x, y):
+    # ---------------------------------------------------------------- palette recolour
+    # DF draws natural rock, soil and wood from GREYSCALE key art and swaps the key
+    # colours for the row belonging to the tile's material. Drawing the key art unswapped
+    # is why soil walls came out grey when the soil FLOOR beside them was brown.
+    nearest = {}
+
+    def key_index(c):
+        i = nearest.get(c)
+        if i is not None:
+            return i if i >= 0 else None
+        best, bd = -1, 7
+        for j, k in enumerate(PAL["key"]):
+            d = max(abs(c[0] - k[0]), abs(c[1] - k[1]), abs(c[2] - k[2]))
+            if d < bd:
+                best, bd = j, d
+        nearest[c] = best if bd <= 6 else -1
+        return best if bd <= 6 else None
+
+    swapped = {}
+
+    def sprite(tok, row):
+        """The atlas cell for a token, recoloured to a palette row. Cached per pair."""
         ax, ay = toks[tok]
-        img.alpha_composite(atlas.crop((ax * T, ay * T, ax * T + T, ay * T + T)),
-                            (x * T, y * T))
+        if not PAL or row <= 0 or tok not in PAL["tokens"]:
+            return atlas.crop((ax * T, ay * T, ax * T + T, ay * T + T))
+        hit = swapped.get((tok, row))
+        if hit is not None:
+            return hit
+        cell = atlas.crop((ax * T, ay * T, ax * T + T, ay * T + T)).copy()
+        table, px = PAL["table"][row], cell.load()
+        for yy in range(T):
+            for xx in range(T):
+                r, g, b, a = px[xx, yy]
+                if a > 8:
+                    i = key_index((r, g, b))
+                    if i is not None:
+                        nr, ng, nb = table[i]
+                        px[xx, yy] = (nr, ng, nb, a)
+        swapped[(tok, row)] = cell
+        return cell
+
+    def palette_row(x, y, zz):
+        """Which palette row this cell's material calls for. 0 means leave the art alone."""
+        if not GEO:
+            return 0
+        tt = f["grid"][(zz - f["origin"][2]) * W * H + y * W + x]
+        # Wood is not geology: a trunk is coloured by its species, and the dump knows the
+        # rock under the tree. One brown for every tree beats mudstone-coloured branches.
+        if (tt_info.get(tt, ["", ""])[1] or "") in WOODY:
+            return WOOD_ROW
+        gx, gy, gz = x + f["origin"][0], y + f["origin"][1], zz
+        ox, oy, oz = GEO["origin"]
+        gw, gh, gd = GEO["dims"]
+        ix, iy, iz = gx - ox, gy - oy, gz - oz
+        if not (0 <= ix < gw and 0 <= iy < gh and 0 <= iz < gd):
+            return 0
+        return GEO["grid"][iz * gw * gh + iy * gw + ix]
+
+    def blit(tok, x, y, row=0):
+        img.alpha_composite(sprite(tok, row), (x * T, y * T))
 
     def token_at_z(x, y, zoff):
         """Token at a cell on a level `zoff` below the one being viewed."""
@@ -230,8 +326,7 @@ def main() -> int:
         for zoff in range(1, DEPTH + 1):
             below = token_at_z(x, y, zoff)
             if below:
-                ax, ay = toks[below]
-                cell = atlas.crop((ax * T, ay * T, ax * T + T, ay * T + T))
+                cell = sprite(below, palette_row(x, y, z - zoff)).copy()
                 # 0.45*zoff reached full black at three levels down, so the deepest
                 # visible layer was painted pure black and still counted as painted.
                 # Cap it: distance should read as depth, not as a hole.
@@ -263,6 +358,7 @@ def main() -> int:
                     if info[0] not in ("EMPTY", "NONE", "ENDLESS_PIT"):
                         holes[f"{info[0]}/{info[1]}"] = holes.get(f"{info[0]}/{info[1]}", 0) + 1
                 continue
+            row = palette_row(x, y, z)
             if tk not in OPAQUE:
                 # A see-through sprite needs something behind it. Neighbours first — a
                 # shrub belongs on the grass around it — but a tree branch 4 levels up
@@ -272,13 +368,13 @@ def main() -> int:
                 # branches and twigs floating on black.
                 base = base_under(x, y)
                 if base:
-                    blit(base, x, y)
+                    blit(base, x, y, row)
                     layered += 1
                 elif blit_below(x, y):
                     layered += 1
-            blit(tk, x, y)
+            blit(tk, x, y, row)
             for edge in edge_tokens(x, y):
-                blit(edge, x, y)
+                blit(edge, x, y, row)
             drawn += 1
 
     dwarf = "CREATURE_DWARF" if "CREATURE_DWARF" in toks else None
