@@ -70,7 +70,15 @@ local W, H, D = gx1 - gx0 + 1, gy1 - gy0 + 1, z1 - z0 + 1
 
 -- ---------------------------------------------------------------- tiles (row-major)
 -- Layout the renderer relies on: z outer, then y, then x. Index is 1-based and dense.
-local tiles = {}
+--
+-- `hidden` rides along with the tiletype. It is not a detail: it is FOG OF WAR, and
+-- without it a replay shows the player things the player could not see. Measured on the
+-- pinned save at embark — z=49 27.2% hidden, z=48 95.6%, z=47 and everything below
+-- 100.0% — so a recording that ignores it renders an entire undiscovered rock layer as
+-- solid terrain where the game shows black. It cannot be reconstructed after the fact
+-- either: guessing "revealed if next to open space" agreed with the engine on only
+-- 31-96% of tiles depending on the level, and erred towards revealing.
+local tiles, hid = {}, {}
 local n = 0
 for z = z0, z1 do
   for by = by0, by1 do
@@ -80,10 +88,14 @@ for z = z0, z1 do
       for iy = 0, 15 do
         local row = (z - z0) * W * H + (oy + iy) * W + ox
         if blk then
-          local tt = blk.tiletype
-          for ix = 0, 15 do tiles[row + ix + 1] = tt[ix][iy] end
+          local tt, des = blk.tiletype, blk.designation
+          for ix = 0, 15 do
+            tiles[row + ix + 1] = tt[ix][iy]
+            hid[row + ix + 1] = des[ix][iy].hidden and 1 or 0
+          end
         else
-          for ix = 0, 15 do tiles[row + ix + 1] = 0 end
+          -- no block loaded means nothing is there to see, which is also unseen
+          for ix = 0, 15 do tiles[row + ix + 1] = 0; hid[row + ix + 1] = 1 end
         end
       end
       n = n + 256
@@ -118,6 +130,20 @@ else
 end
 G.BONSAI_MAP_PREV = tiles
 G.BONSAI_MAP_GEO = geo
+
+-- The fog mask goes out RLE'd on every snapshot, keyframe or delta. It is two values
+-- over a mostly-uniform grid, so it costs a few hundred bytes even on a big fort, and
+-- sending it whole avoids a second delta buffer that could fall out of step with the
+-- tiletype one and silently reveal the map.
+do
+  local runs, cur, cnt = {}, hid[1], 0
+  for i = 1, ntiles do
+    if hid[i] == cur then cnt = cnt + 1
+    else runs[#runs + 1] = cur .. ',' .. cnt; cur = hid[i]; cnt = 1 end
+  end
+  runs[#runs + 1] = cur .. ',' .. cnt
+  body[#body + 1] = '"hrle":[' .. table.concat(runs, ',') .. ']'
+end
 
 -- ---------------------------------------------------------------- entities
 local function join(t) return '[' .. table.concat(t, ',') .. ']' end

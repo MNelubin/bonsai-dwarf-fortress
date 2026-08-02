@@ -38,6 +38,18 @@ DEPTH = int(os.environ.get("BONSAI_DEPTH", "8"))
 WOOD_ROW = 13                                        # PALETTE_COLOR:BROWN:13
 WOODY = {"TREE", "MUSHROOM", "PLANT"}                # tiletype material classes
 
+# Shapes that STAND ON something and therefore need ground drawn under them. Everything
+# else fills its own tile and DF draws it over black.
+#
+# This used to be decided by sprite opacity, which is wrong for exactly the tiles that
+# matter most. A wall sprite is deliberately semi-transparent — SOIL_WALL_N_S_W_E_1 has
+# eight alpha levels (mean 170), STONE_WALL_N_S_W_E_1 has four (mean 127) — because the
+# ALPHA IS THE TEXTURE: over black it reads as dark rock with pale mineral flecks, which
+# is what the game shows. Filling those gaps with the level below washed the rock out
+# into a bright field, the inverse of the real thing.
+FEATURE_SHAPES = {"SHRUB", "SAPLING", "BOULDER", "PEBBLES",
+                  "TWIG", "BRANCH", "TRUNK_BRANCH"}
+
 
 def load_palette(build):
     """Key colours, the 137-row swap table, and which tokens take part. None if absent."""
@@ -102,9 +114,19 @@ def load_frames(path: pathlib.Path):
             for i in range(0, len(s), 2):
                 grid[s[i]] = s[i + 1]
         if grid is not None:
+            # Fog of war. Absent in recordings made before the capture carried it; those
+            # render with everything revealed, which is what the game would NOT show.
+            fog = None
+            if "hrle" in m:
+                fog = [0] * len(grid)
+                p, h = 0, m["hrle"]
+                for i in range(0, len(h), 2):
+                    v, n = h[i], h[i + 1]
+                    fog[p:p + n] = [v] * n
+                    p += n
             frames.append({"tick": m["tick"], "grid": list(grid), "origin": origin,
                            "dims": dims, "units": m.get("units", []),
-                           "blds": m.get("blds", [])})
+                           "blds": m.get("blds", []), "fog": fog})
     return events, frames
 
 
@@ -343,9 +365,17 @@ def main() -> int:
     # DIRT_FLOOR_4, a 47/1024-opaque edge feather, and counted as drawn while rendering
     # as a black line. Only measuring the composited alpha catches that class of bug.
     cell_tt = [0] * (W * H)
+    FOG = f.get("fog")
+    unseen = 0
     for y in range(H):
         for x in range(W):
             cell_tt[y * W + x] = f["grid"][zi * W * H + y * W + x]
+            # Fog of war: an undiscovered tile is black, full stop. Drawing the rock
+            # there showed the viewer an entire layer the player never saw — at embark
+            # this level is 100% hidden.
+            if FOG is not None and FOG[zi * W * H + y * W + x]:
+                unseen += 1
+                continue
             tk = at(x, y)
             if not tk:
                 # Open space: DF shows the levels below, dimmed with distance. Without
@@ -359,13 +389,11 @@ def main() -> int:
                         holes[f"{info[0]}/{info[1]}"] = holes.get(f"{info[0]}/{info[1]}", 0) + 1
                 continue
             row = palette_row(x, y, z)
-            if tk not in OPAQUE:
-                # A see-through sprite needs something behind it. Neighbours first — a
-                # shrub belongs on the grass around it — but a tree branch 4 levels up
-                # has only other branches beside it, so it falls through to the ground
-                # below, which is what DF actually shows through a canopy. Without the
-                # fallback a third of the canopy levels rendered at 22-34% coverage:
-                # branches and twigs floating on black.
+            if (tt_info.get(cell_tt[y * W + x], ["", ""])[0] in FEATURE_SHAPES
+                    and tk not in OPAQUE):
+                # A shrub belongs on the grass around it; a tree branch four levels up has
+                # only other branches beside it, so it falls through to the ground below,
+                # which is what DF shows through a canopy.
                 base = base_under(x, y)
                 if base:
                     blit(base, x, y, row)
@@ -405,13 +433,20 @@ def main() -> int:
     # Coverage is measured BEFORE the background goes on — once the dark backdrop is
     # composited every cell is opaque and an unpainted tile is indistinguishable from a
     # deliberately dark one.
-    thin = coverage_report(img, cell_tt, W, H, T, tt_info, tilemap)
+    thin = coverage_report(img, cell_tt, W, H, T, tt_info, tilemap,
+                           FOG, zi)
     backdrop = Image.new("RGBA", img.size, (13, 12, 11, 255))
     backdrop.alpha_composite(img)
     backdrop.convert("RGB").save(out, optimize=True)
     print(f"{out}  {img.width}x{img.height}  tick {f['tick']}  z={z}")
     print(f"  drew {drawn} of {W*H} tiles ({100*drawn/(W*H):.1f}%), "
           f"{layered} needed a ground layer, {depth} showed the level below")
+    if FOG is None:
+        print("  NO FOG TRACK - recording predates it, so undiscovered rock is "
+              "shown as if the player had seen it")
+    else:
+        print(f"  fog of war: {unseen} of {W*H} cells undiscovered "
+              f"({100*unseen/(W*H):.1f}%) and left black")
     if holes:
         print("  UNDRAWN (would be holes in the map):")
         for k, v in sorted(holes.items(), key=lambda kv: -kv[1]):
@@ -419,7 +454,7 @@ def main() -> int:
     return 1 if thin else 0
 
 
-def coverage_report(img, cell_tt, W, H, T, tt_info, tilemap) -> int:
+def coverage_report(img, cell_tt, W, H, T, tt_info, tilemap, fog=None, zi=0) -> int:
     """Blame near-empty cells on the tiletype that produced them.
 
     Counting tiles "drawn" cannot see this class of bug: the renderer picks a token, the
@@ -435,6 +470,8 @@ def coverage_report(img, cell_tt, W, H, T, tt_info, tilemap) -> int:
             lit = sum(1 for a in box.getdata() if a > 8)
             if lit >= T * T * THIN_AT:
                 continue
+            if fog is not None and fog[zi * W * H + y * W + x]:
+                continue                      # black on purpose, not a hole
             tt = cell_tt[y * W + x]
             info = tt_info.get(tt, ["?", "?"])
             m = tilemap.get(str(tt)) or {}

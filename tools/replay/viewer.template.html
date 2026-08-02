@@ -380,8 +380,22 @@ function build() {
       for (let k = 0; k < m.set.length; k += 2) grid[m.set[k]] = m.set[k + 1];
     }
     if (!grid) continue;
+    // Fog of war. Undiscovered tiles are what the player has NOT dug to or seen, and
+    // they are the difference between a replay and a map dump: at embark this save is
+    // 100% hidden below z=47, so a viewer without the mask shows an entire rock layer
+    // the player never saw. Recordings made before the capture carried `hrle` have no
+    // mask and are drawn fully revealed — it cannot be reconstructed after the fact
+    // (guessing from tiletypes agreed with the engine on only 31-96% of tiles).
+    let fog = null;
+    if (m.hrle) {
+      fog = new Uint8Array(grid.length);
+      let q = 0;
+      for (let k = 0; k < m.hrle.length; k += 2) {
+        fog.fill(m.hrle[k], q, q + m.hrle[k + 1]); q += m.hrle[k + 1];
+      }
+    }
     FRAMES.push({ tick: m.tick, i: m.i, origin, dims,
-                  grid: grid.slice(), units: m.units || [], blds: m.blds || [],
+                  grid: grid.slice(), fog, units: m.units || [], blds: m.blds || [],
                   items: m.items || [] });
   }
 
@@ -537,6 +551,9 @@ function drawMap() {
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
+      // Undiscovered: black, full stop. Not a hole in the render — a hole in what the
+      // player knows.
+      if (f.fog && f.fog[zi * W * H + y * W + x]) continue;
       const tt = f.grid[zi * W * H + y * W + x];
       const [shape, mat] = tileInfo(tt);
       if (sprites) {
