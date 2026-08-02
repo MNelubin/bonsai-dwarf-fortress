@@ -101,7 +101,13 @@ def run_one(tier: str, replicate: int, port: int, out: dict, lock: threading.Loc
             "food": [t0.food_count, h.food_count],
             "drink": [t0.drink_count, h.drink_count],
             "hunger": [t0.hunger_sum, h.hunger_sum],
-            "ticks": h.abs_tick - t0.abs_tick,
+            # abs_tick is cur_year * 1e6 + cur_year_tick, so its delta is a CALENDAR
+            # reading, not a tick count: exactly one year elapsed shows up as 1,000,000
+            # rather than 403,200. Reported under its own name so a report cannot quote
+            # it as "ticks simulated".
+            "horizon_ticks": YEAR,
+            "calendar_delta": h.abs_tick - t0.abs_tick,
+            "years_elapsed": round((h.abs_tick - t0.abs_tick) / 1_000_000, 3),
             "bytes": os.path.getsize(path), "map_track": want_map, "trace": trace,
         }
         with lock:

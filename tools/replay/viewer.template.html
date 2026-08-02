@@ -198,22 +198,11 @@ function spriteToken(tt, x, y, z, f, W, H, zi) {
 
   if (kind === "floor9") {
     // _1.._9 is a 3x3 EDGE-BLEND patch on the sheet, not nine variants: _5 is the solid
-    // centre and the eight around it feather outwards. Drawing _5 everywhere is what
-    // made an isolated stone tile sit on grass as a hard square.
-    const famAt = (dx, dy) => {
-      const nx = lx + dx, ny = ly + dy;
-      if (nx < 0 || ny < 0 || nx >= W || ny >= H) return null;
-      const m2 = TILEMAP.tiles[f.grid[zi * W * H + ny * W + nx]];
-      return m2 ? m2.f : null;
-    };
-    const n = famAt(0, -1) !== fam, so = famAt(0, 1) !== fam;
-    const w = famAt(-1, 0) !== fam, e = famAt(1, 0) !== fam;
-    // A lone tile has every side different; a corner edge would erase it almost
-    // entirely, so an isolated patch keeps the solid centre.
-    let idx;
-    if (n && so && w && e) idx = 5;
-    else idx = ((n ? 1 : so ? 3 : 2) - 1) * 3 + (w ? 1 : e ? 3 : 2);
-    if (idx !== 5) return pick(`${fam}_${idx}`, fam + "_5");
+    // centre and the eight around it are mostly-empty feathers meant to be composited ON
+    // TOP of it where a different material abuts. Returning a feather INSTEAD of the
+    // centre drew a one-tile-wide mined corridor as DIRT_FLOOR_4 - 47 opaque pixels out
+    // of 1024 - so a year of digging showed up as black lines through the rock. The
+    // centre is the tile; edgeTokens() adds the feathers.
     const alts = ["_5", "_5B", "_5C", "_5D"];
     const i = varIdx !== null ? varIdx : (vhash(gx, gy, z) & 3);
     return pick(fam + alts[i & 3], fam + "_5", fam + "_1");
@@ -407,6 +396,54 @@ function drawMap() {
     const T = SPRITES.tile, [ax, ay] = SPRITES.tokens[tok];
     ctx.drawImage(ATLAS, ax * T, ay * T, T, T, x * px, y * px, px, px);
   };
+  // Feathers to lay over a floor9 tile where a different material abuts. Sides first so
+  // a corner sits on top of the two sides it joins. Kept identical to render_frame.py's
+  // edge_tokens() — the two renderers agreeing is what makes either one evidence.
+  const edgeTokens = (x, y) => {
+    const m = TILEMAP.tiles[f.grid[zi * W * H + y * W + x]];
+    if (!m || m.k !== "floor9") return [];
+    const fam = m.f;
+    const other = (dx, dy) => {
+      const nx = x + dx, ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H) return false;
+      const m2 = TILEMAP.tiles[f.grid[zi * W * H + ny * W + nx]];
+      return (m2 ? m2.f : null) !== fam;
+    };
+    const n = other(0, -1), s = other(0, 1), w = other(-1, 0), e = other(1, 0);
+    const want = [];
+    if (n) want.push(2);
+    if (s) want.push(8);
+    if (w) want.push(4);
+    if (e) want.push(6);
+    if (n && w) want.push(1);
+    if (n && e) want.push(3);
+    if (s && w) want.push(7);
+    if (s && e) want.push(9);
+    return want.map((i) => `${fam}_${i}`).filter((t) => SPRITES.tokens[t]);
+  };
+
+  // Show the nearest level below a cell, dimmed with distance. Returns true if anything
+  // was found. Eight levels, not three: on the surface level 577 cells of open air over a
+  // valley and 162 tree parts had nothing within three and rendered as black boxes. The
+  // dim is capped too — 0.45*zoff reached pure black at three levels and painted the
+  // deepest visible layer out of existence.
+  const showBelow = (x, y) => {
+    for (let zoff = 1; zoff <= 8; zoff++) {
+      const zj = zi - zoff;
+      if (zj < 0) return false;
+      const bt = f.grid[zj * W * H + y * W + x];
+      const bs = tileInfo(bt)[0];
+      if (bs === "EMPTY" || bs === "NONE" || bs === "ENDLESS_PIT" || bs === "RAMP_TOP") continue;
+      const btok = spriteToken(bt, x + f.origin[0], y + f.origin[1], curZ - zoff,
+                               f, W, H, zj);
+      if (!btok) continue;
+      blit(btok, x, y);
+      ctx.fillStyle = `rgba(0,0,0,${Math.min(0.78, 0.22 * zoff)})`;
+      ctx.fillRect(x * px, y * px, px, px);
+      return true;
+    }
+    return false;
+  };
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -427,7 +464,12 @@ function drawMap() {
             }
             let best = null, n = 0;
             for (const k in votes) if (votes[k] > n) { best = k; n = votes[k]; }
+            // A tree branch four levels up has only other branches beside it, so there is
+            // no neighbour to borrow ground from — fall through to the level below, which
+            // is what DF shows through a canopy. Without this a third of the canopy
+            // levels rendered at 22-34% coverage, branches floating on black.
             if (best) blit(best, x, y);
+            else showBelow(x, y);
           }
           const m = TILEMAP.tiles[tt];
           if (m && m.t) {
@@ -437,28 +479,14 @@ function drawMap() {
           } else {
             blit(tok, x, y);
           }
+          for (const edge of edgeTokens(x, y)) blit(edge, x, y);
           continue;
         }
       }
       if (sprites) {
         // Open space: DF shows the levels below, dimmed with distance. Without this an
         // open tile is a black void and the fort reads as full of holes.
-        let shown = false;
-        for (let zoff = 1; zoff <= 3 && !shown; zoff++) {
-          const zj = zi - zoff;
-          if (zj < 0) break;
-          let bt = f.grid[zj * W * H + y * W + x];
-          const bs = tileInfo(bt)[0];
-          if (bs === "EMPTY" || bs === "NONE" || bs === "ENDLESS_PIT" || bs === "RAMP_TOP") continue;
-          const btok = spriteToken(bt, x + f.origin[0], y + f.origin[1], curZ - zoff,
-                                   { ...f, grid: f.grid }, W, H, zj);
-          if (!btok) continue;
-          blit(btok, x, y);
-          ctx.fillStyle = `rgba(0,0,0,${0.45 * zoff})`;
-          ctx.fillRect(x * px, y * px, px, px);
-          shown = true;
-        }
-        if (shown) continue;
+        if (showBelow(x, y)) continue;
       }
       const g = GLYPH[shape] ?? "?";
       if (g === " ") continue;
