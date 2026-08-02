@@ -2,7 +2,9 @@
 -- intents (anti-forgery). Reads agent_actions.txt (tab-separated: verb\targ1\targ2),
 -- applies ONLY the allow-listed verbs, never executes agent code. Reports counts.
 -- Kept in sync with game_scorer.ALLOWED_VERBS.
-local path = "/srv/df-bonsai/current/agent_actions.txt"
+-- the actions file is named per episode; parallel forts must not read each
+-- other's intents
+local path = (...) or "/srv/df-bonsai/current/agent_actions.txt"
 local f = io.open(path, "r")
 if not f then print("APPLY no-actions"); return end
 local w = df.global.world

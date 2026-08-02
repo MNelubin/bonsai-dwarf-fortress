@@ -22,10 +22,10 @@ class FakeSession:
         self.modes = []
         self.calls = 0
 
-    def run(self, script, timeout=None):
+    def run(self, script, *args, timeout=None):
         assert script == "bonsai-map-capture"
         self.calls += 1
-        mode = open(self.args_file).read().splitlines()[0]
+        mode = args[0] if args else "kf"     # mode is an argument now, not a file
         self.modes.append(mode)
         if not self.ok:
             return "MAPCAP ok=0 reason=no_anchor"
@@ -183,9 +183,8 @@ def test_a_delta_promoted_to_a_keyframe_is_recorded_as_a_keyframe(tmp_path, path
     cap, args = paths
 
     class Promoting(FakeSession):
-        def run(self, script, timeout=None):
-            open(self.args_file).read()          # requested mode ignored on purpose
-            self.calls += 1
+        def run(self, script, *args, timeout=None):
+            self.calls += 1                      # requested mode ignored on purpose
             with open(self.capture_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"kind": "kf", "tick": self.calls,
                                     "dims": [64, 64, 5], "units": []}) + "\n")

@@ -12,16 +12,11 @@
 --
 -- Args (via map_capture_args.txt, one value per line): mode(kf|d), out_path
 -- Emits to stdout only: "MAPCAP ok=1 bytes=N kind=kf|d tiles=N changed=N"
-local ARGS = '/srv/df-bonsai/current/map_capture_args.txt'
-local mode, out = 'kf', '/srv/df-bonsai/current/map_capture.jsonl'
-do
-  local f = io.open(ARGS, 'r')
-  if f then
-    local a = f:read('*l'); local b = f:read('*l'); f:close()
-    if a and #a > 0 then mode = a end
-    if b and #b > 0 then out = b end
-  end
-end
+-- mode and output path arrive as script arguments. Parallel episodes share this DF
+-- directory, so a single args file would have one fort dictating another's capture.
+local a1, a2 = ...
+local mode = (a1 and #a1 > 0) and a1 or 'kf'
+local out = (a2 and #a2 > 0) and a2 or '/srv/df-bonsai/current/map_capture.jsonl'
 
 local w = df.global.world
 local m = w.map

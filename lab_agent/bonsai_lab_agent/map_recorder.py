@@ -32,12 +32,14 @@ DEFAULT_KEYFRAME_EVERY = 8
 class MapRecorder:
     """Captures fort geometry + entities. One instance per recorded episode."""
 
-    def __init__(self, session, *, capture_file: str = CAPTURE_FILE,
+    def __init__(self, session, *, capture_file: str | None = None,
                  args_file: str = ARGS_FILE,
                  keyframe_every: int = DEFAULT_KEYFRAME_EVERY,
                  timeout: int = 60, max_bytes: int = 8_000_000):
         self.session = session
-        self.capture_file = capture_file
+        # default to the session's per-port scratch path so parallel episodes do not
+        # append their snapshots into one another's capture file
+        self.capture_file = capture_file or getattr(session, "capture_file", CAPTURE_FILE)
         self.args_file = args_file
         self.keyframe_every = max(1, keyframe_every)
         self.timeout = timeout
@@ -47,12 +49,11 @@ class MapRecorder:
         self.truncated = False
         self.errors: list[str] = []
         self._offset = 0
-        for p in (self.capture_file, self.args_file):
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except OSError:
-                pass
+        try:
+            if os.path.exists(self.capture_file):
+                os.remove(self.capture_file)
+        except OSError:
+            pass
 
     def snapshot(self, tick: int, *, keyframe: bool = False) -> dict | None:
         """Capture one snapshot. Returns the parsed event, or None if nothing usable.
@@ -64,9 +65,10 @@ class MapRecorder:
             return None
         want_kf = keyframe or (self.n % self.keyframe_every == 0)
         try:
-            with open(self.args_file, "w") as f:
-                f.write(f"{'kf' if want_kf else 'd'}\n{self.capture_file}\n")
-            out = self.session.run("bonsai-map-capture", timeout=self.timeout)
+            # mode and destination as ARGUMENTS: a shared args file would let one
+            # parallel episode dictate another's capture
+            out = self.session.run("bonsai-map-capture", "kf" if want_kf else "d",
+                                   self.capture_file, timeout=self.timeout)
         except Exception as e:                       # noqa: BLE001
             self.errors.append(f"rpc: {type(e).__name__}: {e}"[:160])
             return None

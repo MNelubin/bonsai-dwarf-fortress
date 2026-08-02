@@ -23,11 +23,14 @@ scr(){ run screen-dump 2>/dev/null | grep -aE '\|'; }
 click(){ printf '%s\n' "$1" > click_target.txt; run click-text >/dev/null 2>&1; }
 getnum(){ run lua "print(($1))" | grep -aoE '[-]?[0-9]+' | head -1; }
 click_until(){ for t in $(seq 1 ${3:-10}); do scr | grep -qiE "$2" && return 0; click "$1"; sleep 3; done; scr | grep -qiE "$2"; }
-kill_mine(){ local S; S=$(sup); for p in $(pgrep -x dwarfort); do [ "$p" != "$S" ] && kill -9 "$p" 2>/dev/null; done; }
+# Kill ONLY the DF on our own port. Killing every non-supervised dwarfort means
+# booting a second episode murders the first, which is what made parallel K-runs
+# impossible and forced everything to run one at a time.
+kill_mine(){ local P; P=$(ss -ltnp 2>/dev/null | grep "127.0.0.1:$PORT" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | head -1); [ -n "$P" ] && kill -9 "$P" 2>/dev/null; return 0; }
 
 case "$CMD" in
 kill)
-  rm -f /srv/df-bonsai/episode.lease
+  rm -f /srv/df-bonsai/episode.lease.$PORT
   kill_mine; sleep 1
   echo "KILLED supervised_still=$(sup)"
   ;;
@@ -42,7 +45,7 @@ boot)
   # leaves ~20s in which DF is alive but unlabelled, and the lab-agent reaper fires
   # on a loop — observed killing a fort mid-load. The lease is an EXPIRY, so a
   # crashed session cannot protect strays forever: once it lapses the reaper resumes.
-  echo $(( $(date +%s) + WD )) > /srv/df-bonsai/episode.lease
+  echo $(( $(date +%s) + WD )) > /srv/df-bonsai/episode.lease.$PORT
 
   # Detached watchdog. It must OUTLIVE this script (the session stays up afterwards),
   # so setsid it — but it is armed AFTER the boot below, against that one PID.
@@ -78,12 +81,20 @@ boot)
   fi
   sleep 3
 
+  # Menu navigation goes through a SHARED click_target.txt, so parallel boots click
+  # each other's targets — three simultaneous boots produced two LOADFAIL:savelist.
+  # Serialise only this phase: it is ~40s, while the part worth parallelising is the
+  # multi-minute advance that follows. Three year-long episodes then cost one boot
+  # queue plus one year, not three years.
+  exec 9>/srv/df-bonsai/boot.lock
+  flock 9
   click_until "Continue active game" "Planets of Dawning" 10 || { echo "LOADFAIL:worldlist"; exit 1; }
   click_until "The Planets of Dawning" "$SAVE" 10             || { echo "LOADFAIL:savelist"; exit 1; }
   click "$SAVE"
   for i in $(seq 1 40); do sleep 2; [ "$(getnum 'df.global.cur_year_tick')" != "0" ] && break; done
   [ "$(getnum 'df.global.cur_year_tick')" != "0" ] || { echo "LOADFAIL:notick"; exit 1; }
 
+  flock -u 9                      # menus done; the rest is per-port and safe in parallel
   run bonsai-headless-init >/dev/null
   run lua "df.global.world.status.popups:resize(0); df.global.pause_state=true" >/dev/null
   echo "READY port=$PORT tick=$(getnum 'df.global.cur_year_tick') frame=$(getnum 'df.global.world.frame_counter')"

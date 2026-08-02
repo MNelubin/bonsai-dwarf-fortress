@@ -27,8 +27,9 @@ import time
 DF_DIR = os.environ.get("BONSAI_DF_DIR", "/srv/df-bonsai/current")
 SESSION_SH = os.path.join(DF_DIR, "bonsai_session.sh")
 DFHACK_RUN = os.path.join(DF_DIR, "dfhack-run")   # wrapper: sets LD_LIBRARY_PATH, cds to DF_DIR
-ADVANCE_N = os.path.join(DF_DIR, "advance_n.txt")
-ACTIONS_FILE = os.path.join(DF_DIR, "agent_actions.txt")
+# Scratch paths are PER PORT. Every episode shares one DF directory, so a single
+# agent_actions.txt means two parallel forts read each other's intents.
+ACTIONS_FILE = os.path.join(DF_DIR, "agent_actions.txt")   # legacy single-episode name
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _OBS_RE = re.compile(r"(\w+)=(\S+)")
@@ -64,6 +65,8 @@ class DFSession:
         self.save = save
         self.booted = False
         self.boot_frame = 0
+        self.actions_file = os.path.join(df_dir, f"agent_actions.{port}.txt")
+        self.capture_file = os.path.join(df_dir, f"map_capture.{port}.jsonl")
 
     # ---------------------------------------------------------------- lifecycle
     def __enter__(self) -> "DFSession":
@@ -174,13 +177,13 @@ class DFSession:
         `actions` MUST already be allow-listed by the caller (game_scorer.sanitize_actions)
         — this layer is transport and does not police the agent.
         """
-        with open(ACTIONS_FILE, "w") as f:
+        with open(self.actions_file, "w") as f:
             for a in actions:
                 args = a.get("args") or []
                 if isinstance(args, dict):
                     args = list(args.values())
                 f.write("\t".join([a["verb"], *[str(x) for x in args]]) + "\n")
-        return self.run("bonsai-apply-actions")
+        return self.run("bonsai-apply-actions", self.actions_file)
 
     def advance(self, ticks: int, poll_timeout: int = 240) -> int:
         """Advance exactly `ticks` sim frames, then pause. Returns the new frame counter.
@@ -197,11 +200,10 @@ class DFSession:
             return self.frame()
         start = self.frame()
         target = start + ticks
-        with open(ADVANCE_N, "w") as f:
-            f.write(f"{ticks}\n")
-        self.run("bonsai-advance2")
-        deadline = time.time() + poll_timeout
-        interval = POLL_MIN_INTERVAL
+        # tick count as an ARGUMENT, not a shared advance_n.txt: parallel episodes in
+        # one DF directory would otherwise read each other's horizon
+        self.run("bonsai-advance2", str(ticks))
+        deadline = time.time() + poll_timeout        interval = POLL_MIN_INTERVAL
         while time.time() < deadline:
             fc, paused = self.frame_and_paused()
             if fc >= target and paused:
