@@ -20,7 +20,10 @@ cd /srv/df-bonsai/current || exit 1
 sup(){ ss -ltnp 2>/dev/null | grep 127.0.0.1:5000 | grep -oE 'pid=[0-9]+' | cut -d= -f2 | head -1; }
 run(){ DFHACK_PORT=$PORT timeout 25 ./hack/dfhack-run "$@" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
 scr(){ run screen-dump 2>/dev/null | grep -aE '\|'; }
-click(){ printf '%s\n' "$1" > click_target.txt; run click-text >/dev/null 2>&1; }
+# The click target is a script ARGUMENT. It used to be written to a shared
+# click_target.txt, so two boots racing between the write and the click clicked each
+# other's menu entries — three simultaneous boots produced two LOADFAIL:savelist.
+click(){ run click-text "$1" >/dev/null 2>&1; }
 getnum(){ run lua "print(($1))" | grep -aoE '[-]?[0-9]+' | head -1; }
 click_until(){ for t in $(seq 1 ${3:-10}); do scr | grep -qiE "$2" && return 0; click "$1"; sleep 3; done; scr | grep -qiE "$2"; }
 # Kill ONLY the DF on our own port. Killing every non-supervised dwarfort means
@@ -81,20 +84,17 @@ boot)
   fi
   sleep 3
 
-  # Menu navigation goes through a SHARED click_target.txt, so parallel boots click
-  # each other's targets — three simultaneous boots produced two LOADFAIL:savelist.
-  # Serialise only this phase: it is ~40s, while the part worth parallelising is the
-  # multi-minute advance that follows. Three year-long episodes then cost one boot
-  # queue plus one year, not three years.
-  exec 9>/srv/df-bonsai/boot.lock
-  flock 9
-  click_until "Continue active game" "Planets of Dawning" 10 || { echo "LOADFAIL:worldlist"; exit 1; }
-  click_until "The Planets of Dawning" "$SAVE" 10             || { echo "LOADFAIL:savelist"; exit 1; }
+  # Menu navigation is now fully per-process: the click target is an argument and
+  # every other path is port-scoped, so parallel boots no longer need serialising.
+  # Patience is doubled instead — with several DF instances loading the same save at
+  # once each one renders more slowly, and the failure mode of being one poll short is
+  # a dead episode, while the extra tries cost nothing on a boot that succeeds.
+  click_until "Continue active game" "Planets of Dawning" 20 || { echo "LOADFAIL:worldlist"; exit 1; }
+  click_until "The Planets of Dawning" "$SAVE" 20             || { echo "LOADFAIL:savelist"; exit 1; }
   click "$SAVE"
-  for i in $(seq 1 40); do sleep 2; [ "$(getnum 'df.global.cur_year_tick')" != "0" ] && break; done
+  for i in $(seq 1 60); do sleep 2; [ "$(getnum 'df.global.cur_year_tick')" != "0" ] && break; done
   [ "$(getnum 'df.global.cur_year_tick')" != "0" ] || { echo "LOADFAIL:notick"; exit 1; }
 
-  flock -u 9                      # menus done; the rest is per-port and safe in parallel
   run bonsai-headless-init >/dev/null
   run lua "df.global.world.status.popups:resize(0); df.global.pause_state=true" >/dev/null
   echo "READY port=$PORT tick=$(getnum 'df.global.cur_year_tick') frame=$(getnum 'df.global.world.frame_counter')"

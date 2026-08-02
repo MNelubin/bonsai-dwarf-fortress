@@ -111,7 +111,13 @@ class DFSession:
             pass
 
     def _env(self) -> dict:
-        return dict(os.environ, DFHACK_PORT=str(self.port))
+        # BONSAI_EPISODE_PORT as well as DFHACK_PORT: the former is what bonsai_session.sh
+        # boots and kills on, the latter is what dfhack-run connects to. Passing only
+        # DFHACK_PORT made every episode boot on the script's default 5001 no matter which
+        # port the session was constructed with — and, worse, made close() kill 5001
+        # instead of its own fort.
+        return dict(os.environ, DFHACK_PORT=str(self.port),
+                    BONSAI_EPISODE_PORT=str(self.port))
 
     # ---------------------------------------------------------------- primitives
     def run(self, *args: str, timeout: int = RPC_TIMEOUT) -> str:
@@ -203,7 +209,8 @@ class DFSession:
         # tick count as an ARGUMENT, not a shared advance_n.txt: parallel episodes in
         # one DF directory would otherwise read each other's horizon
         self.run("bonsai-advance2", str(ticks))
-        deadline = time.time() + poll_timeout        interval = POLL_MIN_INTERVAL
+        deadline = time.time() + poll_timeout
+        interval = POLL_MIN_INTERVAL
         while time.time() < deadline:
             fc, paused = self.frame_and_paused()
             if fc >= target and paused:
