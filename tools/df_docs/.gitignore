@@ -1,0 +1,9 @@
+# Raw captions and the transcript built from them are a verbatim copy of a third party's
+# video (Kitfox Games' beginner guide). They stay local: regenerate with
+#   python -m yt_dlp --skip-download --write-auto-sub --sub-lang "en.*" --sub-format vtt \
+#          -o "guide.%(ext)s" https://www.youtube.com/watch?v=aRTwK8XR6kE
+# Our own analysis derived from it (capability_report.md, contracts_partial.md) is
+# original work and IS tracked.
+*.vtt
+meta.json
+guide_transcript.txt
