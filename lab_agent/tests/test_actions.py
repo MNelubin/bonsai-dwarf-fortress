@@ -1,0 +1,175 @@
+"""Tests for the action gate.
+
+The gate is the anti-forgery boundary: everything past it is treated as legitimate, so
+its failure modes matter more than most. Two properties are asserted throughout — the
+gate never raises on untrusted input, and it never silently changes what was asked for
+without saying so.
+"""
+
+import pytest
+
+from bonsai_lab_agent.actions import (CATALOG, LIVE, available_actions, judge,
+                                      roadmap, sanitize)
+from bonsai_lab_agent.actions.schema import Arg, SchemaError, Verb
+
+
+# ---------------------------------------------------------------- catalog integrity
+def test_every_verb_names_an_observable():
+    """A verb whose effect cannot be read back cannot be scored, and has been shipped
+    before: dig designations that produced zero jobs, orders never validated into work."""
+    missing = [v.name for v in CATALOG if not v.observable.strip()]
+    assert missing == []
+
+
+def test_planned_verbs_carry_a_tranche_and_live_ones_do_not():
+    assert all(v.tranche >= 1 for v in CATALOG if v.status == "planned")
+    assert all(v.tranche == 0 for v in LIVE)
+
+
+def test_catalog_has_no_duplicate_verbs():
+    names = [v.name for v in CATALOG]
+    assert len(names) == len(set(names))
+
+
+def test_required_argument_may_not_follow_an_optional_one():
+    """Positional order is the wire format, so this shape would be unfillable."""
+    with pytest.raises(SchemaError):
+        Verb(name="x", category="c", doc="d", observable="o",
+             args=(Arg("a", "int", "", required=False, default=1),
+                   Arg("b", "int", "")))
+
+
+# ---------------------------------------------------------------- hostile input
+@pytest.mark.parametrize("junk", [None, 42, "dig", 3.5, True, object(), b"x"])
+def test_garbage_yields_no_actions_and_never_raises(junk):
+    clean, said = sanitize(junk)
+    assert clean == []
+    assert said
+
+
+def test_a_bare_dict_is_one_action():
+    clean, _ = sanitize({"verb": "advance"})
+    assert clean == [{"verb": "advance", "args": []}]
+
+
+def test_junk_among_good_actions_costs_only_itself():
+    clean, said = sanitize([{"verb": "advance"}, 7, {"verb": "nope"},
+                            {"verb": "build_workshop", "args": ["Still"]}])
+    assert [c["verb"] for c in clean] == ["advance", "build_workshop"]
+    assert len(said) == 2
+
+
+# ---------------------------------------------------------------- argument binding
+def test_positional_and_named_arguments_agree():
+    a = judge({"verb": "add_workorder", "args": ["ConstructBed", 5]})
+    b = judge({"verb": "add_workorder", "args": {"job": "ConstructBed", "amount": 5}})
+    assert a.ok and b.ok and a.args == b.args == ["ConstructBed", 5]
+
+
+def test_omitted_optional_argument_takes_its_default():
+    d = judge({"verb": "designate_dig", "args": []})
+    assert d.ok and d.args == [25]
+
+
+def test_missing_required_argument_is_refused_with_the_name():
+    d = judge({"verb": "add_workorder", "args": []})
+    assert not d.ok and "job" in d.reason
+
+
+def test_a_misspelled_argument_name_is_reported_not_ignored():
+    d = judge({"verb": "add_workorder", "args": {"job": "ConstructBed", "ammount": 5}})
+    assert d.ok                                   # amount falls back to its default
+    assert any("ammount" in r for r in d.repairs)
+
+
+# ---------------------------------------------------------------- the asymmetry
+def test_out_of_range_numbers_are_clamped_and_the_repair_is_reported():
+    """A scale mistake keeps the intent; the exaggeration is dropped, out loud."""
+    d = judge({"verb": "designate_dig", "args": [10_000]})
+    assert d.ok and d.args == [400]
+    assert any("400" in r for r in d.repairs)
+
+
+def test_an_unknown_enum_is_refused_because_it_cannot_be_repaired():
+    d = judge({"verb": "create_zone", "args": ["throne_room"]})
+    assert not d.ok
+
+
+def test_a_refused_enum_lists_what_was_allowed(monkeypatch):
+    """A refusal the controller cannot act on is only marginally better than silence.
+
+    Uses a synthetic live verb: every enum in the catalog today belongs to a planned
+    verb, and the planned check fires first (rightly — there is no point validating
+    arguments for something that cannot dispatch), so the enum path would otherwise have
+    no coverage at all.
+    """
+    from bonsai_lab_agent.actions import gate
+    v = Verb(name="_probe", category="test", doc="d", observable="o",
+             args=(Arg("kind", "enum", "which", choices=("bedroom", "pasture")),))
+    monkeypatch.setitem(gate.BY_NAME, "_probe", v)
+
+    bad = judge({"verb": "_probe", "args": ["throne_room"]})
+    assert not bad.ok
+    assert "bedroom" in bad.reason and "pasture" in bad.reason
+
+    loose = judge({"verb": "_probe", "args": ["BedRoom"]})
+    assert loose.ok and loose.args == ["bedroom"]
+    assert loose.repairs                          # the correction is reported, not silent
+
+
+def test_numbers_arrive_as_strings_and_still_work():
+    d = judge({"verb": "add_workorder", "args": ["ConstructBed", "12"]})
+    assert d.ok and d.args == ["ConstructBed", 12]
+
+
+@pytest.mark.parametrize("truthy,expected",
+                         [("yes", True), ("FALSE", False), (1, True), (0, False),
+                          ("on", True), (True, True)])
+def test_booleans_accept_what_a_model_actually_writes(truthy, expected):
+    d = judge({"verb": "set_labor", "args": ["PLANT", truthy]})
+    assert d.ok and d.args == ["PLANT", expected]
+
+
+def test_an_uninterpretable_boolean_is_refused():
+    d = judge({"verb": "set_labor", "args": ["PLANT", "maybe"]})
+    assert not d.ok
+
+
+# ---------------------------------------------------------------- planned verbs
+def test_a_planned_verb_is_refused_with_its_tranche():
+    d = judge({"verb": "build_farm_plot"})
+    assert not d.ok and "tranche 1" in d.reason
+
+
+def test_planned_verbs_stay_out_of_the_advertised_actions():
+    live = {a["verb"] for a in available_actions()}
+    assert "build_farm_plot" not in live
+    assert "build_farm_plot" in {a["verb"] for a in available_actions(True)}
+
+
+def test_the_roadmap_is_ordered_by_tranche():
+    tr = [r["tranche"] for r in roadmap()]
+    assert tr == sorted(tr)
+    assert tr and tr[0] == 1
+
+
+def test_tranche_one_is_the_food_and_drink_chain():
+    """The measured year failed on consumables: drink 12 to 0, nothing brewed. Tranche 1
+    exists to fix exactly that, so it should not quietly fill up with anything else."""
+    first = {r["verb"] for r in roadmap() if r["tranche"] == 1}
+    assert {"build_farm_plot", "set_crop", "assign_noble",
+            "set_kitchen_flag", "add_workorder_conditional"} <= first
+
+
+# ---------------------------------------------------------------- discoverability
+def test_advertised_actions_carry_argument_schemas():
+    spec = {a["verb"]: a for a in available_actions()}
+    wo = spec["add_workorder"]
+    assert [x["name"] for x in wo["args"]] == ["job", "amount"]
+    assert wo["args"][1]["default"] == 10
+    assert wo["args"][1]["range"] == [1, 200]
+
+
+def test_the_schema_stays_small_enough_to_ship_every_round():
+    import json
+    assert len(json.dumps(available_actions())) < 4000

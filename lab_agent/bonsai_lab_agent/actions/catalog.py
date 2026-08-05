@@ -1,0 +1,369 @@
+"""The action catalog — everything a Dwarf Fortress player can do, declared.
+
+Grounded in the official Kitfox beginner guide (tools/df_docs/guide_transcript.txt,
+timestamps quoted per verb) and the capability analysis derived from it. The guide is
+the right source because it is the publisher's own statement of what the basic game
+consists of, and it is ruthless about the order things matter in: it calls the minimum
+"beds, beer and biscuits" and spends its longest chapters on digging and on the food
+chain.
+
+STATUS is the point of this file. `live` verbs dispatch today. `planned` verbs are ones a
+player has and the agent does not — declared here with their intended signature so the
+gap is a list you can query and shrink, not a thing someone has to remember. A planned
+verb is REFUSED at the gate with a reason naming its tranche, never silently dropped.
+
+TRANCHES are ordered by survival impact, measured rather than guessed. A full game year
+under the current five verbs ended with drink 12 -> 0, nothing farmed or brewed, and 2 of
+7 dwarves dead — for both the idle policy and the developing one. So tranche 1 is exactly
+the chain that turns dirt into a mug of beer, and nothing else:
+
+    1  stay alive        the food and drink chain, and the manager who runs it
+    2  stay sane         rooms, zones and the furniture that makes them count
+    3  shape the world   the terrain verbs: chop, smooth, build, prioritise
+    4  compose           templates and workshop clusters over the atoms below them
+
+One measured fact drives tranche 1's first verb. On the pinned save only
+EXPEDITION_LEADER is filled; MANAGER and BOOKKEEPER are vacant. The guide is explicit
+that the manager is what turns an order into a job — which is the most plausible reason
+`workorders_done` sat at 0 for an entire game year while workshops stood ready.
+"""
+
+from __future__ import annotations
+
+from .schema import Arg, Verb
+
+# Labours the guide singles out as needing equipment, so they cannot be blanket-assigned
+# to everyone the way the rest are (guide 09:50). Kept here because the gate should be
+# able to explain a refusal, not just issue one.
+EQUIPPED_LABORS = ("MINE", "CUTWOOD", "HUNT")
+
+CATALOG: tuple[Verb, ...] = (
+    # ---------------------------------------------------------------- time
+    Verb(
+        name="advance", category="time",
+        doc="Let the fort run. The only verb that changes nothing by itself.",
+        observable="frame_counter increases",
+        guide="",
+    ),
+
+    # ---------------------------------------------------------------- live today
+    Verb(
+        name="set_labor", category="labour",
+        doc="Turn a labour on or off for every citizen at once.",
+        observable="unit.status.labors[id] on each citizen",
+        args=(
+            Arg("labor", "str", "df.unit_labor name, e.g. PLANT or BREWER"),
+            Arg("on", "bool", "enable or disable", required=False, default=True),
+        ),
+        guide="09:50",
+        note="Blunt compared to a player, who assigns per dwarf and can pull one dwarf "
+             "out of the general pool to specialise them (guide 29:44). See "
+             "set_dwarf_labor.",
+    ),
+    Verb(
+        name="designate_dig", category="terrain",
+        doc="Extend the fort: a stairwell down from a pinned origin, plus rooms off "
+            "each landing.",
+        observable="dug_tiles, derived from the fall in solid tiles inside the T0 region",
+        args=(Arg("tiles", "int", "how many tiles to designate", lo=1, hi=400,
+                  required=False, default=25),),
+        guide="12:06",
+        note="A player chooses WHERE and in what shape; this picks for them. The shape "
+             "is deliberate — every tile connects to the one above, because "
+             "designations that nothing can walk to generate no jobs.",
+    ),
+    Verb(
+        name="create_stockpile", category="logistics",
+        doc="Place a 2x2 stockpile on a ring around the wagon.",
+        observable="buildings count of type Stockpile",
+        args=(Arg("count", "int", "how many to place", lo=1, hi=8,
+                  required=False, default=1),),
+        guide="08:00",
+        note="Accepts the default everything. A player's first act is to NARROW it — "
+             "the guide removes stone and wood so bulk goods cannot crowd out "
+             "perishables (09:06). See configure_stockpile.",
+    ),
+    Verb(
+        name="add_workorder", category="production",
+        doc="Queue a manager order for a job type.",
+        observable="workorders_done, from the fall in amount_left across manager_orders",
+        args=(
+            Arg("job", "str", "df.job_type name, e.g. ConstructBed or BrewDrink"),
+            Arg("amount", "int", "how many", lo=1, hi=200, required=False, default=10),
+        ),
+        guide="18:42",
+        note="No material filter and no condition, so it cannot express the standing "
+             "order a player actually writes: reorder whenever free barrels fall below "
+             "five (28:14).",
+    ),
+    Verb(
+        name="build_workshop", category="production",
+        doc="Build a workshop on a ring around the wagon.",
+        observable="buildings count of type Workshop with the requested subtype",
+        args=(Arg("kind", "str", "df.workshop_type name, e.g. Carpenters, Still",
+                  required=False, default="Carpenters"),),
+        guide="16:48",
+    ),
+
+    # ================================================================ TRANCHE 1
+    # The chain from dirt to a mug of beer, plus the administrator who runs it.
+    Verb(
+        name="assign_noble", category="administration", status="planned", tranche=1,
+        doc="Put a dwarf in an administrative position. MANAGER validates work orders "
+            "into jobs; BOOKKEEPER makes stockpile counts exact.",
+        observable="the entity position assignment names a histfig, and workorders_done "
+                   "rises above zero for the first time",
+        args=(
+            Arg("position", "enum", "which office",
+                choices=("MANAGER", "BOOKKEEPER", "BROKER", "CHIEF_MEDICAL_DWARF",
+                         "SHERIFF", "MILITIA_COMMANDER")),
+            Arg("dwarf", "str", "citizen id, or 'best' to let the evaluator score and "
+                                "choose", required=False, default="best"),
+        ),
+        guide="17:55",
+        note="Cheapest verb in the whole catalog and possibly the highest leverage: "
+             "measured, MANAGER is vacant on the pinned save while add_workorder has "
+             "always been available.",
+    ),
+    Verb(
+        name="build_farm_plot", category="food-water", status="planned", tranche=1,
+        doc="Lay out a farm plot on soil. Without plants there is nothing to eat, "
+            "nothing to brew and nothing to cook.",
+        observable="a building of type FarmPlot exists; seed and plant counts move",
+        args=(
+            Arg("width", "int", "tiles", lo=1, hi=10, required=False, default=6),
+            Arg("height", "int", "tiles", lo=1, hi=10, required=False, default=3),
+        ),
+        guide="24:32",
+        note="The guide's 6x3 plot is said to feed roughly fifty dwarves, so the sizes "
+             "that matter are small and the interesting decision is placement on soil, "
+             "not scale.",
+    ),
+    Verb(
+        name="set_crop", category="food-water", status="planned", tranche=1,
+        doc="Choose what a farm plot grows in a given season.",
+        observable="the plot's per-season plant id",
+        args=(
+            Arg("season", "enum", "which season",
+                choices=("spring", "summer", "autumn", "winter", "all")),
+            Arg("plant", "str", "plant raw id, e.g. MUSHROOM_HELMET_PLUMP"),
+        ),
+        guide="26:04",
+        note="Plump helmets are the guide's staple: edible raw, brewable, and the seeds "
+             "survive both — which is why the kitchen flags below matter so much.",
+    ),
+    Verb(
+        name="set_kitchen_flag", category="food-water", status="planned", tranche=1,
+        doc="Forbid or allow cooking, brewing or seed use of one material.",
+        observable="the kitchen exclusion list for that material",
+        args=(
+            Arg("material", "str", "plant or drink raw id"),
+            Arg("use", "enum", "which use to change",
+                choices=("cook", "brew", "seed")),
+            Arg("allow", "bool", "allow it or forbid it", required=False, default=False),
+        ),
+        guide="11:18",
+        note="The guide's most emphasised early setting and pure downside protection: "
+             "cooking destroys seeds, and cooking drinks turns the beer supply into "
+             "meals. Two clicks that decide whether the fort has a second year.",
+    ),
+    Verb(
+        name="add_workorder_conditional", category="production", status="planned",
+        tranche=1,
+        doc="A standing order: reissue this job whenever a stock level falls below a "
+            "threshold.",
+        observable="the order's condition list, and the stock it guards staying above "
+                   "the threshold over time",
+        args=(
+            Arg("job", "str", "df.job_type name"),
+            Arg("amount", "int", "batch size", lo=1, hi=100, required=False, default=10),
+            Arg("item", "str", "what to watch, e.g. DRINK or BARREL",
+                required=False, default=""),
+            Arg("below", "int", "reorder when the watched stock is under this",
+                lo=0, hi=1000, required=False, default=0),
+        ),
+        guide="28:14",
+        note="This is how a player stops babysitting: brewing that restarts itself, and "
+             "a barrel supply that never runs out. One-shot orders cannot keep a fort "
+             "alive across a year without attention.",
+    ),
+
+    # ================================================================ TRANCHE 2
+    # Rooms, zones and the furniture that makes them count.
+    Verb(
+        name="place_furniture", category="quality-of-life", status="planned", tranche=2,
+        doc="Install an already-made bed, table, chair, door, cabinet or coffer into a "
+            "dug room.",
+        observable="a building of that furniture type exists at the position",
+        args=(
+            Arg("kind", "enum", "what to install",
+                choices=("Bed", "Table", "Chair", "Door", "Cabinet", "Coffer", "Hatch")),
+            Arg("count", "int", "how many", lo=1, hi=20, required=False, default=1),
+        ),
+        guide="21:59",
+        note="Without this, add_workorder('ConstructBed') only makes objects that sit "
+             "in a stockpile. A bed is not a bedroom until it is built into one.",
+    ),
+    Verb(
+        name="create_zone", category="quality-of-life", status="planned", tranche=2,
+        doc="Paint a zone: bedroom, dining hall, meeting area, pen and pasture, office, "
+            "or a surface fruit-gathering area.",
+        observable="a civzone of that type covering the rectangle",
+        args=(
+            Arg("kind", "enum", "zone type",
+                choices=("bedroom", "dining", "meeting", "pasture", "office",
+                         "gather_fruit", "dormitory", "refuse")),
+            Arg("width", "int", "tiles", lo=1, hi=20, required=False, default=6),
+            Arg("height", "int", "tiles", lo=1, hi=20, required=False, default=6),
+        ),
+        guide="21:39",
+        note="Livestock need a pasture or they do not eat (21:18). A meeting area is "
+             "where idle dwarves gather, and the guide wants it 6x6 and clear so they "
+             "can dance.",
+    ),
+    Verb(
+        name="assign_room", category="quality-of-life", status="planned", tranche=2,
+        doc="Give a room to a specific dwarf, or let the next claimant take it.",
+        observable="the zone's assigned unit id",
+        args=(
+            Arg("kind", "enum", "which room",
+                choices=("bedroom", "office", "dining")),
+            Arg("dwarf", "str", "citizen id, or 'best' for the evaluator's pick, or "
+                                "'any' to leave it unclaimed",
+                required=False, default="any"),
+        ),
+        guide="23:06",
+        note="A manager needs an office once the fort passes twenty dwarves (18:19), so "
+             "this stops being cosmetic and starts being a requirement.",
+    ),
+    Verb(
+        name="set_dwarf_labor", category="labour", status="planned", tranche=2,
+        doc="Set one dwarf's labours, or pull them out of the general pool so they only "
+            "do their speciality.",
+        observable="that unit's labor flags, and the job it picks up next",
+        args=(
+            Arg("dwarf", "str", "citizen id, or 'best' for the evaluator's pick"),
+            Arg("labor", "str", "df.unit_labor name"),
+            Arg("only", "bool", "remove them from the general labour pool",
+                required=False, default=False),
+        ),
+        guide="29:44",
+        note="The guide's fix for a fort where smoothing was starving mining of hands.",
+    ),
+    Verb(
+        name="configure_stockpile", category="logistics", status="planned", tranche=2,
+        doc="Say what a stockpile accepts, and whether it uses barrels or bins.",
+        observable="the pile's accept flags and container limit",
+        args=(
+            Arg("index", "int", "which stockpile", lo=0, hi=64),
+            Arg("accepts", "str", "category list, e.g. 'food:seeds' or 'refuse'"),
+            Arg("containers", "bool", "allow barrels and bins in this pile",
+                required=False, default=True),
+        ),
+        guide="09:06",
+        note="Three separate fort-saving uses in the guide: a seeds pile with barrels "
+             "OFF so dwarves can find the seeds, a refuse pile so corpses leave the "
+             "fort, and a starter pile with stone and wood excluded.",
+    ),
+    Verb(
+        name="cancel_dwarf_job", category="labour", status="planned", tranche=2,
+        doc="Drop one dwarf's current job so somebody else can take it.",
+        observable="that unit's current job becomes empty, then differs",
+        args=(Arg("dwarf", "str", "citizen id"),),
+        guide="20:31",
+        note="The guide's answer to one miner working while a second pick sits idle.",
+    ),
+
+    # ================================================================ TRANCHE 3
+    # The terrain vocabulary. Mostly what it takes to survive an aquifer.
+    Verb(
+        name="chop_trees", category="terrain", status="planned", tranche=3,
+        doc="Mark surface trees for felling.",
+        observable="log count rises",
+        args=(Arg("count", "int", "how many trees", lo=1, hi=60,
+                  required=False, default=10),),
+        guide="12:52",
+        note="Wood is the input to barrels, beds and the constructed walls that seal an "
+             "aquifer, so this feeds three other chains.",
+    ),
+    Verb(
+        name="build_construction", category="terrain", status="planned", tranche=3,
+        doc="Build a wall, floor, ramp or staircase out of stored material.",
+        observable="the tiletype at the position becomes a construction",
+        args=(
+            Arg("kind", "enum", "what to build",
+                choices=("wall", "floor", "ramp", "stair")),
+            Arg("count", "int", "how many tiles", lo=1, hi=40,
+                required=False, default=4),
+        ),
+        guide="14:20",
+        note="Half of the aquifer technique, and the only way to repair a staircase "
+             "that was dug in the wrong order (29:02).",
+    ),
+    Verb(
+        name="smooth", category="terrain", status="planned", tranche=3,
+        doc="Smooth dug stone. Stops aquifer seepage and makes rooms worth more.",
+        observable="tile special becomes SMOOTH; room value rises",
+        args=(Arg("count", "int", "how many tiles", lo=1, hi=200,
+                  required=False, default=25),),
+        guide="15:46",
+        note="Does double duty: the cheap way through an aquifer in stone, and the "
+             "cheap way to make a bedroom please its owner.",
+    ),
+    Verb(
+        name="set_dig_priority", category="terrain", status="planned", tranche=3,
+        doc="Set the priority of mining designations, 1 highest to 7 lowest.",
+        observable="the designation priority, and miners keeping to mining",
+        args=(Arg("priority", "int", "1..7", lo=1, hi=7, required=False, default=4),),
+        guide="14:20",
+        note="At priority 2 dwarves stop wandering off to haul instead of dig.",
+    ),
+    Verb(
+        name="set_standing_order", category="logistics", status="planned", tranche=3,
+        doc="Flip a fort-wide standing order, such as collecting refuse left outdoors.",
+        observable="the standing order flag",
+        args=(
+            Arg("order", "str", "standing order name"),
+            Arg("on", "bool", "enable", required=False, default=True),
+        ),
+        guide="32:14",
+    ),
+
+    # ================================================================ TRANCHE 4
+    # Composition. Nothing here does anything the atoms above cannot; it decides
+    # placement and bundles, which is where an offline search can help the agent.
+    Verb(
+        name="apply_template", category="composition", status="planned", tranche=4,
+        doc="Stamp a stored room design at a chosen spot: dig, build and zone in one "
+            "intent.",
+        observable="the finished room's value reaches the template's declared tier",
+        args=(
+            Arg("template", "str", "template name from the library"),
+            Arg("tier", "int", "quality tier to aim for", lo=1, hi=5,
+                required=False, default=1),
+        ),
+        guide="",
+        note="Designs are improved OUTSIDE agent training, by search against room value. "
+             "The agent picks a name and a tier; it never has to learn floor plans.",
+    ),
+    Verb(
+        name="build_workshop_cluster", category="composition", status="planned",
+        tranche=4,
+        doc="Place a related group of workshops, e.g. woodworking, and the stockpiles "
+            "that feed them.",
+        observable="every workshop in the cluster exists and is reachable",
+        args=(
+            Arg("cluster", "str", "cluster name from the library"),
+            Arg("scale", "int", "how many copies", lo=1, hi=4,
+                required=False, default=1),
+        ),
+        guide="",
+        note="Carries its cost and the capabilities it unlocks as metadata, so the "
+             "agent can weigh one against another instead of memorising which workshop "
+             "makes barrels.",
+    ),
+)
+
+BY_NAME = {v.name: v for v in CATALOG}
+LIVE = tuple(v for v in CATALOG if v.status == "live")
+PLANNED = tuple(v for v in CATALOG if v.status == "planned")
