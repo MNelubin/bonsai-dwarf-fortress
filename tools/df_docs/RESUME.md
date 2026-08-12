@@ -1,148 +1,109 @@
-# Where the atomic-action work stopped
+# Atomic actions — state as of 2026-08-06
 
-Paused 2026-08-06, mid-way through giving the agent player parity. Nothing is half-applied
-to the live system: the action library is committed and passing, and everything below is
-either done or not started. Read this before picking it up again.
+Everything below is either done and verified on a live fort, or explicitly not started.
+Read this before picking the work up again.
 
-## The manager hypothesis — half right, and the important half was wrong
+## The chain works end to end
 
-Two separate questions got tangled together. Both are now answered.
+For the first time, an agent intent turns into a manufactured object:
 
-**Seating a noble: solved.** `MANAGER` is position id 10 on the fortress entity with
-`required_office = 1`, and its slot held `histfig = -1`. Writing that field is a silent
-no-op — measured, it moved -1 → 1741 while `dfhack.units.getNoblePositions` still
-returned nothing. DF and DFHack resolve an office holder by walking the appointee's
-`historical_figure.entity_links` for a `histfig_entity_link_positionst` and binsearching
-assignments by the link's `assignment_id`. With the link inserted it works, verified
-through the real dispatcher: `APPLY assign_noble=2`, unit 1548 holding
-`MANAGER,BOOKKEEPER`, the pre-existing `EXPEDITION_LEADER` untouched. `assign_noble` is
-now a live verb.
+    APPLY build_workshop=1   ->  shops=1, still standing 16,000 ticks later
+    APPLY add_workorder=2    ->  BEDS=2, logs 3 -> 1
 
-Trap worth keeping: `MANAGER` and friends are **site** positions on
-`plotinfo.main.fortress_entity`. `make-monarch.lua` uses the **civ** entity because
-MONARCH is a civ position, so copying it verbatim seats nobody.
+Verified through the real dispatcher, not a probe script.
 
-**Why work orders do nothing: still open, and it is NOT the manager.** With
-`getNoblePositions` confirming MANAGER and BOOKKEEPER, an order stayed
-`validated=0 active=0 amount_left=5` across 12,000 ticks. Forcing `validated`, `active`
-and `frequency = OneTime` by hand produced no job over another 9,000.
-
-So the fault is in the ORDER. Ours sets only `job_type`; `manager_order` also carries
-`reaction_name`, `material_category`, `item_conditions` and `order_conditions`.
-
-**Confound to control for first:** that probe fort had no workshop at all, which alone
-could explain the final step. The next experiment is ordered: build the carpenter, place
-the order, and only if it still does nothing, diff our order's fields against one created
-through DFHack's `orders` plugin.
-
-## Work orders: SOLVED, and the answer was in the guide all along
-
-Three defects were stacked on top of each other. All three are fixed and the whole chain
-now runs: build a workshop, order beds, beds appear, workshop survives.
+## Three stacked defects, all fixed
 
 **1. `build_workshop` was a silent no-op.** `dfhack.buildings.constructBuilding` with no
 `items` returns a valid-looking building whose build job has no reagent; DF cancels the
 job and drops the building while the caller sees success. Measured: `APPLY
-build_workshop=1`, then 20,000 ticks later `buildings.all` held only the wagon. That alone
-explains `workorders_done == 0` for a game year — there was never a workshop to work in.
+build_workshop=1`, then 20,000 ticks later `buildings.all` held only the wagon. This alone
+explains `workorders_done == 0` for a whole game year — there was never a workshop to work
+in. It also explains why the `buildings` observable looked like progress: stockpiles are
+abstract and need no construction, so the count rose on those alone.
 
-**2. Manager orders do not work here at all, and it is not our code.** With the manager
-seated (`getNoblePositions` confirms), the carpenter at `construction_stage=3`,
-`status.validated` and `.active` forced, `material_category.wood` set, `frequency=OneTime`,
-six idle CARPENTERs and three free logs — the order still made no job in 15,000 ticks.
+**2. Manager orders do not work here, and it is not our code.** With the manager seated
+(`getNoblePositions` confirms), the carpenter at `construction_stage=3`,
+`status.validated` and `.active` forced, `material_category.wood` set,
+`frequency=OneTime`, six idle CARPENTERs and three free logs — no job in 15,000 ticks.
 DFHack's own `workorder '{"job":"ConstructBed","amount_total":3}'` behaves identically.
+Seven causes eliminated one at a time; the mechanism remains unexplained and unused.
 
 **3. The guide never used a manager order for this.** At 17:10 it clicks the carpenter and
-adds a task *directly to the workshop* — no manager, no validation, no office. And at
-18:19 it says outright that the office is not required until twenty dwarves, which kills
-the office theory for a seven-dwarf fort. `add_workorder` now creates jobs on the workshop
-via `job.addGeneralRef(BUILDING_HOLDER)` + `shop.jobs:insert` + `job.linkIntoWorld` +
-**`job.attachJobItem`**, and beds get made within 4,000 ticks.
+adds a task *directly to the workshop* — no manager, no validation, no office. At 18:19 it
+says outright that the office is not required until twenty dwarves, which kills the office
+theory for a seven-dwarf fort. `add_workorder` now creates jobs on the workshop:
+`addGeneralRef(BUILDING_HOLDER)` + `shop.jobs:insert` + `linkIntoWorld` +
+**`attachJobItem`**. Beds appear within 4,000 ticks.
 
-The unifying rule, learned three times today: **anything DFHack creates without an
-explicit reagent gets cancelled by DF and silently removed.** It applied to the workshop
-building and to the workshop job alike.
+**The unifying rule, learned three times in one day:** anything DFHack creates without an
+explicit reagent is cancelled by DF and silently removed.
 
-**Reagent selection is subtle.** Handing a job the log a workshop is MADE of destroys the
-workshop (`shops` went 1 to 0 the instant a bed job claimed one). But excluding
-`flags.in_building` is far too broad, because at embark every supply sits inside the
-WAGON, which is also a building — that guard left the fort unable to build anything at
-all. The working rule asks `dfhack.items.getHolderBuilding` and accepts an item held by
-nothing or by the wagon.
+**Reagent selection has a trap on both sides.** Handing a job the log a workshop is MADE
+of destroys the workshop (`shops` 1 → 0 the instant a bed job claimed one). But guarding
+on `flags.in_building` is far too broad — at embark every supply sits inside the WAGON,
+which is also a building, and that version left the fort unable to build anything at all.
+The working rule asks `dfhack.items.getHolderBuilding` and accepts an item held by nothing
+or by the wagon.
 
-Verified end to end through the real dispatcher:
+## Seating nobles: solved
 
-    APPLY build_workshop=1     ->  shops=1, and it stays across 16,000 ticks
-    APPLY add_workorder=2      ->  BEDS=2, logs 3 -> 1
+`assign_noble` is live. DF and DFHack resolve an office holder by walking the appointee's
+`historical_figure.entity_links` for a `histfig_entity_link_positionst`, not by reading
+`assignment.histfig` — writing that field alone moved it -1 → 1741 while
+`getNoblePositions` still returned nothing. Verified: `APPLY assign_noble=2`, unit 1548
+holding `MANAGER,BOOKKEEPER`, the pre-existing `EXPEDITION_LEADER` untouched.
 
-## Structures pinned by probe (2026-08-06)
+Trap: `MANAGER` and friends are **site** positions on `plotinfo.main.fortress_entity`.
+`make-monarch.lua` uses the **civ** entity because MONARCH is a civ position, so copying
+it verbatim seats nobody.
 
-Useful regardless of the above, all read off the live build:
+Note it did NOT fix work orders — that hypothesis was mine and it was wrong.
+
+## The action library
+
+`lab_agent/bonsai_lab_agent/actions/` — a verb is a declaration (name, typed args, the
+observable that proves it worked, tranche). The gate repairs scale mistakes, refuses
+category mistakes, returns a reason for every refusal, and hands the controller a 1.5 KB
+schema. **7 live, 17 planned.** Wired into `game_scorer.sanitize_actions` and into the
+recorder, so refusal reasons are audit evidence in replays. 200 tests pass.
+
+## Not started
+
+Tranche 1 is now `build_farm_plot`, `set_crop`, `set_kitchen_flag`,
+`add_workorder_conditional` — what remains of the chain from dirt to a mug of beer, which
+is where the measured year run died (drink 12 → 0, nothing brewed, 2 of 7 dead).
+
+`add_workorder_conditional` needs rethinking: it was specified against manager orders,
+and manager orders do not work here. A standing order may have to be re-implemented as
+evaluator-side bookkeeping that re-issues direct workshop jobs when a stock level falls.
+
+Tranches 2–4 (zones, furniture, terrain vocabulary, templates) are untouched. The
+room-template library and the offline design search have not been started; DFHack ships
+`quickfort`/`blueprint`, which is the natural storage format and would save inventing one.
+
+## Structures pinned by probe
 
 | thing | where |
 |---|---|
 | noble positions | `plotinfo.main.fortress_entity.positions.own` (`.code`, `.id`), holders in `.assignments` (`.position_id`, `.histfig`, -1 = vacant) |
 | kitchen flags | `plotinfo.kitchen` — five parallel vectors of length 110, plus `kitchen_exc_type` = {0 Cook, 1 Brew} |
 | farm plot | `df.building_type.FarmPlot` = 4; `building_farmplotst.plant_id` is `int16[4]`, one per season |
-| work order | `manager_order` has `reaction_name`, `material_category`, `item_conditions`, `order_conditions`, `frequency`, `max_workshops`, and `status.{validated,active}` |
-| brewing | there is no `job_type.BrewDrink` in this build — brewing is a reaction, so `reaction_name` matters |
+| work order | `manager_order` has `reaction_name`, `material_category`, `item_conditions`, `order_conditions`, `frequency`, `max_workshops`, `status.{validated,active}` |
+| brewing | no `job_type.BrewDrink` in this build — brewing is a reaction, so `reaction_name` matters |
 
-Absent in this build, so do not reach for them: `dfhack.matinfo.getTile`,
-`world.kitchen`, `world.manager_order_next_id`.
+Absent here, do not reach for them: `dfhack.matinfo.getTile`, `world.kitchen`,
+`world.manager_order_next_id`.
 
-## Done and committed
+## Research notes
 
+`capability_report.md` — what a player can do, checked against the guide and the wiki.
+Sound; it had its verification pass.
 
-| commit | what |
-|---|---|
-| `8e62223` | the action library — declarative catalog, typed gate, 6 live / 18 planned verbs |
-| `18eefc7` | fog of war recorded in the map track; walls composited over black |
-| `71f2431` | palette recolouring — DF draws rock greyscale and tints by material |
-
-`lab_agent/bonsai_lab_agent/actions/` is the piece to build on. A verb is a declaration
-(name, typed args, the observable that proves it worked, tranche); the gate repairs scale
-mistakes, refuses category mistakes, and hands the controller a 1.5 KB schema so it does
-not have to guess argument order. 196 tests pass.
-
-Deploy state: **the library is NOT wired into `game_scorer.sanitize_actions` yet.** The old
-six-name gate is still what runs a scored episode. That swap is the first thing to do and
-is deliberately small — `sanitize()` returns the same `{"verb", "args"}` shape, so the
-DFHack dispatcher does not change.
-
-## The one measurement worth acting on first
-
-On the pinned save only `EXPEDITION_LEADER` is filled; `MANAGER` and `BOOKKEEPER` are
-vacant. The publisher's own beginner guide says the manager is what turns a work order
-into a job. Our agent has had `add_workorder` all along and `workorders_done` sat at 0 for
-an entire game year with workshops standing ready.
-
-The experiment is one episode: assign `MANAGER`, issue the same orders, see whether
-`workorders_done` leaves zero. If it does, one cheap verb unblocks a whole scoring term
-that has been structurally dead.
-
-## Not started
-
-Tranche 1 (`assign_noble`, `build_farm_plot`, `set_crop`, `set_kitchen_flag`,
-`add_workorder_conditional`) is declared but unwired — those are the verbs that turn dirt
-into a mug of beer, which is what the measured year run failed at (drink 12 to 0, nothing
-brewed, 2 of 7 dead).
-
-## Research: partial, and not safe to build from
-
-`contracts_partial.md` holds 54 proposed DFHack contracts from three of seven research
-lanes. **The synthesis never ran and most reviews are missing**, so every `confirmed`
-rating in it is the proposing agent's own claim rather than a checked fact. Lanes that
-never reported: rooms, blueprints, zones, buildings. Re-run before trusting any of it.
-
-The substrate is promising and worth knowing: DFHack already ships `orders`, `stockpiles`,
-`zone`, `buildingplan`, `blueprint`/`quickfort`, `design`, `logistics` and `sort`. Work
-orders and stockpile settings appear to serialise already, and quickfort looks like the
-natural storage format for the room-template library — which would mean not inventing one.
-
-`capability_report.md` is the analysis of what a player can actually do, checked against
-the guide and the wiki. That one had its verification pass and is sound.
-
-## Sources
+`tranche1_contracts.md` and `contracts_partial.md` — leads with citations, not settled
+facts. Their skeptics confirmed nothing (they were told to default to "does not hold"),
+and `contracts_partial.md` is missing four of seven lanes and its synthesis entirely. The
+`assign_noble` contract is the one lead so far to survive contact with a live fort.
 
 The guide transcript and raw captions are third-party material and stay out of git (see
-`.gitignore` here). Regenerate with `yt-dlp` if needed; the URL is in the ignore file.
+`.gitignore` here); regenerate with `yt-dlp` if needed.
