@@ -60,6 +60,27 @@ end
 -- exists this is deliberately the dumbest defensible rule — most total skill experience,
 -- ties broken by unit id so it is reproducible across runs. Honest placeholder rather
 -- than a weighted formula nobody has validated.
+-- A free building material, or nil. Workshops need one and DFHack will NOT find it for
+-- you: constructBuilding with no `items` produces a building whose ConstructBuilding job
+-- has no reagent, DF cancels the job and drops the building, and the caller sees a
+-- perfectly successful return value. Measured live: build_workshop reported success,
+-- world.buildings.all held nothing but the wagon 20,000 ticks later, and the identical
+-- call WITH a log attached built the workshop. That silent failure is why the fort never
+-- had a workshop, and therefore why no manager order could ever be worked.
+local function free_material(prefer_stone)
+    local first, second = df.item_type.WOOD, df.item_type.BOULDER
+    if prefer_stone then first, second = second, first end
+    for _, want in ipairs({first, second}) do
+        for _, it in ipairs(w.items.all) do
+            if it:getType() == want and not it.flags.in_job and not it.flags.forbid
+               and not it.flags.dump and not it.flags.construction then
+                return it
+            end
+        end
+    end
+    return nil
+end
+
 local function pick_best(cits)
     local best, bestscore = nil, -1
     for _, u in ipairs(cits) do
@@ -205,12 +226,22 @@ for line in f:lines() do
             local name = a[2] or "Carpenters"
             local sub = df.workshop_type[name]
             if sub == nil then sub = df.workshop_type.Carpenters end
+            -- Masons and Craftsdwarfs work stone; the rest of what an early fort builds
+            -- wants wood. Either falls back to the other if the fort has none.
+            local item = free_material(name == "Masons" or name == "Craftsdwarfs")
+            if not item then return end          -- nothing to build it out of, so do not
+                                                 -- claim we did
             local x, y, z = site(P.shop, 8)
             if x then
                 local b = dfhack.buildings.constructBuilding{
                     type = df.building_type.Workshop, subtype = sub,
-                    pos = { x = x, y = y, z = z } }
-                if b then c.build_workshop = c.build_workshop + 1 end
+                    pos = { x = x, y = y, z = z }, items = { item } }
+                -- Count it only if DF actually attached a build job with a reagent.
+                -- The old count was "constructBuilding returned something", which it
+                -- does even when the building is about to be cancelled and removed.
+                if b and #b.jobs > 0 and #b.jobs[0].items > 0 then
+                    c.build_workshop = c.build_workshop + 1
+                end
                 P.shop = P.shop + 1
             end
         end)
