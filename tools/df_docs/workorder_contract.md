@@ -94,5 +94,41 @@ the menu, so the path has to be found from DF's own environment first.
 A downloaded community save is NOT a route: DFFD hosts v50.x saves and this build is
 53.15, which will not load them.
 
+## The office: built, but probably not a valid room yet
+
+Guides are unanimous that an office is step 2 of setting up work orders and the number one
+reason they never fire — "a manager only performs their duties in their office". The
+beginner video's line about twenty dwarves is about VALIDATION, not about whether the
+manager functions, and reading it the other way cost a day.
+
+Built the chain and it mostly works now:
+
+| step | result |
+|---|---|
+| `ConstructThrone` as a direct workshop job | chair item made |
+| place the chair as furniture | `chairs=1` — first furniture our code has ever placed |
+| create the Office civzone | `zones=1 offices=1`, id 3 |
+| assign it to the manager | `assigned_unit_id = 1548`, ok |
+| the order | still `val=0 act=0 left=2` |
+
+Two things learned, both reusable:
+
+* **A civzone needs `abstract = true`.** `dfhack.buildings.constructBuilding` without it
+  just fails, which is what the earlier "office zone ok=false" was. Quickfort's
+  `internal/quickfort/zone.lua:365` is the reference implementation.
+* **Telling a building's material from its contents:** `contained_items[].use == 0` means
+  the item IS the building; anything else it holds is ordinary stock. A filter that
+  rejected everything a building holds threw away our own workshop's output and could not
+  find the chair it had just made.
+
+**Not finished:** `bld.room.extents = <uint8_t array>` fails, so the zone has width and
+height but no per-tile extents. Quickfort passes extents through `fields` at construction
+time via its own `make_extents`; assigning afterwards does not take. Until that works the
+office is probably not a room DF recognises, so **this run does NOT show that an office
+fails to fix work orders** — it shows that we cannot build a valid office yet.
+
+Next: use quickfort's `make_extents` (or replicate it) and pass `fields.room` at
+construction, the way `create_zone` does.
+
 Meanwhile the direct workshop-job path works and produces beds, so the agent is not
 blocked on this.
