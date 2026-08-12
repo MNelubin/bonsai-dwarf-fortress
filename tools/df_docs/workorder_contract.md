@@ -77,17 +77,22 @@ been eliminated on a live 7-dwarf fort with a finished carpenter:
 | no material category | `material_category.wood = true` |
 | nobody to work | 6 idle citizens with `CARPENTER` |
 | our hand-rolled order | shipped `workorder.lua` behaves identically |
+| order shape | tested with a condition and without; `OneTime` and `Daily`; id from the counter and not |
+| our advance mechanism | ran the fort FREE for 175,000 frames — no heartbeat, no per-frame popup clearing, no pause rewrites. Order unchanged at `val=0 act=0 left=2`. Also measured ~800 frames/s free-running, well above our chunked advance |
 
-Untested and most promising, in order:
+What is left, now that order shape and the advance loop are both eliminated: **the save
+itself.** `bonsaifort2` was produced by a scripted headless embark, and something a
+normally-embarked fort has may be missing from it.
 
-1. **Frequency.** Everything shipped uses `Daily`; every test of mine used `OneTime` or
-   `-1`. If DF only sweeps orders on their frequency tick, a `OneTime` order may never be
-   swept.
-2. **Conditions.** All 45 library orders carry them; mine carried none. An order with no
-   conditions may not be a shape DF's sweep expects.
-3. Import a library order the fort can actually satisfy and watch that specific one —
-   `library/basic` was imported wholesale, but nothing in it matches a lone carpenter, so
-   that test proved nothing either way.
+The experiment that splits this: load one of the other worlds already on the host
+(`fort-s650296489`, `fort-calm-s650296489`, `large-257-s650296489` under
+`/srv/df-bonsai/worlds/`) and place the same order. Orders working there would pin the
+fault to our pinned save. Blocker: DF's save directory on this install is not
+`data/save` or `save` — both are empty — and the boot script loads by clicking a name in
+the menu, so the path has to be found from DF's own environment first.
+
+A downloaded community save is NOT a route: DFFD hosts v50.x saves and this build is
+53.15, which will not load them.
 
 Meanwhile the direct workshop-job path works and produces beds, so the agent is not
 blocked on this.
