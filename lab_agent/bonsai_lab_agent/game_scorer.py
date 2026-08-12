@@ -26,6 +26,7 @@ import os
 import subprocess
 from typing import Any, Callable
 
+from bonsai_lab_agent import actions
 from bonsai_lab_agent import scoring
 from bonsai_lab_agent.scoring import EpisodeObs, aggregate, raw_components, DEFAULT_WEIGHTS
 from bonsai_lab_agent import live_episode
@@ -55,12 +56,15 @@ def regime_key(*, scenario_id: str, save_sha256: str | None, df_version: str,
 
 # The action verbs the evaluator will dispatch deterministically. Anything else the
 # controller emits is ignored (logged), never executed — the agent cannot run
-# arbitrary DFHack. Kept in sync with bonsai-apply-actions.lua.
-# `build_workshop` exists because without a workshop no manager order can ever be
-# worked, so `workorders_done` was structurally pinned at 0 and half the development
-# weight was unearnable however well the agent played.
-ALLOWED_VERBS = {"set_labor", "designate_dig", "create_stockpile", "add_workorder",
-                 "build_workshop", "advance"}
+# arbitrary DFHack.
+#
+# The list is DERIVED from bonsai_lab_agent.actions, which declares each verb with typed
+# arguments, the observable that proves it worked, and the tranche that delivers it. It
+# used to be a bare set of names next to a gate that passed `args` through untouched, so
+# a wrong argument type reached the DFHack dispatcher and failed quietly there. Keeping
+# the name here is for callers that only ask "is this verb allowed"; everything that
+# cares about arguments should use the actions package directly.
+ALLOWED_VERBS = {v.name for v in actions.LIVE}
 
 DF_DIR = os.environ.get("BONSAI_DF_DIR", "/srv/df-bonsai/current")
 ACTIONS_FILE = os.path.join(DF_DIR, "agent_actions.txt")
@@ -91,6 +95,9 @@ def controller_observation(t0: EpisodeObs) -> dict:
     d["units"] = [{"id": -(i + 1), "civ_id": 1, "killed": False}
                   for i in range(t0.cohort_size)]
     d["available_actions"] = sorted(ALLOWED_VERBS)
+    # Names alone make a controller guess argument order and units, and it guesses wrong
+    # in ways that read as bad play rather than a bad interface. The schema costs ~1.5 KB.
+    d["action_schema"] = actions.available_actions()
     return d
 
 
@@ -98,25 +105,27 @@ def sanitize_actions(raw_actions: list[dict]) -> list[dict]:
     """Keep only well-formed, allow-listed action intents. The evaluator never
     trusts the agent's actions verbatim; this is the anti-forgery gate.
 
-    The input comes from untrusted code and may be ANY shape — a bare int, a string,
-    None. Anything that is not a list/tuple of dicts yields no actions rather than
-    raising, so a malformed controller costs the agent its actions, not the episode.
-    A single bare dict is accepted as a one-action list (a very natural thing for a
-    policy to return, and what controller_invoke already normalizes).
+    Delegates to `bonsai_lab_agent.actions`, which judges each intent against the verb's
+    declared argument schema. The input comes from untrusted code and may be ANY shape —
+    a bare int, a string, None — so nothing here raises: a malformed controller costs the
+    agent its actions, not the episode.
+
+    Returns just the dispatchable actions. Use `sanitize_actions_verbose` when the
+    refusals matter, which they do everywhere the agent might learn from them.
     """
-    if isinstance(raw_actions, dict):
-        raw_actions = [raw_actions]
-    if not isinstance(raw_actions, (list, tuple)):
-        return []
-    clean = []
-    for a in raw_actions:
-        if not isinstance(a, dict):
-            continue
-        verb = a.get("command") or a.get("name")
-        if verb in ALLOWED_VERBS:
-            args = a.get("args")
-            clean.append({"verb": verb, "args": args if isinstance(args, (list, dict)) else []})
+    clean, _ = actions.sanitize(raw_actions)
     return clean
+
+
+def sanitize_actions_verbose(raw_actions) -> tuple[list[dict], list[str]]:
+    """As `sanitize_actions`, plus the reason for every refusal and repair.
+
+    A gate that silently drops an action teaches a controller nothing; the same gate that
+    says "designate_dig: tiles 10000 lowered to 400" or "'plant_crop' is not an action"
+    turns a wasted round into a correction. The reasons go into the recording, so a
+    replay shows what the agent asked for as well as what it got.
+    """
+    return actions.sanitize(raw_actions)
 
 
 def _write_actions(actions: list[dict]) -> None:

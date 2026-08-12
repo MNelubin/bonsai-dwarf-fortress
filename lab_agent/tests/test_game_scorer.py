@@ -14,12 +14,29 @@ def test_sanitize_actions_allowlist():
         {"command": "rm -rf", "args": ["/"]},          # not allow-listed -> dropped
         {"name": "create_stockpile", "args": [3]},
         "not a dict",                                    # dropped
-        {"command": "add_workorder"},                    # no args -> []
     ]
     clean = game_scorer.sanitize_actions(raw)
     assert [a["verb"] for a in clean] == \
-        ["set_labor", "designate_dig", "create_stockpile", "add_workorder"]
-    assert clean[-1]["args"] == []
+        ["set_labor", "designate_dig", "create_stockpile"]
+
+
+def test_a_workorder_with_no_job_is_refused_rather_than_guessed():
+    """It used to be accepted with empty args, and the Lua dispatcher then fell back to
+    making beds — the gate inventing an intent the agent never expressed. A verb whose
+    required argument is missing is now refused, and the refusal names the argument."""
+    clean, said = game_scorer.sanitize_actions_verbose([{"command": "add_workorder"}])
+    assert clean == []
+    assert "job" in said[0]
+
+
+def test_refusals_explain_themselves():
+    clean, said = game_scorer.sanitize_actions_verbose(
+        [{"command": "plant_crop", "args": ["PLUMP"]},
+         {"command": "designate_dig", "args": [10_000]}])
+    assert [a["verb"] for a in clean] == ["designate_dig"]
+    assert clean[0]["args"] == [400]                     # clamped, not dropped
+    assert any("plant_crop" in s for s in said)          # refused, by name
+    assert any("400" in s for s in said)                 # and the repair is reported
 
 
 @pytest.mark.parametrize("garbage", [None, 42, "not a list", 3.14, True, {"nope": 1}])

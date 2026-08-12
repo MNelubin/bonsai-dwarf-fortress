@@ -58,7 +58,12 @@ def test_decision_track_shows_what_was_allowed_and_what_was_dropped(tmp_path):
     r0 = rounds[0]
     assert r0["dispatched"] == ["create_stockpile"]          # `advance` is not dispatched
     reasons = sorted(d["reason"] for d in r0["dropped"])
-    assert reasons == ["not_allow_listed", "not_an_object"]
+    # The reason is the gate's own sentence, not a category. "not_allow_listed" covered
+    # an unknown verb and a missing argument alike, so a replay could not show which
+    # mistake the agent kept repeating.
+    assert len(reasons) == 2
+    assert any("launch_missiles" in s and "not an action" in s for s in reasons)
+    assert any("str" in s or "not an object" in s for s in reasons)
     assert any(d.get("verb") == "launch_missiles" for d in r0["dropped"])
     assert len(r0["intents"]) == 4                            # the raw ask is preserved
 

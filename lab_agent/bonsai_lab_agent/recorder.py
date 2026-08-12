@@ -160,13 +160,17 @@ class EpisodeRecorder:
 def _dropped(raw_actions) -> list[dict]:
     """Which of the agent's intents the anti-forgery gate refused, and why.
 
-    Asks `sanitize_actions` itself about each intent rather than re-deriving the rule
-    here — a recorder that disagreed with the real gate would be worse than no record,
-    since this file is meant to be audit evidence. (It first did key-matching against
-    the kept set, and mislabelled a bare `advance` as rejected because sanitize
-    normalises a missing `args` to [] while the raw intent has none.)
+    Asks the gate itself about each intent rather than re-deriving the rule here — a
+    recorder that disagreed with the real gate would be worse than no record, since this
+    file is meant to be audit evidence. (It first did key-matching against the kept set,
+    and mislabelled a bare `advance` as rejected because sanitize normalises a missing
+    `args` to [] while the raw intent has none.)
+
+    The reason is the gate's own sentence, not a category: "'plant_crop' is not an
+    action" and "add_workorder needs 'job'" are different problems and a replay that
+    called both `not_allow_listed` hid which one the agent kept making.
     """
-    from bonsai_lab_agent.game_scorer import sanitize_actions
+    from bonsai_lab_agent.actions import judge
 
     if isinstance(raw_actions, dict):
         raw_actions = [raw_actions]
@@ -174,11 +178,11 @@ def _dropped(raw_actions) -> list[dict]:
         return [{"reason": "not_a_list", "raw": _jsonable(raw_actions)}]
     out = []
     for a in raw_actions:
-        if not isinstance(a, dict):
-            out.append({"reason": "not_an_object", "raw": _jsonable(a)})
-        elif not sanitize_actions([a]):
-            out.append({"reason": "not_allow_listed",
-                        "verb": _jsonable(a.get("command") or a.get("name")),
+        d = judge(a)
+        if not d.ok:
+            out.append({"reason": d.reason,
+                        "verb": _jsonable(d.verb or (isinstance(a, dict) and
+                                                     (a.get("command") or a.get("name")))),
                         "raw": _jsonable(a)})
     return out
 

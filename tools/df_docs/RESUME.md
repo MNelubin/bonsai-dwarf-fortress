@@ -4,7 +4,58 @@ Paused 2026-08-06, mid-way through giving the agent player parity. Nothing is ha
 to the live system: the action library is committed and passing, and everything below is
 either done or not started. Read this before picking it up again.
 
+## The manager hypothesis — TESTED, AND IT DID NOT HOLD
+
+The theory was that `workorders_done` sat at 0 for a game year because `MANAGER` is
+vacant on the pinned save and the publisher's guide says the manager is what turns an
+order into a job. Tested live on 2026-08-06.
+
+Confirmed by probe: `MANAGER` exists as position id 10 with `required_office = 1`, and
+its assignment slot held `histfig = -1`. Seating a citizen worked at the field level —
+`histfig` went -1 → 1741, assignment slot id 6.
+
+Then nothing happened. Over 6,000 ticks the order stayed `validated=0 active=0
+amount_left=5`. **Writing `assignments[i].histfig` is not enough to make the game treat a
+dwarf as the manager.** This is the same shape of bug as the dig designations that wrote
+cleanly and generated zero jobs: the field looks right and DF never notices.
+
+Most likely missing pieces, in order of suspicion:
+
+1. DF tracks a noble through the histfig's own entity links
+   (`histfig_entity_link_positionst`), not only through the entity's assignment vector.
+   Seating probably has to create that link too.
+2. The manager may need the office its position demands before it will validate anything,
+   even though the guide says the office is not required below twenty dwarves.
+3. Validation may be a job the manager has to physically perform, so it needs an idle
+   manager and possibly a specific trigger.
+
+So the root cause of `workorders_done == 0` is still **open**. It may not be the manager
+at all — a bare `manager_order` carrying only a `job_type` may simply not be a valid
+order. `manager_order` turns out to have `reaction_name`, `material_category`,
+`item_conditions` and `order_conditions` fields, and a real order made through the UI
+fills more of them than we do.
+
+Next experiment: place an order through DFHack's own `orders` plugin (which imports
+orders players actually use) and diff its fields against one of ours. That isolates
+"our order is malformed" from "our manager is not real".
+
+## Structures pinned by probe (2026-08-06)
+
+Useful regardless of the above, all read off the live build:
+
+| thing | where |
+|---|---|
+| noble positions | `plotinfo.main.fortress_entity.positions.own` (`.code`, `.id`), holders in `.assignments` (`.position_id`, `.histfig`, -1 = vacant) |
+| kitchen flags | `plotinfo.kitchen` — five parallel vectors of length 110, plus `kitchen_exc_type` = {0 Cook, 1 Brew} |
+| farm plot | `df.building_type.FarmPlot` = 4; `building_farmplotst.plant_id` is `int16[4]`, one per season |
+| work order | `manager_order` has `reaction_name`, `material_category`, `item_conditions`, `order_conditions`, `frequency`, `max_workshops`, and `status.{validated,active}` |
+| brewing | there is no `job_type.BrewDrink` in this build — brewing is a reaction, so `reaction_name` matters |
+
+Absent in this build, so do not reach for them: `dfhack.matinfo.getTile`,
+`world.kitchen`, `world.manager_order_next_id`.
+
 ## Done and committed
+
 
 | commit | what |
 |---|---|
