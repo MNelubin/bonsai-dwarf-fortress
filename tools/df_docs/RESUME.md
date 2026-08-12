@@ -35,6 +35,58 @@ could explain the final step. The next experiment is ordered: build the carpente
 the order, and only if it still does nothing, diff our order's fields against one created
 through DFHack's `orders` plugin.
 
+## Work orders: one cause found and fixed, one still open
+
+**FOUND AND FIXED — the fort never had a workshop.**
+`dfhack.buildings.constructBuilding` with no `items` returns a valid-looking building
+whose `ConstructBuilding` job has no reagent. DF cancels the job and drops the building,
+and the caller hears nothing. `build_workshop` counted the return value as success.
+Measured: `APPLY build_workshop=1`, then 20,000 ticks later `world.buildings.all` held
+only the wagon. The same call with a log in `items` builds it and it stays.
+
+That is why `workorders_done` was 0 for a game year — no workshop ever existed to work an
+order in — and why the `buildings` observable looked like progress: stockpiles are
+abstract and need no construction, so the count rose on those alone. Fixed in
+`bonsai-apply-actions.lua`: pick a free log or boulder, pass it as the reagent, and count
+the verb only when DF attached a build job WITH an item.
+
+**STILL OPEN — a validated order in a finished workshop produces no job.**
+Everything below was set simultaneously on a live fort and the order still sat at
+`amount_left=5` with `workshop.jobs=0` over 15,000 ticks:
+
+| eliminated | evidence |
+|---|---|
+| vacant manager | `getNoblePositions` returns MANAGER, BOOKKEEPER |
+| no workshop | carpenter built, `construction_stage=3` |
+| unvalidated order | forced `status.validated` and `status.active` |
+| no material category | `material_category.wood = true` |
+| nobody to do the work | 6 idle citizens with CARPENTER enabled |
+| frequency unset | `frequency = OneTime` |
+| no wood | 3 logs free |
+
+Remaining leads, strongest first:
+
+1. ~~Drive the shipped `workorder.lua` instead of hand-rolling `df.manager_order:new()`.~~
+   **TESTED — it fails identically.** `workorder '{"job":"ConstructBed","amount_total":3}'`
+   printed `Queuing ConstructBed x3`, the order landed in the vector, and 15,000 ticks
+   later it was still unvalidated with `workshop.jobs=0`. DFHack's own canonical path
+   produces the same nothing our code does, which rules out our dispatcher as the cause.
+2. So the blocker is a property of THIS fort or of the headless environment, not of how
+   the order is written. The manager most likely has to physically perform a "Manage Work
+   Orders" job to validate the queue, and that needs the office its position demands
+   (`MANAGER.required_office = 1`) — which we cannot build until `create_zone` and
+   `place_furniture` exist in tranche 2. That is a satisfying fit: it explains why forcing
+   `validated` by hand also failed, since forcing the flag skips whatever else that job
+   does.
+3. Untested and cheap: `max_workshops = 0` with `workshop_id = -1`. Zero probably means
+   unlimited but nobody has checked.
+4. `manager_order.items` is a `job_reqst`, not a vector, and `#o.items` returns -1 on both
+   our order and the shipped script's — so it is probably not the difference.
+
+Next experiment, in order: give the manager an office (needs tranche 2), then re-run this
+exact scenario. If the order validates, the whole chain is explained and `workorders_done`
+becomes earnable for the first time.
+
 ## Structures pinned by probe (2026-08-06)
 
 Useful regardless of the above, all read off the live build:
