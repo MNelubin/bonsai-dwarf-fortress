@@ -72,9 +72,20 @@ local function free_material(prefer_stone)
     if prefer_stone then first, second = second, first end
     for _, want in ipairs({first, second}) do
         for _, it in ipairs(w.items.all) do
-            if it:getType() == want and not it.flags.in_job and not it.flags.forbid
-               and not it.flags.dump and not it.flags.construction then
-                return it
+            if it:getType() == want
+               and not (it.flags.in_job or it.flags.forbid or it.flags.dump
+                        or it.flags.construction or it.flags.removed) then
+                -- A workshop is MADE of its log, and handing that same log to a job
+                -- destroys the workshop — observed live, shops went 1 to 0 the moment a
+                -- bed job claimed a reagent. But `in_building` alone is far too broad:
+                -- at embark every supply sits inside the WAGON, which is also a
+                -- building, so excluding it left the fort unable to build anything.
+                -- Ask who holds the item instead.
+                local holder = nil
+                pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
+                if not holder or holder:getType() == df.building_type.Wagon then
+                    return it
+                end
             end
         end
     end
@@ -262,18 +273,42 @@ for line in f:lines() do
             end
         end)
     elseif verb == "add_workorder" then
+        -- A manager order is NOT how the guide makes its first beds. At 17:10 it clicks
+        -- the carpenter and adds a task straight to the workshop — no manager, no
+        -- validation, no office. That distinction turned out to matter: a manager order
+        -- placed here never became a job in 15,000 ticks even with the manager seated,
+        -- the workshop finished, the order force-validated and six idle carpenters. The
+        -- shipped `workorder` script's own orders behave identically, so it is not a bug
+        -- in how we write the order. A direct workshop job made a bed within 4,000 ticks.
         pcall(function()
             local amount = tonumber(a[3]) or tonumber(a[2]) or 10
-            -- The old dispatch used job_type.CustomReaction with no reaction attached:
-            -- such an order can never be matched to work, so amount_left never fell and
-            -- the observable stayed 0 no matter what the agent did. Name a real job.
             local jname = (a[2] and df.job_type[a[2]] ~= nil) and a[2] or "ConstructBed"
-            local mo = df.manager_order:new()
-            mo.job_type = df.job_type[jname]
-            mo.amount_left = amount
-            mo.amount_total = amount
-            w.manager_orders.all:insert("#", mo)
-            c.add_workorder = c.add_workorder + 1
+            local shop
+            for _, b in ipairs(w.buildings.all) do
+                if b:getType() == df.building_type.Workshop
+                   and b.construction_stage >= 3 then shop = b; break end
+            end
+            if not shop then return end          -- nothing to work in; say nothing
+            for _ = 1, math.min(amount, 20) do
+                -- One reagent per job, claimed up front. Anything DFHack creates without
+                -- one is cancelled by DF within a few thousand ticks and silently
+                -- removed — the same trap that made build_workshop a no-op.
+                local item = free_material(false)
+                if not item then break end
+                local job = df.job:new()
+                job.job_type = df.job_type[jname]
+                job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
+                pcall(function() job.material_category.wood = true end)
+                dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
+                shop.jobs:insert('#', job)
+                dfhack.job.linkIntoWorld(job, true)
+                local ok = pcall(function()
+                    dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent, 0, -1)
+                end)
+                if ok and #job.items > 0 then
+                    c.add_workorder = c.add_workorder + 1
+                end
+            end
         end)
     end
 end
