@@ -108,22 +108,27 @@ CATALOG: tuple[Verb, ...] = (
     # ================================================================ TRANCHE 1
     # The chain from dirt to a mug of beer, plus the administrator who runs it.
     Verb(
-        name="assign_noble", category="administration", status="planned", tranche=1,
+        name="assign_noble", category="administration", tranche=0,
         doc="Put a dwarf in an administrative position. MANAGER validates work orders "
             "into jobs; BOOKKEEPER makes stockpile counts exact.",
-        observable="the entity position assignment names a histfig, and workorders_done "
-                   "rises above zero for the first time",
+        observable="dfhack.units.getNoblePositions(unit) names the position — measured "
+                   "going from (none) to MANAGER to MANAGER,BOOKKEEPER",
         args=(
             Arg("position", "enum", "which office",
                 choices=("MANAGER", "BOOKKEEPER", "BROKER", "CHIEF_MEDICAL_DWARF",
                          "SHERIFF", "MILITIA_COMMANDER")),
-            Arg("dwarf", "str", "citizen id, or 'best' to let the evaluator score and "
-                                "choose", required=False, default="best"),
+            Arg("dwarf", "str", "citizen id, or 'best' to let the evaluator choose",
+                required=False, default="best"),
         ),
         guide="17:55",
-        note="Cheapest verb in the whole catalog and possibly the highest leverage: "
-             "measured, MANAGER is vacant on the pinned save while add_workorder has "
-             "always been available.",
+        note="Seating requires a histfig_entity_link_positionst on the appointee, not "
+             "just the assignment's histfig field — writing the field alone left "
+             "getNoblePositions empty while the nobles screen read correctly. "
+             "'best' is currently the crudest defensible rule (most total skill "
+             "experience, ties by unit id) until the fitness scorer lands. "
+             "NOTE: seating a manager did NOT make work orders validate — that "
+             "hypothesis was tested and refused; the cause of workorders_done == 0 "
+             "lies in the order, not the office.",
     ),
     Verb(
         name="build_farm_plot", category="food-water", status="planned", tranche=1,

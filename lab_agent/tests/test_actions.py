@@ -157,8 +157,20 @@ def test_tranche_one_is_the_food_and_drink_chain():
     """The measured year failed on consumables: drink 12 to 0, nothing brewed. Tranche 1
     exists to fix exactly that, so it should not quietly fill up with anything else."""
     first = {r["verb"] for r in roadmap() if r["tranche"] == 1}
-    assert {"build_farm_plot", "set_crop", "assign_noble",
-            "set_kitchen_flag", "add_workorder_conditional"} <= first
+    assert first == {"build_farm_plot", "set_crop", "set_kitchen_flag",
+                     "add_workorder_conditional"}
+
+
+def test_assign_noble_is_live_and_takes_best_by_default():
+    """Shipped after the entity-link side effect was found: writing the assignment's
+    histfig alone left getNoblePositions empty while the nobles screen read correctly."""
+    d = judge({"verb": "assign_noble", "args": ["MANAGER"]})
+    assert d.ok and d.args == ["MANAGER", "best"]
+    assert "assign_noble" in {a["verb"] for a in available_actions()}
+
+
+def test_assign_noble_refuses_an_office_that_does_not_exist():
+    assert not judge({"verb": "assign_noble", "args": ["GOD_EMPEROR"]}).ok
 
 
 # ---------------------------------------------------------------- discoverability

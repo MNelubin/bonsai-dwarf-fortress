@@ -11,7 +11,68 @@ local w = df.global.world
 local cits = dfhack.units.getCitizens(true)
 local u1 = cits[1]
 local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
-            build_workshop = 0, advance = 0 }
+            build_workshop = 0, advance = 0, assign_noble = 0 }
+
+-- Seat a citizen in a fort position so THE GAME believes it, not just the nobles screen.
+--
+-- Writing entity_position_assignment.histfig is the obvious move and it is a silent
+-- no-op: measured live, the screen field went -1 -> 1741 and dfhack.units.getNoblePositions
+-- still returned nothing, because DF and DFHack both answer "who holds this office?" by
+-- walking the HISTFIG's entity_links for a histfig_entity_link_positionst and binsearching
+-- assignments by the link's assignment_id. Same failure shape as the dig designations that
+-- wrote cleanly and generated zero jobs.
+--
+-- MANAGER, BOOKKEEPER, BROKER and the rest are SITE positions living on the fortress
+-- entity. make-monarch.lua uses the CIV entity because MONARCH is a civ position; copying
+-- it verbatim seats nobody.
+local function assign_noble(code, unit)
+    local ent = df.global.plotinfo.main.fortress_entity
+    if not (ent and unit) then return false end
+    local hf = df.historical_figure.find(unit.hist_figure_id)
+    if not hf then return false end                 -- some units have no histfig at all
+    local pos, idx, asg
+    for _, p in ipairs(ent.positions.own) do
+        if p.code == code then pos = p; break end
+    end
+    if not pos then return false end
+    for i, a in ipairs(ent.positions.assignments) do
+        if a.position_id == pos.id and (a.histfig == -1 or a.histfig == hf.id) then
+            asg, idx = a, i; break
+        end
+    end
+    if not asg then return false end                -- office already taken
+    asg.histfig = hf.id
+    for _, v in ipairs(hf.entity_links) do          -- idempotent: never link twice
+        if df.histfig_entity_link_positionst:is_instance(v)
+           and v.entity_id == ent.id and v.assignment_id == asg.id then return true end
+    end
+    hf.entity_links:insert('#', {
+        new = df.histfig_entity_link_positionst,
+        entity_id = ent.id, assignment_id = asg.id,
+        assignment_vector_idx = idx, link_strength = 100,
+        start_year = df.global.cur_year })
+    return true
+end
+
+-- Which citizen gets the job when the agent says "best".
+--
+-- A real fitness score over skills, attributes and stress is still to come; until it
+-- exists this is deliberately the dumbest defensible rule — most total skill experience,
+-- ties broken by unit id so it is reproducible across runs. Honest placeholder rather
+-- than a weighted formula nobody has validated.
+local function pick_best(cits)
+    local best, bestscore = nil, -1
+    for _, u in ipairs(cits) do
+        local s = 0
+        pcall(function()
+            for _, sk in ipairs(u.status.current_soul.skills) do s = s + sk.rating end
+        end)
+        if s > bestscore or (s == bestscore and best and u.id < best.id) then
+            best, bestscore = u, s
+        end
+    end
+    return best or cits[1]
+end
 
 local function split(line)
     local t = {}
@@ -151,6 +212,22 @@ for line in f:lines() do
                     pos = { x = x, y = y, z = z } }
                 if b then c.build_workshop = c.build_workshop + 1 end
                 P.shop = P.shop + 1
+            end
+        end)
+    elseif verb == "assign_noble" then
+        pcall(function()
+            local code = a[2]
+            if not code or #code == 0 then return end
+            local who = a[3]
+            local u = nil
+            if who and who ~= "best" and who ~= "" then
+                for _, x in ipairs(cits) do
+                    if tostring(x.id) == who then u = x end
+                end
+            end
+            u = u or pick_best(cits)
+            if u and assign_noble(code, u) then
+                c.assign_noble = c.assign_noble + 1
             end
         end)
     elseif verb == "add_workorder" then
