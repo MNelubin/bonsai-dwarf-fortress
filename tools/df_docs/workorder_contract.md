@@ -94,41 +94,46 @@ the menu, so the path has to be found from DF's own environment first.
 A downloaded community save is NOT a route: DFFD hosts v50.x saves and this build is
 53.15, which will not load them.
 
-## The office: built, but probably not a valid room yet
+## The office: BUILT, owned, and it did not fix work orders
 
 Guides are unanimous that an office is step 2 of setting up work orders and the number one
 reason they never fire — "a manager only performs their duties in their office". The
 beginner video's line about twenty dwarves is about VALIDATION, not about whether the
-manager functions, and reading it the other way cost a day.
+manager functions at all, and reading it the other way cost a day.
 
-Built the chain and it mostly works now:
+So the office got built, properly, and verified at every step:
 
-| step | result |
+| step | verified by |
 |---|---|
-| `ConstructThrone` as a direct workshop job | chair item made |
-| place the chair as furniture | `chairs=1` — first furniture our code has ever placed |
-| create the Office civzone | `zones=1 offices=1`, id 3 |
-| assign it to the manager | `assigned_unit_id = 1548`, ok |
-| the order | still `val=0 act=0 left=2` |
+| chair made (`ConstructThrone`, direct workshop job) | chair item exists |
+| chair placed as furniture | `chairs=1` — first furniture this code has placed |
+| Office civzone, 5x5, with real extents | `zone id=3 Office w=5 h=5 extents set=true` |
+| manager owns it | `unit.owned_buildings` -> `owns 3 Civzone` |
+| manager is really the manager | `getNoblePositions` -> `MANAGER` |
+| the position wants an office | `required_office = 1` |
 
-Two things learned, both reusable:
+Order placed after all that, through the shipped `workorder.lua`, `Daily` frequency:
+**still `val=0 act=0 left=2` over 20,000 ticks.** No beds.
 
-* **A civzone needs `abstract = true`.** `dfhack.buildings.constructBuilding` without it
-  just fails, which is what the earlier "office zone ok=false" was. Quickfort's
-  `internal/quickfort/zone.lua:365` is the reference implementation.
-* **Telling a building's material from its contents:** `contained_items[].use == 0` means
-  the item IS the building; anything else it holds is ordinary stock. A filter that
-  rejected everything a building holds threw away our own workshop's output and could not
-  find the chair it had just made.
+Three API traps found on the way, all the same shape — one side of a two-sided link:
 
-**Not finished:** `bld.room.extents = <uint8_t array>` fails, so the zone has width and
-height but no per-tile extents. Quickfort passes extents through `fields` at construction
-time via its own `make_extents`; assigning afterwards does not take. Until that works the
-office is probably not a room DF recognises, so **this run does NOT show that an office
-fails to fix work orders** — it shows that we cannot build a valid office yet.
+* **A civzone needs `abstract = true`** or `constructBuilding` just fails. That was the
+  earlier "office zone ok=false".
+* **Extents must be cast**: `df.reinterpret_cast(df.building_extents_type, df.new('uint8_t', area))`.
+  A raw `uint8_t` array assigned after construction silently does not take
+  (`quickfort/building.lua:569` is the reference).
+* **`assigned_unit_id` does not make a dwarf OWN a room.** With it set, the manager's
+  `owned_buildings` was still empty. `dfhack.buildings.setOwner(bld, unit)` is the real
+  call — exactly the same lesson as noble seating, where writing `assignment.histfig`
+  without the histfig entity link seated nobody.
 
-Next: use quickfort's `make_extents` (or replicate it) and pass `fields.room` at
-construction, the way `create_zone` does.
+Also worth recording: **`contained_items[].use == 0`** distinguishes the item a building
+IS from stock it merely holds. A filter that rejected everything a building held could not
+find the chair the workshop had just produced.
+
+Caveat on the negative: I cannot see the nobles screen to confirm DF paints the office
+requirement green. `owned_buildings` containing the zone is the strongest proxy available
+headlessly.
 
 Meanwhile the direct workshop-job path works and produces beds, so the agent is not
 blocked on this.
