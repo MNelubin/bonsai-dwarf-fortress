@@ -4,40 +4,36 @@ Paused 2026-08-06, mid-way through giving the agent player parity. Nothing is ha
 to the live system: the action library is committed and passing, and everything below is
 either done or not started. Read this before picking it up again.
 
-## The manager hypothesis — TESTED, AND IT DID NOT HOLD
+## The manager hypothesis — half right, and the important half was wrong
 
-The theory was that `workorders_done` sat at 0 for a game year because `MANAGER` is
-vacant on the pinned save and the publisher's guide says the manager is what turns an
-order into a job. Tested live on 2026-08-06.
+Two separate questions got tangled together. Both are now answered.
 
-Confirmed by probe: `MANAGER` exists as position id 10 with `required_office = 1`, and
-its assignment slot held `histfig = -1`. Seating a citizen worked at the field level —
-`histfig` went -1 → 1741, assignment slot id 6.
+**Seating a noble: solved.** `MANAGER` is position id 10 on the fortress entity with
+`required_office = 1`, and its slot held `histfig = -1`. Writing that field is a silent
+no-op — measured, it moved -1 → 1741 while `dfhack.units.getNoblePositions` still
+returned nothing. DF and DFHack resolve an office holder by walking the appointee's
+`historical_figure.entity_links` for a `histfig_entity_link_positionst` and binsearching
+assignments by the link's `assignment_id`. With the link inserted it works, verified
+through the real dispatcher: `APPLY assign_noble=2`, unit 1548 holding
+`MANAGER,BOOKKEEPER`, the pre-existing `EXPEDITION_LEADER` untouched. `assign_noble` is
+now a live verb.
 
-Then nothing happened. Over 6,000 ticks the order stayed `validated=0 active=0
-amount_left=5`. **Writing `assignments[i].histfig` is not enough to make the game treat a
-dwarf as the manager.** This is the same shape of bug as the dig designations that wrote
-cleanly and generated zero jobs: the field looks right and DF never notices.
+Trap worth keeping: `MANAGER` and friends are **site** positions on
+`plotinfo.main.fortress_entity`. `make-monarch.lua` uses the **civ** entity because
+MONARCH is a civ position, so copying it verbatim seats nobody.
 
-Most likely missing pieces, in order of suspicion:
+**Why work orders do nothing: still open, and it is NOT the manager.** With
+`getNoblePositions` confirming MANAGER and BOOKKEEPER, an order stayed
+`validated=0 active=0 amount_left=5` across 12,000 ticks. Forcing `validated`, `active`
+and `frequency = OneTime` by hand produced no job over another 9,000.
 
-1. DF tracks a noble through the histfig's own entity links
-   (`histfig_entity_link_positionst`), not only through the entity's assignment vector.
-   Seating probably has to create that link too.
-2. The manager may need the office its position demands before it will validate anything,
-   even though the guide says the office is not required below twenty dwarves.
-3. Validation may be a job the manager has to physically perform, so it needs an idle
-   manager and possibly a specific trigger.
+So the fault is in the ORDER. Ours sets only `job_type`; `manager_order` also carries
+`reaction_name`, `material_category`, `item_conditions` and `order_conditions`.
 
-So the root cause of `workorders_done == 0` is still **open**. It may not be the manager
-at all — a bare `manager_order` carrying only a `job_type` may simply not be a valid
-order. `manager_order` turns out to have `reaction_name`, `material_category`,
-`item_conditions` and `order_conditions` fields, and a real order made through the UI
-fills more of them than we do.
-
-Next experiment: place an order through DFHack's own `orders` plugin (which imports
-orders players actually use) and diff its fields against one of ours. That isolates
-"our order is malformed" from "our manager is not real".
+**Confound to control for first:** that probe fort had no workshop at all, which alone
+could explain the final step. The next experiment is ordered: build the carpenter, place
+the order, and only if it still does nothing, diff our order's fields against one created
+through DFHack's `orders` plugin.
 
 ## Structures pinned by probe (2026-08-06)
 
