@@ -11,7 +11,22 @@ local w = df.global.world
 local cits = dfhack.units.getCitizens(true)
 local u1 = cits[1]
 local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
-            build_workshop = 0, advance = 0, assign_noble = 0 }
+            build_workshop = 0, advance = 0, assign_noble = 0,
+            add_workorder_conditional = 0 }
+
+-- Standing orders, kept evaluator-side, because DF's own manager orders do not work on
+-- this save. Measured: an order placed through DFHack's shipped `workorder` validates in
+-- ~8,000 ticks on a real 136-dwarf fort, and never validates here across 30,000 ticks —
+-- with the manager seated and confirmed by getNoblePositions, an office built with real
+-- extents and owned via setOwner, the manager standing inside it, and
+-- plotinfo.nobles.manager_cooldown counting down. Why that subsystem is inert on this
+-- fort is unresolved.
+--
+-- What the agent actually needs is the CAPABILITY, not the subsystem: "keep at least N of
+-- X in stock". That is expressible over the direct workshop-job path, which does work and
+-- does produce items. Each dispatch re-checks the stock level and tops it up, which is
+-- what a repeating manager order would have done anyway.
+_G.BONSAI_STANDING = _G.BONSAI_STANDING or {}
 
 -- Seat a citizen in a fort position so THE GAME believes it, not just the nobles screen.
 --
@@ -54,12 +69,6 @@ local function assign_noble(code, unit)
     return true
 end
 
--- Which citizen gets the job when the agent says "best".
---
--- A real fitness score over skills, attributes and stress is still to come; until it
--- exists this is deliberately the dumbest defensible rule — most total skill experience,
--- ties broken by unit id so it is reproducible across runs. Honest placeholder rather
--- than a weighted formula nobody has validated.
 -- A free building material, or nil. Workshops need one and DFHack will NOT find it for
 -- you: constructBuilding with no `items` produces a building whose ConstructBuilding job
 -- has no reagent, DF cancels the job and drops the building, and the caller sees a
@@ -92,6 +101,71 @@ local function free_material(prefer_stone)
     return nil
 end
 
+-- Queue N jobs of one type directly on a finished workshop. Returns how many took.
+--
+-- Shared by add_workorder and add_workorder_conditional so the two cannot drift: the
+-- conditional verb is exactly this, re-evaluated against a stock level on every dispatch.
+local function issue_jobs(jname, n)
+    local shop
+    for _, b in ipairs(w.buildings.all) do
+        if b:getType() == df.building_type.Workshop and b.construction_stage >= 3 then
+            shop = b; break
+        end
+    end
+    if not shop or df.job_type[jname] == nil then return 0 end
+    local made = 0
+    for _ = 1, math.min(n, 20) do
+        -- One reagent per job, claimed up front. Anything DFHack creates without one is
+        -- cancelled by DF within a few thousand ticks and silently removed — the same
+        -- trap that made build_workshop a no-op for a whole game year.
+        local item = free_material(false)
+        if not item then break end
+        local job = df.job:new()
+        job.job_type = df.job_type[jname]
+        job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
+        pcall(function() job.material_category.wood = true end)
+        dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
+        shop.jobs:insert('#', job)
+        dfhack.job.linkIntoWorld(job, true)
+        local ok = pcall(function()
+            dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent, 0, -1)
+        end)
+        if ok and #job.items > 0 then made = made + 1 end
+    end
+    return made
+end
+
+-- How many of an item type the fort holds, ignoring what is already spoken for.
+local function stock_of(item_name)
+    local t = df.item_type[item_name]
+    if t == nil then return nil end
+    local n = 0
+    for _, it in ipairs(w.items.all) do
+        if it:getType() == t and not (it.flags.in_job or it.flags.forbid
+                                      or it.flags.removed) then n = n + 1 end
+    end
+    return n
+end
+
+-- Re-run every standing order the agent has placed. This is what a repeating manager
+-- order would have done; it runs on each dispatch instead of on DF's manager cycle.
+local function run_standing()
+    local fired = 0
+    for _, s in ipairs(_G.BONSAI_STANDING) do
+        local have = stock_of(s.item)
+        if have ~= nil and have < s.below then
+            fired = fired + issue_jobs(s.job, math.min(s.batch, s.below - have))
+        end
+    end
+    return fired
+end
+
+-- Which citizen gets the job when the agent says "best".
+--
+-- A real fitness score over skills, attributes and stress is still to come; until it
+-- exists this is deliberately the dumbest defensible rule — most total skill experience,
+-- ties broken by unit id so it is reproducible across runs. Honest placeholder rather
+-- than a weighted formula nobody has validated.
 local function pick_best(cits)
     local best, bestscore = nil, -1
     for _, u in ipairs(cits) do
@@ -274,45 +348,46 @@ for line in f:lines() do
         end)
     elseif verb == "add_workorder" then
         -- A manager order is NOT how the guide makes its first beds. At 17:10 it clicks
-        -- the carpenter and adds a task straight to the workshop — no manager, no
-        -- validation, no office. That distinction turned out to matter: a manager order
-        -- placed here never became a job in 15,000 ticks even with the manager seated,
-        -- the workshop finished, the order force-validated and six idle carpenters. The
-        -- shipped `workorder` script's own orders behave identically, so it is not a bug
-        -- in how we write the order. A direct workshop job made a bed within 4,000 ticks.
+        -- the carpenter and adds a task straight to the workshop -- no manager, no
+        -- validation, no office. That distinction decides whether anything gets made:
+        -- manager orders never validate on this save (30,000 ticks, manager seated and
+        -- confirmed, office built and owned, manager standing inside it), while a direct
+        -- workshop job produces a bed inside 4,000.
         pcall(function()
             local amount = tonumber(a[3]) or tonumber(a[2]) or 10
             local jname = (a[2] and df.job_type[a[2]] ~= nil) and a[2] or "ConstructBed"
-            local shop
-            for _, b in ipairs(w.buildings.all) do
-                if b:getType() == df.building_type.Workshop
-                   and b.construction_stage >= 3 then shop = b; break end
-            end
-            if not shop then return end          -- nothing to work in; say nothing
-            for _ = 1, math.min(amount, 20) do
-                -- One reagent per job, claimed up front. Anything DFHack creates without
-                -- one is cancelled by DF within a few thousand ticks and silently
-                -- removed — the same trap that made build_workshop a no-op.
-                local item = free_material(false)
-                if not item then break end
-                local job = df.job:new()
-                job.job_type = df.job_type[jname]
-                job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
-                pcall(function() job.material_category.wood = true end)
-                dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
-                shop.jobs:insert('#', job)
-                dfhack.job.linkIntoWorld(job, true)
-                local ok = pcall(function()
-                    dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent, 0, -1)
-                end)
-                if ok and #job.items > 0 then
-                    c.add_workorder = c.add_workorder + 1
+            c.add_workorder = c.add_workorder + issue_jobs(jname, amount)
+        end)
+    elseif verb == "add_workorder_conditional" then
+        -- "Keep at least N of X" -- the standing order a player actually writes, e.g.
+        -- never fewer than five empty barrels. Registered once here, then re-evaluated
+        -- on every dispatch by run_standing().
+        pcall(function()
+            local jname = (a[2] and df.job_type[a[2]] ~= nil) and a[2] or "ConstructBed"
+            local batch = tonumber(a[3]) or 10
+            local item  = a[4]
+            local below = tonumber(a[5]) or 0
+            if not item or df.item_type[item] == nil or below <= 0 then return end
+            for _, s2 in ipairs(_G.BONSAI_STANDING) do
+                if s2.job == jname and s2.item == item then
+                    s2.batch, s2.below = batch, below      -- re-stating one updates it
+                    c.add_workorder_conditional = c.add_workorder_conditional + 1
+                    return
                 end
             end
+            table.insert(_G.BONSAI_STANDING,
+                         { job = jname, batch = batch, item = item, below = below })
+            c.add_workorder_conditional = c.add_workorder_conditional + 1
         end)
     end
 end
 f:close()
+
+-- Top up anything the agent asked to be kept in stock. A repeating manager
+-- order would have done this on DF's schedule; we do it on the dispatch schedule.
+local topped = run_standing()
+if topped > 0 then c.add_workorder = c.add_workorder + topped end
+
 local rep = {}
 for k, v in pairs(c) do rep[#rep + 1] = k .. "=" .. v end
 table.sort(rep)

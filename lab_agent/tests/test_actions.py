@@ -157,8 +157,20 @@ def test_tranche_one_is_the_food_and_drink_chain():
     """The measured year failed on consumables: drink 12 to 0, nothing brewed. Tranche 1
     exists to fix exactly that, so it should not quietly fill up with anything else."""
     first = {r["verb"] for r in roadmap() if r["tranche"] == 1}
-    assert first == {"build_farm_plot", "set_crop", "set_kitchen_flag",
-                     "add_workorder_conditional"}
+    assert first == {"build_farm_plot", "set_crop", "set_kitchen_flag"}
+
+
+def test_standing_orders_are_live_and_guard_a_stock_level():
+    """Shipped over direct workshop jobs rather than DF manager orders — those validate
+    on a real fort and stay inert on ours. Registering one made two beds on the spot."""
+    d = judge({"verb": "add_workorder_conditional",
+               "args": ["ConstructBed", 2, "BED", 3]})
+    assert d.ok and d.args == ["ConstructBed", 2, "BED", 3]
+    assert "add_workorder_conditional" in {a["verb"] for a in available_actions()}
+
+
+def test_a_standing_order_needs_a_job_to_repeat():
+    assert not judge({"verb": "add_workorder_conditional", "args": []}).ok
 
 
 def test_assign_noble_is_live_and_takes_best_by_default():

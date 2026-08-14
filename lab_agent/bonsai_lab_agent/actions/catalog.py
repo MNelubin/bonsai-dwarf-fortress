@@ -173,24 +173,29 @@ CATALOG: tuple[Verb, ...] = (
              "meals. Two clicks that decide whether the fort has a second year.",
     ),
     Verb(
-        name="add_workorder_conditional", category="production", status="planned",
-        tranche=1,
-        doc="A standing order: reissue this job whenever a stock level falls below a "
-            "threshold.",
-        observable="the order's condition list, and the stock it guards staying above "
-                   "the threshold over time",
+        name="add_workorder_conditional", category="production", tranche=0,
+        doc="A standing order: keep at least N of an item in stock, topping it up "
+            "whenever it falls below.",
+        observable="the guarded stock stops falling below the threshold while material "
+                   "lasts — measured BEDS 0 -> 2 on the round it was registered",
         args=(
-            Arg("job", "str", "df.job_type name"),
-            Arg("amount", "int", "batch size", lo=1, hi=100, required=False, default=10),
-            Arg("item", "str", "what to watch, e.g. DRINK or BARREL",
+            Arg("job", "str", "df.job_type name, e.g. ConstructBed"),
+            Arg("amount", "int", "batch size per top-up", lo=1, hi=100,
+                required=False, default=10),
+            Arg("item", "str", "df.item_type name to count, e.g. BED or BARREL",
                 required=False, default=""),
-            Arg("below", "int", "reorder when the watched stock is under this",
+            Arg("below", "int", "top up whenever the counted stock is under this",
                 lo=0, hi=1000, required=False, default=0),
         ),
         guide="28:14",
-        note="This is how a player stops babysitting: brewing that restarts itself, and "
-             "a barrel supply that never runs out. One-shot orders cannot keep a fort "
-             "alive across a year without attention.",
+        note="This is how a player stops babysitting: brewing that restarts itself, a "
+             "barrel supply that never runs out. Implemented evaluator-side over direct "
+             "workshop jobs, NOT as a DF manager order — manager orders validate in "
+             "~8,000 ticks on a real 136-dwarf fort and never validate on our pinned "
+             "save, with the manager seated and confirmed, an office built and owned, "
+             "the manager standing in it, and manager_cooldown counting down. That "
+             "subsystem is inert here and the cause is unresolved; the capability is "
+             "delivered anyway.",
     ),
 
     # ================================================================ TRANCHE 2
