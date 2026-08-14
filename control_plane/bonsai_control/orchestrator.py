@@ -19,7 +19,7 @@ DISCOVERY_CONSTRAINTS = {
     "editable_paths": ["knowledge/"],
     "wall_time_seconds": 1800,
     "llm_request_limit": 24,
-    "discovery_tool_budget_before_first_note": 8,
+    "discovery_tool_budget": 16,
     "promotion_mode": "automatic_if_gated",
 }
 
@@ -91,6 +91,7 @@ def tick() -> None:
                 "state": previous["state"],
                 "model": (previous["result"] or {}).get("model"),
                 "changed": (previous["result"] or {}).get("changed"),
+                "error": previous["error"],
                 "summary_tail": (summary or previous["error"] or "")[-2_000:],
             }
 

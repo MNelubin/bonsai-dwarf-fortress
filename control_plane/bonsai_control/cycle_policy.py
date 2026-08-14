@@ -21,6 +21,15 @@ def choose_cycle(
         return CycleDecision("discovery_cycle", "knowledge library has no promoted discovery yet")
     if last_job_type == "discovery_cycle" and last_job_state == "completed":
         return CycleDecision("coding_cycle", "fresh promoted knowledge is ready for implementation")
+    if (
+        last_job_type in {"coding_cycle", "research_cycle"}
+        and last_job_state == "rejected"
+        and last_job_changed is True
+    ):
+        return CycleDecision(
+            "coding_cycle",
+            "repair the changed coding candidate that failed its promotion gate",
+        )
     if last_job_type in {"coding_cycle", "research_cycle"} and (
         last_job_state in {"rejected", "failed", "cancelled"} or last_job_changed is False
     ):
