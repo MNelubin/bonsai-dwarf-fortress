@@ -311,4 +311,55 @@ calling `o:delete()` corrupted the vector — it reported zero orders while an u
 one was still in it, silently losing the agent's work. The container owns those pointers;
 erase only.
 
+## Verifying the tool, and the four defects that verification found
+
+`bonsai-ordercheck.lua` runs a battery through the real `bonsai-apply-actions` entry
+point — not the internal functions, because one of the defects lived in the verb parsing —
+and inspects world state after each case. 27 checks, run on a live fort.
+
+It caught four things a reading had not:
+
+**1. An unknown job silently became beds.** `add_workorder NoSuchJobType 5` queued five
+`ConstructBed` jobs, because the handler read `... and a[2] or "ConstructBed"`. The job
+list is now closed on both sides: `ORDERABLE_JOBS` in the catalog (so the gate refuses
+with the allowed list) and `JOB_SPEC` in the Lua, with a test that fails if the two drift
+apart.
+
+**2. Every order asked for wood.** `material_category.wood` was hardcoded for every job
+and the reagent picker took wood-or-stone whichever it found first, so a bed order could
+be handed a boulder once the logs ran out — and DF cancels that job thousands of ticks
+later, with the count already spent. Material now follows the job.
+
+**3. `shop_for` always returned the fallback.** `return want and nil or fallback`
+evaluates to `fallback` in every branch, so a brew order would have gone to the carpenter
+exactly as the comment promised it would not. There is no fallback now: a job without a
+workshop-and-reagent rule is refused.
+
+**4. The quantity was double-counted, and then the remainder was thrown away.** This one
+needed a live run to see. Sampling an order every 200 frames while its jobs completed:
+
+    order 6, five jobs queued        left = 6
+    ...as each job finished          6 -> 5 -> 4 -> 3 -> 2 -> 1
+    last queued job done             order GONE, with left = 1
+
+So DF spends `amount_left` itself on completion — our decrement at issue time was a
+second count — and, worse, **DF retires an order as soon as the jobs queued against it
+are gone, whatever `amount_left` still says.** On a normal fort its own dispatcher tops
+the queue back up before that happens; on ours it never runs, so everything past one
+workshop-load was silently dropped. A request for twelve beds delivered five and closed
+itself claiming to be done.
+
+The fix inverts ownership: `BONSAI_ORDERS` is the ledger of what the agent asked for and
+has not received, and each `df.manager_order` represents exactly **one batch** — the jobs
+actually queued for it, so DF's own count and its retirement are both correct. The
+remainder waits for the next dispatch.
+
+Measured end to end afterwards, 12 beds requested on a fort with 20 free logs:
+
+    beds 25 -> 30 -> 35 -> 37,  owed 12 -> 7 -> 2 -> 0,  then flat
+
+Exactly twelve, over three dispatch rounds, and no over-production once the ledger is
+clear.
+
+
 

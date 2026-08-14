@@ -37,6 +37,21 @@ from .schema import Arg, Verb
 # able to explain a refusal, not just issue one.
 EQUIPPED_LABORS = ("MINE", "CUTWOOD", "HUNT")
 
+# Job types the dispatcher can actually queue. The list is closed, and it is closed at
+# the gate rather than only in Lua, because the failure mode of an open list is silent:
+# an unrecognised job used to fall through to a default and quietly produce beds.
+#
+# A job belongs here only once it has BOTH a workshop and a reagent rule on the DFHack
+# side (JOB_SPEC in bonsai-apply-actions.lua). Handing a job the wrong reagent is not a
+# soft failure — DF cancels it thousands of ticks later, and by then the agent believes
+# the work is under way. Keep the two lists in step.
+ORDERABLE_JOBS = (
+    "ConstructBed", "ConstructTable", "ConstructThrone", "ConstructDoor",
+    "ConstructCabinet", "ConstructChest", "ConstructBin", "ConstructBarrel",
+    "ConstructCoffin",                       # carpenter, one log each
+    "MakeCrafts", "ConstructBlocks",         # stone
+)
+
 CATALOG: tuple[Verb, ...] = (
     # ---------------------------------------------------------------- time
     Verb(
@@ -88,13 +103,17 @@ CATALOG: tuple[Verb, ...] = (
         doc="Queue a manager order for a job type.",
         observable="workorders_done, from the fall in amount_left across manager_orders",
         args=(
-            Arg("job", "str", "df.job_type name, e.g. ConstructBed or BrewDrink"),
+            Arg("job", "enum", "what to make", choices=ORDERABLE_JOBS),
             Arg("amount", "int", "how many", lo=1, hi=200, required=False, default=10),
         ),
         guide="18:42",
-        note="No material filter and no condition, so it cannot express the standing "
-             "order a player actually writes: reorder whenever free barrels fall below "
-             "five (28:14).",
+        note="The job list is closed on purpose: the dispatcher can only queue work it "
+             "has a workshop AND a reagent rule for, and guessing either is silent. "
+             "Before this was an enum, `add_workorder NoSuchJobType 5` fell through to "
+             "a default and queued five beds. Material follows the job — wood for "
+             "furniture, stone for crafts and blocks — and a job is refused rather than "
+             "handed the wrong reagent, because DF cancels that job thousands of ticks "
+             "later with the order's count already spent on it.",
     ),
     Verb(
         name="build_workshop", category="production",
@@ -179,7 +198,7 @@ CATALOG: tuple[Verb, ...] = (
         observable="the guarded stock stops falling below the threshold while material "
                    "lasts — measured BEDS 0 -> 2 on the round it was registered",
         args=(
-            Arg("job", "str", "df.job_type name, e.g. ConstructBed"),
+            Arg("job", "enum", "what to make", choices=ORDERABLE_JOBS),
             Arg("amount", "int", "batch size per top-up", lo=1, hi=100,
                 required=False, default=10),
             Arg("item", "str", "df.item_type name to count, e.g. BED or BARREL",
@@ -189,13 +208,12 @@ CATALOG: tuple[Verb, ...] = (
         ),
         guide="28:14",
         note="This is how a player stops babysitting: brewing that restarts itself, a "
-             "barrel supply that never runs out. Implemented evaluator-side over direct "
-             "workshop jobs, NOT as a DF manager order — manager orders validate in "
-             "~8,000 ticks on a real 136-dwarf fort and never validate on our pinned "
-             "save, with the manager seated and confirmed, an office built and owned, "
-             "the manager standing in it, and manager_cooldown counting down. That "
-             "subsystem is inert here and the cause is unresolved; the capability is "
-             "delivered anyway.",
+             "barrel supply that never runs out. The top-up is placed as a real manager "
+             "order and goes through the same dispatch as a one-shot one, so the two "
+             "cannot drift apart on workshop or reagent. Only the shortfall is ordered, "
+             "and an order already open for that job counts against it — otherwise the "
+             "guard re-orders the same batch every round until the first item is "
+             "finished.",
     ),
 
     # ================================================================ TRANCHE 2

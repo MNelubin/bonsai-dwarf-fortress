@@ -161,12 +161,51 @@ def test_tranche_one_is_the_food_and_drink_chain():
 
 
 def test_standing_orders_are_live_and_guard_a_stock_level():
-    """Shipped over direct workshop jobs rather than DF manager orders — those validate
-    on a real fort and stay inert on ours. Registering one made two beds on the spot."""
+    """Placed as a real manager order and dispatched through the same path as a one-shot
+    one, so the two cannot drift apart on which workshop or which reagent they use."""
     d = judge({"verb": "add_workorder_conditional",
                "args": ["ConstructBed", 2, "BED", 3]})
     assert d.ok and d.args == ["ConstructBed", 2, "BED", 3]
     assert "add_workorder_conditional" in {a["verb"] for a in available_actions()}
+
+
+# ---------------------------------------------------------------- orderable jobs
+def test_an_unorderable_job_is_refused_and_the_list_is_offered():
+    """It used to fall through to a default: `add_workorder NoSuchJobType 5` queued five
+    ConstructBed jobs on a live fort. A closed list makes that a refusal the controller
+    can act on."""
+    d = judge({"verb": "add_workorder", "args": ["BrewDrink", 5]})
+    assert not d.ok
+    assert "ConstructBed" in d.reason
+
+
+def test_a_job_name_in_the_wrong_case_is_corrected_out_loud():
+    d = judge({"verb": "add_workorder", "args": ["constructbed", 5]})
+    assert d.ok and d.args == ["ConstructBed", 5]
+    assert d.repairs
+
+
+def test_the_conditional_verb_uses_the_same_job_list():
+    assert not judge({"verb": "add_workorder_conditional",
+                      "args": ["BrewDrink", 2, "DRINK", 5]}).ok
+
+
+def test_orderable_jobs_match_the_dispatcher_exactly():
+    """The gate refuses what the Lua cannot queue, so the two lists drifting apart is a
+    silent capability loss in one direction and a wrong-reagent job — cancelled by DF
+    thousands of ticks later — in the other."""
+    import re
+    from pathlib import Path
+
+    from bonsai_lab_agent.actions.catalog import ORDERABLE_JOBS
+
+    lua = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+           / "bonsai-apply-actions.lua").read_text(encoding="utf-8")
+    body = lua.split("local JOB_SPEC = {", 1)[1].split("\n}", 1)[0]
+    in_lua = set(re.findall(r"^\s*(\w+)\s*=\s*\{", body, re.M))
+    assert in_lua == set(ORDERABLE_JOBS), (
+        f"only in Lua: {sorted(in_lua - set(ORDERABLE_JOBS))}; "
+        f"only in catalog: {sorted(set(ORDERABLE_JOBS) - in_lua)}")
 
 
 def test_a_standing_order_needs_a_job_to_repeat():
