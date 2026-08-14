@@ -135,5 +135,43 @@ Caveat on the negative: I cannot see the nobles screen to confirm DF paints the 
 requirement green. `owned_buildings` containing the zone is the strongest proxy available
 headlessly.
 
+## The harness was starving every fort of migrants
+
+Found while chasing the order, and far more consequential than the order itself.
+
+`bonsai-advance2` clears `world.status.popups` and resets `status.flags.DID_ANNOUNCE`
+**on every graphic frame**. DF's fort-level services ride on that machinery. With the
+heartbeat running, our pinned fort sat at 7 citizens across 48,000 ticks and produced
+zero announcements. Advancing the same fort with popups cleared every ~20 seconds
+instead of every frame:
+
+    citizens  7 -> 15 -> 18        "Some migrants have arrived."
+    announcements 0 -> 59          seasons turning, outpost liaison arriving
+    throughput ~5,000 ticks/chunk -> ~15,000, and it no longer stalls
+
+So every episode this project has ever measured ran in a fort that could not receive
+migrants. That taints the year-run conclusion ("both policies head for death") — the
+forts were being denied their main source of new hands by our own harness, not only by
+the policy. The runs need repeating with a coarser heartbeat.
+
+The heartbeat exists for a real reason: a modal popup freezes the sim, and plain
+`pause_state = false` advanced the fort by ONE tick in four minutes. So it cannot simply
+be removed — the cadence has to be coarse enough to leave the event system alive and
+frequent enough to unstick the sim.
+
+## Orders: still not validating on our saves
+
+With the fort alive — migrants, liaison, seasons, 59 announcements — the order placed
+through the shipped `workorder` still read `val=false act=false left=2` across a full
+game year (year 2 tick 16,801 to year 3 tick 145,907). Population peaked at 18 and fell
+back to 15 as unmanaged dwarves starved, so it never crossed the 20 the wiki names as the
+validation threshold; that specific lead therefore remains untested rather than refuted.
+
+Also tried and failed this round: forcing a `ManageWorkOrders` job (job_type 195) directly
+— it does not stick, the manager never picks it up. And `modtools/create-unit` cannot
+raise the population on this build: it drives spawning through the arena screen, and both
+`world.arena_spawn` (renamed to `world.arena`) and the keycode `D_LOOK_ARENA_CREATURE` are
+gone, so patching the field names is not enough.
+
 Meanwhile the direct workshop-job path works and produces beds, so the agent is not
 blocked on this.
