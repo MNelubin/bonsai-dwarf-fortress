@@ -164,8 +164,14 @@ frequent enough to unstick the sim.
 With the fort alive — migrants, liaison, seasons, 59 announcements — the order placed
 through the shipped `workorder` still read `val=false act=false left=2` across a full
 game year (year 2 tick 16,801 to year 3 tick 145,907). Population peaked at 18 and fell
-back to 15 as unmanaged dwarves starved, so it never crossed the 20 the wiki names as the
-validation threshold; that specific lead therefore remains untested rather than refuted.
+back to 15 as unmanaged dwarves starved.
+
+**The population lead is now tested and REFUTED.** Feeding the fort with
+`dfhack.items.createItem` (206 plants, 212 drinks) let migration carry it to **21
+citizens** — past the 20 the wiki names as the validation threshold. With a manager and
+bookkeeper seated, an office built with real extents and owned via `setOwner`, and a
+further full game year of running, the order stayed `val=false act=false left=2`
+throughout. Being above the threshold changes nothing here.
 
 Also tried and failed this round: forcing a `ManageWorkOrders` job (job_type 195) directly
 — it does not stick, the manager never picks it up. And `modtools/create-unit` cannot
