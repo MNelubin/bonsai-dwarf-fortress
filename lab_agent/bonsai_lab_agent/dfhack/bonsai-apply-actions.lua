@@ -172,6 +172,119 @@ local function issue_jobs(jname, n)
     return made
 end
 
+-- ---------------------------------------------------------------- work orders
+-- DF's own work-order machinery does not run on our forts, and it is not our seating
+-- that stops it: measured side by side against a hand-played 119-dwarf fort on the same
+-- binary, `plotinfo.nobles.manager_cooldown` decrements at the normal 1-per-10-ticks and
+-- then fails its check at 0, so no ManageWorkOrders job is ever scheduled, nothing is
+-- validated, and even an order forced to validated+active with a built workshop and
+-- twenty free logs produces no job. Population, office, world age, squad membership,
+-- order shape and the embark procedure are all eliminated (tools/df_docs/workorder_contract.md).
+--
+-- So the evaluator plays manager. The order is a REAL df.manager_order living in
+-- world.manager_orders, so it is visible and countable exactly like a player's; we
+-- perform the dispatch step DF refuses to, emitting the same job shape DF emits on the
+-- working fort: flags.by_manager set, order_id pointing back at the order, a building
+-- holder, and a reagent attached.
+
+local WORKSHOP_FOR = {
+    ConstructBed = df.workshop_type.Carpenters,
+    ConstructTable = df.workshop_type.Carpenters,
+    ConstructThrone = df.workshop_type.Carpenters,
+    ConstructDoor = df.workshop_type.Carpenters,
+    ConstructCabinet = df.workshop_type.Carpenters,
+    ConstructBin = df.workshop_type.Carpenters,
+    ConstructBarrel = df.workshop_type.Carpenters,
+    MakeCrafts = df.workshop_type.Craftsdwarfs,
+    BrewDrink = df.workshop_type.Still,
+    PrepareMeal = df.workshop_type.Kitchen,
+}
+
+local function shop_for(job_type)
+    local want = WORKSHOP_FOR[df.job_type[job_type]]
+    local fallback
+    for _, b in ipairs(w.buildings.all) do
+        if b:getType() == df.building_type.Workshop and b.construction_stage >= 3 then
+            if want and b.type == want then return b end
+            fallback = fallback or b
+        end
+    end
+    return want and nil or fallback        -- never hand a bed order to a smelter
+end
+
+-- Create the order the agent asked for, as a real manager order.
+local function create_order(jname, amount)
+    if df.job_type[jname] == nil then return nil end
+    local mo = w.manager_orders
+    local o = df.manager_order:new()
+    o.id = mo.manager_order_next_id
+    mo.manager_order_next_id = mo.manager_order_next_id + 1
+    o.job_type = df.job_type[jname]
+    o.amount_left = amount
+    o.amount_total = amount
+    o.frequency = 0                        -- OneTime
+    o.max_workshops = 0                    -- 0 is unlimited
+    o.workshop_id = -1
+    -- An order with no material class never dispatches, even on a fort where the
+    -- manager works: measured, the same order gained a reagent the moment
+    -- material_category.wood was set and completed within 10,000 ticks.
+    pcall(function() o.material_category.wood = true end)
+    mo.all:insert('#', o)
+    return o
+end
+
+local function dispatch_orders()
+    local made = 0
+    local mo = w.manager_orders
+    for i = #mo.all - 1, 0, -1 do
+        local o = mo.all[i]
+        if o.amount_left > 0 then
+            o.status.validated = true      -- we are the manager; say so out loud
+            o.status.active = true
+            local shop = shop_for(o.job_type)
+            if shop then
+                local cap = 5
+                pcall(function() cap = shop.profile.max_general_orders end)
+                local room = math.max(0, cap - #shop.jobs)
+                for _ = 1, math.min(o.amount_left, room, 10) do
+                    local item = free_material(false)
+                    if not item then break end
+                    local job = df.job:new()
+                    job.job_type = o.job_type
+                    job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
+                    job.flags.by_manager = true
+                    job.order_id = o.id
+                    pcall(function() job.material_category.wood = true end)
+                    dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
+                    shop.jobs:insert('#', job)
+                    dfhack.job.linkIntoWorld(job, true)
+                    local ok = pcall(function()
+                        dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent, 0, -1)
+                    end)
+                    if ok and #job.items > 0 then
+                        made = made + 1
+                        o.amount_left = o.amount_left - 1
+                    else
+                        -- a job with no reagent is cancelled by DF and silently removed,
+                        -- so drop it here rather than counting a phantom
+                        pcall(function() dfhack.job.removeJob(job) end)
+                        break
+                    end
+                end
+            end
+            if o.amount_left <= 0 and o.frequency == 0 then
+                -- DF retires a finished one-time order. Erase only: calling o:delete()
+                -- as well left the vector reporting zero orders while an unfinished one
+                -- was still in it, i.e. the container owns these and freeing them twice
+                -- corrupts it. A retired order struct is a few dozen bytes; a corrupted
+                -- order list loses the agent's work silently.
+                mo.all:erase(i)
+            end
+        end
+    end
+    return made
+end
+
 -- How many of an item type the fort holds, ignoring what is already spoken for.
 local function stock_of(item_name)
     local t = df.item_type[item_name]
@@ -401,7 +514,14 @@ for line in f:lines() do
         pcall(function()
             local amount = tonumber(a[3]) or tonumber(a[2]) or 10
             local jname = (a[2] and df.job_type[a[2]] ~= nil) and a[2] or "ConstructBed"
-            c.add_workorder = c.add_workorder + issue_jobs(jname, amount)
+            -- A real manager order now, plus the dispatch DF will not do for us. The
+            -- order shows up in world.manager_orders like a player's and its amount_left
+            -- counts down as the jobs are issued.
+            if create_order(jname, amount) then
+                c.add_workorder = c.add_workorder + dispatch_orders()
+            else
+                c.add_workorder = c.add_workorder + issue_jobs(jname, amount)
+            end
         end)
     elseif verb == "add_workorder_conditional" then
         -- "Keep at least N of X" -- the standing order a player actually writes, e.g.
@@ -432,6 +552,12 @@ f:close()
 -- order would have done this on DF's schedule; we do it on the dispatch schedule.
 local topped = run_standing()
 if topped > 0 then c.add_workorder = c.add_workorder + topped end
+
+-- Carry every outstanding work order forward. DF's manager never runs on our forts, so
+-- an order left with amount_left > 0 would sit there for ever; this is the second and
+-- every later visit the manager would have paid it.
+local dispatched = dispatch_orders()
+if dispatched > 0 then c.add_workorder = c.add_workorder + dispatched end
 
 local rep = {}
 for k, v in pairs(c) do rep[#rep + 1] = k .. "=" .. v end

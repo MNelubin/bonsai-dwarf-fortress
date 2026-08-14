@@ -263,3 +263,52 @@ The remaining split is: **our embark procedure produces a defective fort**, vers
 embark inside the user's 259-year world; `bonsai-setsite.lua` exists for it but the
 embark-screen map click still does not select a tile.
 
+### Both were wrong — it is fort size, and DF made the fort itself
+
+The embark screen's **"Start tutorial"** button embarks at a DF-chosen site with one
+click, which sidesteps the map-click problem entirely. Using it in one of the shipped
+250-year worlds produced a fort **DF created end to end**, in a mature world:
+
+    year 250, 7 citizens, manager_cooldown = 0, order never validates,
+    order forced validated+active with 17 free logs and a finished
+    Carpenters workshop -> jobs = 0, beds = 0
+
+So it is neither our embark procedure nor the age of the world. A small young fort's
+manager machinery is simply dormant, on a save nothing of ours ever touched. The only
+fort where any of it works remains the hand-played 119-dwarf one.
+
+## Resolution: the evaluator plays manager
+
+DF will not dispatch, so we do. `add_workorder` now creates a **real `df.manager_order`**
+in `world.manager_orders` — visible and countable exactly like a player's — and
+`dispatch_orders()` performs the step DF refuses to, emitting the same job shape DF emits
+on the working fort, read off it field by field:
+
+| field | value |
+|---|---|
+| `job.flags.by_manager` | true |
+| `job.order_id` | the order's id |
+| general ref | `BUILDING_HOLDER` -> the workshop |
+| `job_items` | one reagent, attached before the job is left alone |
+
+`shop_for()` maps job type to workshop type so a bed order is never handed to a smelter,
+and refuses rather than guessing when the job type is unknown. Capacity comes from the
+workshop's own `profile.max_general_orders`, so an order larger than the shop can hold is
+issued in batches and **carries forward**: the tail of every dispatch re-visits every
+order with `amount_left > 0`, which is the second and every later visit the manager would
+have paid. A finished one-time order is retired the way DF retires it.
+
+Measured:
+
+    our fort   ConstructBed x4  -> 4 by_manager jobs, beds 2 -> 6, order retired
+    DF's fort  ConstructBed x3  -> beds 0 -> 3, order retired
+    DF's fort  ConstructTable x9 -> issued 1 (the shop already held 4 of its 5), order
+                                   left 8/9, then drained over three further dispatch
+                                   rounds to 11 tables and retired itself
+
+One trap on the way: erasing a finished order from `world.manager_orders.all` **and**
+calling `o:delete()` corrupted the vector — it reported zero orders while an unfinished
+one was still in it, silently losing the agent's work. The container owns those pointers;
+erase only.
+
+
