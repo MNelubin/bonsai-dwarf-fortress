@@ -47,10 +47,20 @@ EQUIPPED_LABORS = ("MINE", "CUTWOOD", "HUNT")
 # the work is under way. Keep the two lists in step.
 ORDERABLE_JOBS = (
     "ConstructBed", "ConstructTable", "ConstructThrone", "ConstructDoor",
-    "ConstructCabinet", "ConstructChest", "ConstructBin", "ConstructBarrel",
+    "ConstructCabinet", "ConstructChest", "ConstructBin", "MakeBarrel",
     "ConstructCoffin",                       # carpenter, one log each
     "MakeCrafts", "ConstructBlocks",         # stone
 )
+
+# Material classes the dispatcher can pick a reagent and a workshop for. "any" lets it
+# take whichever the job supports and the fort has a workshop for.
+ORDER_MATERIALS = ("any", "wood", "stone")
+
+# DF's own comparison and schedule enums (df.logic_condition_type,
+# df.workquota_frequency_type), so a condition the agent writes is the same shape a
+# player's is and survives an `orders export`.
+ORDER_COMPARISONS = ("LessThan", "AtMost", "Exactly", "AtLeast", "GreaterThan")
+ORDER_FREQUENCIES = ("Daily", "Monthly", "Seasonally", "Yearly")
 
 CATALOG: tuple[Verb, ...] = (
     # ---------------------------------------------------------------- time
@@ -100,20 +110,21 @@ CATALOG: tuple[Verb, ...] = (
     ),
     Verb(
         name="add_workorder", category="production",
-        doc="Queue a manager order for a job type.",
+        doc="Make a specific quantity of something, once.",
         observable="workorders_done, from the fall in amount_left across manager_orders",
         args=(
             Arg("job", "enum", "what to make", choices=ORDERABLE_JOBS),
             Arg("amount", "int", "how many", lo=1, hi=200, required=False, default=10),
+            Arg("material", "enum", "what to make it out of",
+                choices=ORDER_MATERIALS, required=False, default="any"),
         ),
         guide="18:42",
-        note="The job list is closed on purpose: the dispatcher can only queue work it "
-             "has a workshop AND a reagent rule for, and guessing either is silent. "
-             "Before this was an enum, `add_workorder NoSuchJobType 5` fell through to "
-             "a default and queued five beds. Material follows the job — wood for "
-             "furniture, stone for crafts and blocks — and a job is refused rather than "
-             "handed the wrong reagent, because DF cancels that job thousands of ticks "
-             "later with the order's count already spent on it.",
+        note="Bulk creation, deliberately WITHOUT a condition or a schedule — those are "
+             "add_workorder_conditional, a different thing to want even though DF stores "
+             "both in one manager_order (tools/df_docs/open_decisions.md). The job list "
+             "is closed because the dispatcher can only queue work it has a workshop AND "
+             "a reagent rule for; before it was an enum, `add_workorder NoSuchJobType 5` "
+             "fell through to a default and queued five beds.",
     ),
     Verb(
         name="build_workshop", category="production",
@@ -193,27 +204,33 @@ CATALOG: tuple[Verb, ...] = (
     ),
     Verb(
         name="add_workorder_conditional", category="production", tranche=0,
-        doc="A standing order: keep at least N of an item in stock, topping it up "
-            "whenever it falls below.",
+        doc="Watch a stock level and refill it automatically, without being asked again.",
         observable="the guarded stock stops falling below the threshold while material "
-                   "lasts — measured BEDS 0 -> 2 on the round it was registered",
+                   "lasts, and the order reads validated with active tracking the "
+                   "condition",
         args=(
             Arg("job", "enum", "what to make", choices=ORDERABLE_JOBS),
-            Arg("amount", "int", "batch size per top-up", lo=1, hi=100,
-                required=False, default=10),
-            Arg("item", "str", "df.item_type name to count, e.g. BED or BARREL",
+            Arg("item", "str", "df.item_type name to count, e.g. BARREL or BAR"),
+            Arg("value", "int", "the threshold to compare the count against",
+                lo=0, hi=1000),
+            Arg("amount", "int", "how many to make each time it fires",
+                lo=1, hi=100, required=False, default=10),
+            Arg("compare", "enum", "how the count is compared with the threshold",
+                choices=ORDER_COMPARISONS, required=False, default="LessThan"),
+            Arg("item_material", "str",
+                "narrow the count to one material, e.g. ASH or INORGANIC:STEEL",
                 required=False, default=""),
-            Arg("below", "int", "top up whenever the counted stock is under this",
-                lo=0, hi=1000, required=False, default=0),
+            Arg("frequency", "enum", "how often the condition is re-checked",
+                choices=ORDER_FREQUENCIES, required=False, default="Daily"),
         ),
         guide="28:14",
-        note="This is how a player stops babysitting: brewing that restarts itself, a "
-             "barrel supply that never runs out. The top-up is placed as a real manager "
-             "order and goes through the same dispatch as a one-shot one, so the two "
-             "cannot drift apart on workshop or reagent. Only the shortfall is ordered, "
-             "and an order already open for that job counts against it — otherwise the "
-             "guard re-orders the same batch every round until the first item is "
-             "finished.",
+        note="This is how a player stops babysitting. Read off a hand-played fort the "
+             "shape is `MakeAsh x_/10 Daily WHILE LessThan 10 of BAR (ASH)` — thirty of "
+             "that fort's fifty-seven orders carry a condition and every one is Daily. "
+             "The amount is the FULL order, not the shortfall; the condition is what "
+             "makes it go quiet once the shelf is full. The condition is written into "
+             "the order's real item_conditions, so it reads in-game and exports through "
+             "`orders export` like a player's, even though we evaluate it ourselves.",
     ),
 
     # ================================================================ TRANCHE 2

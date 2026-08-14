@@ -63,7 +63,7 @@ def test_junk_among_good_actions_costs_only_itself():
 def test_positional_and_named_arguments_agree():
     a = judge({"verb": "add_workorder", "args": ["ConstructBed", 5]})
     b = judge({"verb": "add_workorder", "args": {"job": "ConstructBed", "amount": 5}})
-    assert a.ok and b.ok and a.args == b.args == ["ConstructBed", 5]
+    assert a.ok and b.ok and a.args == b.args == ["ConstructBed", 5, "any"]
 
 
 def test_omitted_optional_argument_takes_its_default():
@@ -119,7 +119,7 @@ def test_a_refused_enum_lists_what_was_allowed(monkeypatch):
 
 def test_numbers_arrive_as_strings_and_still_work():
     d = judge({"verb": "add_workorder", "args": ["ConstructBed", "12"]})
-    assert d.ok and d.args == ["ConstructBed", 12]
+    assert d.ok and d.args == ["ConstructBed", 12, "any"]
 
 
 @pytest.mark.parametrize("truthy,expected",
@@ -164,8 +164,9 @@ def test_standing_orders_are_live_and_guard_a_stock_level():
     """Placed as a real manager order and dispatched through the same path as a one-shot
     one, so the two cannot drift apart on which workshop or which reagent they use."""
     d = judge({"verb": "add_workorder_conditional",
-               "args": ["ConstructBed", 2, "BED", 3]})
-    assert d.ok and d.args == ["ConstructBed", 2, "BED", 3]
+               "args": ["MakeBarrel", "BARREL", 5]})
+    assert d.ok
+    assert d.args == ["MakeBarrel", "BARREL", 5, 10, "LessThan", "", "Daily"]
     assert "add_workorder_conditional" in {a["verb"] for a in available_actions()}
 
 
@@ -181,13 +182,13 @@ def test_an_unorderable_job_is_refused_and_the_list_is_offered():
 
 def test_a_job_name_in_the_wrong_case_is_corrected_out_loud():
     d = judge({"verb": "add_workorder", "args": ["constructbed", 5]})
-    assert d.ok and d.args == ["ConstructBed", 5]
+    assert d.ok and d.args == ["ConstructBed", 5, "any"]
     assert d.repairs
 
 
 def test_the_conditional_verb_uses_the_same_job_list():
     assert not judge({"verb": "add_workorder_conditional",
-                      "args": ["BrewDrink", 2, "DRINK", 5]}).ok
+                      "args": ["BrewDrink", "DRINK", 5]}).ok
 
 
 def test_orderable_jobs_match_the_dispatcher_exactly():
@@ -228,7 +229,7 @@ def test_assign_noble_refuses_an_office_that_does_not_exist():
 def test_advertised_actions_carry_argument_schemas():
     spec = {a["verb"]: a for a in available_actions()}
     wo = spec["add_workorder"]
-    assert [x["name"] for x in wo["args"]] == ["job", "amount"]
+    assert [x["name"] for x in wo["args"]] == ["job", "amount", "material"]
     assert wo["args"][1]["default"] == 10
     assert wo["args"][1]["range"] == [1, 200]
 

@@ -135,17 +135,25 @@ local function reset()
     end
     local mo = w.manager_orders
     while #mo.all > 0 do mo.all:erase(#mo.all - 1) end
-    _G.BONSAI_STANDING = {}
     _G.BONSAI_ORDERS = {}
 end
 
 -- What the agent has asked for and not yet been given. The DF order is only the current
 -- batch, so this ledger is what "amount left" means to the caller.
 local function owed(jname)
+    local n = 0
     for _, e in ipairs(_G.BONSAI_ORDERS or {}) do
-        if e.job == jname then return e.remaining end
+        if e.job == jname then n = n + e.remaining end
     end
-    return 0
+    return n
+end
+
+local function rules(jname)
+    local n = 0
+    for _, e in ipairs(_G.BONSAI_ORDERS or {}) do
+        if e.job == jname and e.cond then n = n + 1 end
+    end
+    return n
 end
 
 -- ---------------------------------------------------------------- preconditions
@@ -291,37 +299,38 @@ else
 end
 
 -- ================================================================ 5. conditions
-apply('add_workorder_conditional	ConstructBed	2	BED	3')
-local standing = #(_G.BONSAI_STANDING or {})
-ok('standing order registered', standing == 1, 'registered=' .. standing)
+apply('add_workorder_conditional	ConstructBed	BED	3	2')
+ok('standing order registered', rules('ConstructBed') == 1,
+    'rules=' .. rules('ConstructBed'))
 
 -- below <= 0 is meaningless and must be refused rather than looping for ever
-apply('add_workorder_conditional	ConstructBed	2	BED	0')
-ok('threshold of zero refused', #(_G.BONSAI_STANDING or {}) == 1,
-    'registered=' .. #(_G.BONSAI_STANDING or {}))
+apply('add_workorder_conditional	ConstructBed	BED	0	2')
+ok('threshold of zero refused', rules('ConstructBed') == 1,
+    'rules=' .. rules('ConstructBed'))
 
-apply('add_workorder_conditional	ConstructBed	2	NOSUCHITEM	5')
-ok('unknown item refused', #(_G.BONSAI_STANDING or {}) == 1,
-    'registered=' .. #(_G.BONSAI_STANDING or {}))
+apply('add_workorder_conditional	ConstructBed	NOSUCHITEM	5	2')
+ok('unknown item refused', rules('ConstructBed') == 1,
+    'rules=' .. rules('ConstructBed'))
 
-apply('add_workorder_conditional	ConstructBed	2	BED	3')
-ok('duplicate standing order not doubled', #(_G.BONSAI_STANDING or {}) == 1,
-    'registered=' .. #(_G.BONSAI_STANDING or {}))
+apply('add_workorder_conditional	ConstructBed	BED	3	2')
+ok('duplicate standing order not doubled', rules('ConstructBed') == 1,
+    'rules=' .. rules('ConstructBed'))
 
 -- stock is above the threshold, so the guard must stay quiet
 reset()
 local beds_now = count_items('BED')
-apply('add_workorder_conditional	ConstructBed	3	BED	1')
+apply('add_workorder_conditional	ConstructBed	BED	1	3')
 ok('guard silent when stock is above it', #manager_jobs() == 0,
     string.format('beds=%d threshold=1 jobs=%d', beds_now, #manager_jobs()))
 
 -- now put the threshold above stock: it must fire on the spot
 reset()
-apply('add_workorder_conditional	ConstructBed	3	BED	' .. (beds_now + 4))
+apply('add_workorder_conditional	ConstructBed	BED	' .. (beds_now + 4) .. '	3')
 local fired = #manager_jobs()
 ok('guard fires when stock is below it', fired > 0,
     string.format('beds=%d threshold=%d jobs=%d', beds_now, beds_now + 4, fired))
-ok('guard orders the shortfall, not more', fired <= 3, 'jobs=' .. fired)
+ok('guard orders the full amount, not the shortfall', fired == 3,
+    'jobs=' .. fired .. ' (asked for 3 each firing)')
 
 -- a second dispatch with the same low stock must NOT queue the batch again: the first
 -- batch is still in flight and re-ordering it every round buries the workshop

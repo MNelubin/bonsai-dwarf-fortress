@@ -14,19 +14,10 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             build_workshop = 0, advance = 0, assign_noble = 0,
             add_workorder_conditional = 0 }
 
--- Standing orders, kept evaluator-side, because DF's own manager orders do not work on
--- this save. Measured: an order placed through DFHack's shipped `workorder` validates in
--- ~8,000 ticks on a real 136-dwarf fort, and never validates here across 30,000 ticks —
--- with the manager seated and confirmed by getNoblePositions, an office built with real
--- extents and owned via setOwner, the manager standing inside it, and
--- plotinfo.nobles.manager_cooldown counting down. Why that subsystem is inert on this
--- fort is unresolved.
---
--- What the agent actually needs is the CAPABILITY, not the subsystem: "keep at least N of
--- X in stock". That is expressible over the direct workshop-job path, which does work and
--- does produce items. Each dispatch re-checks the stock level and tops it up, which is
--- what a repeating manager order would have done anyway.
-_G.BONSAI_STANDING = _G.BONSAI_STANDING or {}
+-- Work orders live in _G.BONSAI_ORDERS (declared with the order code below) and survive
+-- between dispatches within one DF process. They are re-checked on every dispatch, which
+-- is the visit DF's own manager pays on a normal fort and never pays here.
+_G.BONSAI_STANDING = nil                    -- superseded by the order ledger
 
 -- Seat a citizen in a fort position so THE GAME believes it, not just the nobles screen.
 --
@@ -153,44 +144,65 @@ end
 -- real workshop, its real reagent, and the same refusal on an unsupported job.)
 
 -- ---------------------------------------------------------------- work orders
--- DF's own work-order machinery does not run on our forts, and it is not our seating
--- that stops it: measured side by side against a hand-played 119-dwarf fort on the same
--- binary, `plotinfo.nobles.manager_cooldown` decrements at the normal 1-per-10-ticks and
--- then fails its check at 0, so no ManageWorkOrders job is ever scheduled, nothing is
--- validated, and even an order forced to validated+active with a built workshop and
--- twenty free logs produces no job. Population, office, world age, squad membership,
--- order shape and the embark procedure are all eliminated (tools/df_docs/workorder_contract.md).
+-- A work order in DF is not "make N of X". Read off a hand-played fort, the shape is
 --
--- So the evaluator plays manager. The order is a REAL df.manager_order living in
--- world.manager_orders, so it is visible and countable exactly like a player's; we
--- perform the dispatch step DF refuses to, emitting the same job shape DF emits on the
--- working fort: flags.by_manager set, order_id pointing back at the order, a building
--- holder, and a reagent attached.
+--     #398 MakeAsh  x5/10  Daily  val=true act=true
+--          WHILE LessThan 10 of BAR (ASH)
+--
+-- that is: make ten, out of a named material, WHILE a stock condition holds, re-checked
+-- on a schedule — and the manager is what turns it into jobs. Thirty of that fort's
+-- fifty-seven orders carry a condition and every one of those is Daily.
+--
+-- Three things that shape looks like and this code used to get wrong:
+--
+--   * the amount is the FULL order (ten ash), not the shortfall. The condition is what
+--     stops it: once ash reaches ten, `LessThan 10` is false and the order goes quiet.
+--   * `status.active` is not "we approved it" — it is "the condition holds right now".
+--     That same fort carries `#299 SmeltOre val=true act=false`, an order the manager
+--     validated that is idle because there is no gold ore. Forcing active erases exactly
+--     the bit that expresses the condition.
+--   * the condition names a material, not just an item type: `BAR (ASH)`, not any bar.
+--
+-- DF's own manager never runs on our forts (see tools/df_docs/workorder_contract.md), so
+-- we validate, evaluate the condition and dispatch ourselves. The order is still a real
+-- df.manager_order carrying real item_conditions, so it reads in-game — and exports
+-- through `orders export` — exactly like a player's.
 
--- What each job we are willing to dispatch actually needs. A job we cannot name a
--- workshop AND a reagent for is refused, not guessed at: the guess is silent, and a job
--- handed the wrong reagent is cancelled by DF a few thousand ticks later with the
--- agent's amount_left already spent.
---
--- `cat` is the order's material_category, which an order must carry or it never
--- dispatches even on a fort where DF's own manager works. `item` is the reagent we
--- claim up front.
+-- Each job maps to one or more (material, workshop, reagent) variants. A job with no
+-- entry is refused rather than guessed at: a job handed the wrong reagent is not a soft
+-- failure, DF cancels it thousands of ticks later with the order's count already spent.
 local JOB_SPEC = {
-    ConstructBed     = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructTable   = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructThrone  = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructDoor    = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructCabinet = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructChest   = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructBin     = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructBarrel  = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    ConstructCoffin  = { shop = 'Carpenters',   cat = 'wood',  item = 'WOOD' },
-    MakeCrafts       = { shop = 'Craftsdwarfs', cat = 'stone', item = 'BOULDER' },
-    ConstructBlocks  = { shop = 'Masons',       cat = 'stone', item = 'BOULDER' },
+    ConstructBed     = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' } },
+    ConstructThrone  = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' },
+                         { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    ConstructTable   = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' },
+                         { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    ConstructDoor    = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' },
+                         { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    ConstructCabinet = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' },
+                         { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    ConstructChest   = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' },
+                         { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    ConstructCoffin  = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' },
+                         { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    ConstructBin     = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' } },
+    MakeBarrel       = { { mat = 'wood',  shop = 'Carpenters',   item = 'WOOD' } },
+    ConstructBlocks  = { { mat = 'stone', shop = 'Masons',       item = 'BOULDER' } },
+    MakeCrafts       = { { mat = 'stone', shop = 'Craftsdwarfs', item = 'BOULDER' },
+                         { mat = 'wood',  shop = 'Craftsdwarfs', item = 'WOOD' } },
+}
+
+local FREQ_TICKS = {                      -- a DF month is 28 days of 1200 ticks
+    OneTime = 0, Daily = 1200, Monthly = 33600, Seasonally = 100800, Yearly = 403200,
 }
 
 local function spec_for(jname)
     return JOB_SPEC[jname]
+end
+
+local function now_tick()
+    -- cur_year_tick wraps every year, so a schedule needs the absolute one
+    return df.global.cur_year * 403200 + df.global.cur_year_tick
 end
 
 local function built(b)
@@ -200,188 +212,206 @@ local function built(b)
     return ok and done
 end
 
--- The workshop this job belongs in, or nil. Never a fallback: an earlier version read
--- `return want and nil or fallback`, which evaluates to `fallback` in every branch, so a
--- brew order went to the carpenter exactly as the comment promised it would not.
-local function shop_for(jname)
-    local spec = JOB_SPEC[jname]
-    if not spec then return nil end
-    local want = df.workshop_type[spec.shop]
-    for _, b in ipairs(w.buildings.all) do
-        if df.building_workshopst:is_instance(b) and b.type == want and built(b) then
-            return b
+-- The (material, workshop, reagent) variant to use, or nil. Never a fallback: an earlier
+-- version read `return want and nil or fallback`, which is `fallback` in every branch, so
+-- a brew order went to the carpenter exactly as its comment promised it would not.
+local function variant_for(jname, material)
+    local variants = JOB_SPEC[jname]
+    -- a name that is not a real df.job_type would blow up on the order write; measured,
+    -- `ConstructBarrel` was invented from memory and the real one is `MakeBarrel`
+    if not variants or df.job_type[jname] == nil then return nil end
+    for _, v in ipairs(variants) do
+        if material == nil or material == '' or material == 'any' or material == v.mat then
+            local want = df.workshop_type[v.shop]
+            for _, b in ipairs(w.buildings.all) do
+                if df.building_workshopst:is_instance(b) and b.type == want and built(b) then
+                    return v, b
+                end
+            end
         end
     end
     return nil
 end
 
--- Create the order the agent asked for, as a real manager order.
-local function create_order(jname, amount)
-    local spec = JOB_SPEC[jname]
-    if not spec or df.job_type[jname] == nil then return nil end
-    local mo = w.manager_orders
-    local o = df.manager_order:new()
-    o.id = mo.manager_order_next_id
-    mo.manager_order_next_id = mo.manager_order_next_id + 1
-    o.job_type = df.job_type[jname]
-    o.amount_left = amount
-    o.amount_total = amount
-    o.frequency = 0                        -- OneTime
-    o.max_workshops = 0                    -- 0 is unlimited
-    o.workshop_id = -1
-    -- An order with no material class never dispatches, even on a fort where the
-    -- manager works: measured, the same order gained a reagent the moment
-    -- material_category was set and completed within 10,000 ticks.
-    pcall(function() o.material_category[spec.cat] = true end)
-    mo.all:insert('#', o)
-    return o
-end
-
--- What the agent has asked for and not yet received. This ledger, not the DF order, is
--- the source of truth.
---
--- DF retires a work order the moment the jobs queued against it are gone, whatever
--- amount_left still says — measured: an order for 6 with 5 jobs queued ran
--- 6 -> 5 -> 4 -> 3 -> 2 -> 1 and then vanished, having produced five beds. On a normal
--- fort DF's own dispatcher would have topped the queue back up before that happened; on
--- ours it never runs, so anything beyond one workshop-load of the request was silently
--- dropped. A request for twelve beds delivered five and closed itself.
---
--- So each DF manager_order now represents ONE BATCH — exactly the jobs queued for it,
--- so DF's own count and retirement are correct — and the remainder waits here for the
--- next dispatch.
-_G.BONSAI_ORDERS = _G.BONSAI_ORDERS or {}
-
-local function owe(jname, amount)
-    for _, e in ipairs(_G.BONSAI_ORDERS) do
-        if e.job == jname then e.remaining = e.remaining + amount; return e end
-    end
-    local e = { job = jname, remaining = amount, asked = amount }
-    _G.BONSAI_ORDERS[#_G.BONSAI_ORDERS + 1] = e
-    return e
-end
-
-local function outstanding(jname)
-    for _, e in ipairs(_G.BONSAI_ORDERS) do
-        if e.job == jname then return e.remaining end
-    end
-    return 0
-end
-
-local function dispatch_orders()
-    local made = 0
-    for _, e in ipairs(_G.BONSAI_ORDERS) do
-        local spec = JOB_SPEC[e.job]
-        local shop = spec and shop_for(e.job) or nil
-        if e.remaining > 0 and shop then
-            local cap = 5
-            pcall(function() cap = shop.profile.max_general_orders end)
-            local batch = math.min(e.remaining, math.max(0, cap - #shop.jobs), 10)
-            if batch > 0 then
-                local o = create_order(e.job, batch)
-                if o then
-                    o.status.validated = true   -- we are the manager; say so out loud
-                    o.status.active = true
-                    local queued = 0
-                    for _ = 1, batch do
-                        local item = free_material(df.item_type[spec.item])
-                        if not item then break end
-                        local job = df.job:new()
-                        job.job_type = o.job_type
-                        job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
-                        job.flags.by_manager = true
-                        job.order_id = o.id
-                        pcall(function() job.material_category[spec.cat] = true end)
-                        dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER,
-                            shop.id)
-                        shop.jobs:insert('#', job)
-                        dfhack.job.linkIntoWorld(job, true)
-                        local ok = pcall(function()
-                            dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent,
-                                0, -1)
-                        end)
-                        if ok and #job.items > 0 then
-                            queued = queued + 1
-                        else
-                            -- a job with no reagent is cancelled by DF and silently
-                            -- removed, so drop it rather than counting a phantom
-                            pcall(function() dfhack.job.removeJob(job) end)
-                            break
-                        end
-                    end
-                    -- The order must describe exactly what was queued, or DF's count
-                    -- outlives the work and the order lingers claiming to owe more.
-                    if queued == 0 then
-                        local mo = w.manager_orders
-                        for i = #mo.all - 1, 0, -1 do
-                            if mo.all[i] == o then mo.all:erase(i) end
-                        end
-                    else
-                        o.amount_left, o.amount_total = queued, queued
-                        e.remaining = e.remaining - queued
-                        made = made + queued
-                    end
-                end
-            end
-        end
-    end
-    -- drop satisfied entries
-    for i = #_G.BONSAI_ORDERS, 1, -1 do
-        if _G.BONSAI_ORDERS[i].remaining <= 0 then table.remove(_G.BONSAI_ORDERS, i) end
-    end
-    return made
-end
-
--- How many of an item type the fort holds, ignoring what is already spoken for.
-local function stock_of(item_name)
+-- ---------------------------------------------------------------- conditions
+-- How many of an item the fort holds, ignoring what is already spoken for. `mat_token`
+-- narrows it the way a real condition does — `BAR (ASH)`, not any bar.
+local function stock_of(item_name, mat_token)
     local t = df.item_type[item_name]
     if t == nil then return nil end
+    local mi = nil
+    if mat_token and mat_token ~= '' then
+        mi = dfhack.matinfo.find(mat_token)
+        if not mi then return nil end
+    end
     local n = 0
     for _, it in ipairs(w.items.all) do
         if it:getType() == t and not (it.flags.in_job or it.flags.forbid
-                                      or it.flags.removed) then n = n + 1 end
+                                      or it.flags.removed) then
+            if not mi or (it:getMaterial() == mi.type
+                          and it:getMaterialIndex() == mi.index) then
+                n = n + 1
+            end
+        end
     end
     return n
 end
 
--- Re-run every standing order the agent has placed. This is what a repeating manager
--- order would have done; it runs on each dispatch instead of on DF's manager cycle.
+local function cond_holds(c)
+    if not c or not c.item or c.item == '' then return true end
+    local have = stock_of(c.item, c.material)
+    if have == nil then return false end
+    local v = c.value or 0
+    if c.cmp == 'GreaterThan' then return have > v end
+    if c.cmp == 'AtLeast' then return have >= v end
+    if c.cmp == 'AtMost' then return have <= v end
+    if c.cmp == 'Exactly' then return have == v end
+    return have < v                        -- LessThan, the default
+end
+
+-- Write the condition onto the order itself, so it reads in-game and through
+-- `orders export` the way a player's does, even though we are the ones evaluating it.
+local function attach_condition(o, c)
+    if not c or not c.item or c.item == '' then return end
+    local ok = pcall(function()
+        o.item_conditions:insert('#', { new = df.manager_order_condition_item })
+        local cond = o.item_conditions[#o.item_conditions - 1]
+        cond.compare_type = df.logic_condition_type[c.cmp or 'LessThan']
+        cond.compare_val = c.value or 0
+        cond.item_type = df.item_type[c.item]
+        cond.item_subtype = -1
+        if c.material and c.material ~= '' then
+            local mi = dfhack.matinfo.find(c.material)
+            if mi then cond.mat_type, cond.mat_index = mi.type, mi.index end
+        end
+    end)
+    return ok
+end
+
+-- ---------------------------------------------------------------- the ledger
+-- What the agent has asked for and not yet received, plus the schedule it asked for.
 --
--- The top-up is placed as a real manager order and dispatched through the same path as
--- everything else, so a standing order cannot drift away from a one-shot one in which
--- workshop it uses or which reagent it claims.
---
--- Work already promised counts against the shortfall, or the guard re-orders the same
--- batch every round until the first item is finished and buries the workshop.
-local function pending_for(jname)
-    return outstanding(jname) + (function()
-        local n = 0
-        for _, b in ipairs(w.buildings.all) do
-            if df.building_workshopst:is_instance(b) then
-                for _, j in ipairs(b.jobs) do
-                    if j.flags.by_manager and df.job_type[j.job_type] == jname then
-                        n = n + 1
+-- This, not the DF order, is the source of truth. DF retires a work order the moment the
+-- jobs queued against it are gone, whatever amount_left still says — measured: an order
+-- for 6 with 5 jobs queued ran 6 -> 5 -> 4 -> 3 -> 2 -> 1 and then vanished, having
+-- produced five beds. On a normal fort DF's own dispatcher tops the queue back up before
+-- that happens; on ours it never runs. So each df.manager_order mirrors ONE BATCH and the
+-- rest of the request lives here.
+_G.BONSAI_ORDERS = _G.BONSAI_ORDERS or {}
+
+local function place_order(rec)
+    for _, e in ipairs(_G.BONSAI_ORDERS) do
+        if e.job == rec.job and e.material == rec.material
+            and (e.cond and e.cond.item or '') == (rec.cond and rec.cond.item or '')
+            and e.freq == rec.freq then
+            -- restating an order updates it rather than stacking a second copy, and the
+            -- new terms are re-checked at once: leaving next_check alone meant an agent
+            -- that raised a threshold had to wait out the old schedule before anything
+            -- happened, which reads as the verb having been ignored
+            e.amount, e.cond, e.material = rec.amount, rec.cond, rec.material
+            e.next_check = 0
+            if e.freq == 'OneTime' then e.remaining, e.fired = rec.amount, false end
+            return e
+        end
+    end
+    rec.remaining = 0
+    rec.next_check = 0
+    _G.BONSAI_ORDERS[#_G.BONSAI_ORDERS + 1] = rec
+    return rec
+end
+
+local function outstanding(jname)
+    local n = 0
+    for _, e in ipairs(_G.BONSAI_ORDERS) do
+        if e.job == jname then n = n + e.remaining end
+    end
+    return n
+end
+
+local function dispatch_orders()
+    local made = 0
+    local t = now_tick()
+    for _, e in ipairs(_G.BONSAI_ORDERS) do
+        -- 1. re-arm on schedule. The condition is what makes an order quiet, so it is
+        --    checked here rather than being folded into the amount.
+        if e.remaining <= 0 and t >= (e.next_check or 0) then
+            if cond_holds(e.cond) then
+                e.remaining = e.amount
+                e.fired = true
+            end
+            -- OneTime with an unmet condition waits rather than being discarded; DF
+            -- shows exactly that state as validated-but-not-active.
+            e.next_check = t + (FREQ_TICKS[e.freq] > 0 and FREQ_TICKS[e.freq] or 1200)
+        end
+
+        -- 2. dispatch what is armed
+        local variant, shop = variant_for(e.job, e.material)
+        if e.remaining > 0 and variant and shop then
+            local cap = 5
+            pcall(function() cap = shop.profile.max_general_orders end)
+            local batch = math.min(e.remaining, math.max(0, cap - #shop.jobs), 10)
+            local live = cond_holds(e.cond)
+            if batch > 0 and live then
+                local o = df.manager_order:new()
+                local mo = w.manager_orders
+                o.id = mo.manager_order_next_id
+                mo.manager_order_next_id = mo.manager_order_next_id + 1
+                o.job_type = df.job_type[e.job]
+                o.amount_left, o.amount_total = batch, batch
+                o.frequency = df.workquota_frequency_type[e.freq] or 0
+                o.max_workshops, o.workshop_id = 0, -1
+                pcall(function() o.material_category[variant.mat] = true end)
+                attach_condition(o, e.cond)
+                o.status.validated = true      -- we are the manager; say so out loud
+                o.status.active = true         -- the condition holds, or we would not be here
+                mo.all:insert('#', o)
+
+                local queued = 0
+                for _ = 1, batch do
+                    local item = free_material(df.item_type[variant.item])
+                    if not item then break end
+                    local job = df.job:new()
+                    job.job_type = o.job_type
+                    job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
+                    job.flags.by_manager = true
+                    job.order_id = o.id
+                    pcall(function() job.material_category[variant.mat] = true end)
+                    dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
+                    shop.jobs:insert('#', job)
+                    dfhack.job.linkIntoWorld(job, true)
+                    local ok = pcall(function()
+                        dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent, 0, -1)
+                    end)
+                    if ok and #job.items > 0 then
+                        queued = queued + 1
+                    else
+                        -- a job with no reagent is cancelled by DF and silently removed
+                        pcall(function() dfhack.job.removeJob(job) end)
+                        break
                     end
+                end
+                -- the order must describe exactly what was queued, or DF's count
+                -- outlives the work
+                if queued == 0 then
+                    for i = #mo.all - 1, 0, -1 do
+                        if mo.all[i] == o then mo.all:erase(i) end
+                    end
+                else
+                    o.amount_left, o.amount_total = queued, queued
+                    e.remaining = e.remaining - queued
+                    made = made + queued
                 end
             end
         end
-        return n
-    end)()
-end
-
-local function run_standing()
-    local fired = 0
-    for _, s in ipairs(_G.BONSAI_STANDING) do
-        local have = stock_of(s.item)
-        if have ~= nil and have < s.below then
-            local want = math.min(s.batch, s.below - have) - pending_for(s.job)
-            if want > 0 then
-                owe(s.job, want)
-                fired = fired + dispatch_orders()
-            end
+    end
+    -- a one-time order that has been delivered is done with; a repeating one stays
+    for i = #_G.BONSAI_ORDERS, 1, -1 do
+        local e = _G.BONSAI_ORDERS[i]
+        if e.freq == 'OneTime' and e.fired and e.remaining <= 0 then
+            table.remove(_G.BONSAI_ORDERS, i)
         end
     end
-    return fired
+    return made
 end
 
 -- Which citizen gets the job when the agent says "best".
@@ -404,9 +434,18 @@ local function pick_best(cits)
     return best or cits[1]
 end
 
+-- Split on tabs, KEEPING empty fields. The obvious `gmatch("[^\t]+")` drops them, so a
+-- request that leaves one optional argument blank silently shifts every argument after
+-- it — measured: `add_workorder ConstructBed 20 wood BED LessThan 5 <blank> Daily`
+-- arrived with frequency in the material slot and ran as a one-off.
 local function split(line)
-    local t = {}
-    for tok in string.gmatch(line, "[^\t]+") do t[#t + 1] = tok end
+    local t, start = {}, 1
+    while true do
+        local sep = string.find(line, "\t", start, true)
+        if not sep then t[#t + 1] = string.sub(line, start); break end
+        t[#t + 1] = string.sub(line, start, sep - 1)
+        start = sep + 1
+    end
     return t
 end
 
@@ -586,61 +625,58 @@ for line in f:lines() do
             end
         end)
     elseif verb == "add_workorder" then
-        -- A manager order is NOT how the guide makes its first beds. At 17:10 it clicks
-        -- the carpenter and adds a task straight to the workshop -- no manager, no
-        -- validation, no office. That distinction decides whether anything gets made:
-        -- manager orders never validate on this save (30,000 ticks, manager seated and
-        -- confirmed, office built and owned, manager standing inside it), while a direct
-        -- workshop job produces a bed inside 4,000.
+        -- BULK CREATION: make N of X, once. No condition, no schedule — those belong to
+        -- add_workorder_conditional. They are one struct inside DF and two different
+        -- things to want (tools/df_docs/open_decisions.md); merging them made the simple
+        -- request step over five arguments it does not use.
+        --
+        --   add_workorder  ConstructBed  20  wood
         pcall(function()
-            local amount = tonumber(a[3]) or tonumber(a[2]) or 10
-            -- Refuse a job we do not have a workshop-and-reagent rule for. This line
-            -- used to read `... and a[2] or "ConstructBed"`, which silently turned a
-            -- request for anything unknown into beds — measured: `add_workorder
-            -- NoSuchJobType 5` queued five ConstructBed jobs.
+            -- Refuse a job we have no workshop-and-reagent rule for. This used to read
+            -- `... and a[2] or "ConstructBed"`, which silently turned a request for
+            -- anything unknown into beds — measured: `add_workorder NoSuchJobType 5`
+            -- queued five ConstructBed jobs.
             local jname = a[2]
             if not (jname and spec_for(jname)) then return end
-            -- Book the whole request, then queue as much of it as a workshop can hold.
-            -- The remainder is carried in BONSAI_ORDERS and picked up by later
-            -- dispatches; DF cannot hold it for us because it retires an order as soon
-            -- as the jobs queued against it are done.
-            owe(jname, amount)
+            place_order {
+                job = jname, amount = tonumber(a[3]) or 10,
+                material = a[4] or "", freq = "OneTime", cond = nil,
+            }
             c.add_workorder = c.add_workorder + dispatch_orders()
         end)
     elseif verb == "add_workorder_conditional" then
-        -- "Keep at least N of X" -- the standing order a player actually writes, e.g.
-        -- never fewer than five empty barrels. Registered once here, then re-evaluated
-        -- on every dispatch by run_standing().
+        -- AUTOMATION: watch a stock level and refill it without being asked again.
+        -- Read off a hand-played fort, that is `MakeAsh x_/10 Daily WHILE LessThan 10 of
+        -- BAR (ASH)` — the amount is the FULL order, and the condition is what makes it
+        -- go quiet once the shelf is full.
+        --
+        --   add_workorder_conditional  ConstructBarrel  BARREL  5  10  LessThan  ""  Daily
         pcall(function()
             local jname = a[2]
             if not (jname and spec_for(jname)) then return end
-            local batch = tonumber(a[3]) or 10
-            local item  = a[4]
-            local below = tonumber(a[5]) or 0
-            if not item or df.item_type[item] == nil or below <= 0 then return end
-            for _, s2 in ipairs(_G.BONSAI_STANDING) do
-                if s2.job == jname and s2.item == item then
-                    s2.batch, s2.below = batch, below      -- re-stating one updates it
-                    c.add_workorder_conditional = c.add_workorder_conditional + 1
-                    return
-                end
-            end
-            table.insert(_G.BONSAI_STANDING,
-                         { job = jname, batch = batch, item = item, below = below })
+            local item = a[3] or ""
+            local value = tonumber(a[4]) or 0
+            local amount = tonumber(a[5]) or 10
+            local cmp = a[6] or "LessThan"
+            local imaterial = a[7] or ""
+            local freq = a[8] or "Daily"
+            if item == "" or df.item_type[item] == nil then return end
+            if df.logic_condition_type[cmp] == nil then cmp = "LessThan" end
+            if FREQ_TICKS[freq] == nil then freq = "Daily" end
+            place_order {
+                job = jname, amount = amount, material = "", freq = freq,
+                cond = { item = item, cmp = cmp, value = value, material = imaterial },
+            }
             c.add_workorder_conditional = c.add_workorder_conditional + 1
+            c.add_workorder = c.add_workorder + dispatch_orders()
         end)
     end
 end
 f:close()
 
--- Top up anything the agent asked to be kept in stock. A repeating manager
--- order would have done this on DF's schedule; we do it on the dispatch schedule.
-local topped = run_standing()
-if topped > 0 then c.add_workorder = c.add_workorder + topped end
-
--- Carry every outstanding work order forward. DF's manager never runs on our forts, so
--- an order left with amount_left > 0 would sit there for ever; this is the second and
--- every later visit the manager would have paid it.
+-- Every dispatch is a visit from the manager: re-check each order's schedule and its
+-- condition, and queue whatever is armed. This is the visit DF's own manager would pay
+-- and never does on our forts.
 local dispatched = dispatch_orders()
 if dispatched > 0 then c.add_workorder = c.add_workorder + dispatched end
 
