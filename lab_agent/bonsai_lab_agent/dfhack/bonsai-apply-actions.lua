@@ -510,22 +510,34 @@ local function subterranean(p)
     return false
 end
 
--- The best crop for a plot in this place: something the fort has seed for, that grows
--- where the plot actually is, preferring one that can be brewed — drink is what a fort
--- runs out of first.
-local function best_seed(want_subterranean)
-    local best, best_n, best_drink = nil, -1, false
+-- The crops the fort has seed for, best first: something brewable ahead of something
+-- merely edible, then whatever there is most of. Drink is what a fort runs out of first.
+local function crops_by_preference()
+    local list = {}
     for id, n in pairs(seed_counts()) do
         local idx, p = plant_index(id)
-        if idx and subterranean(p) == want_subterranean then
-            local drink = p.flags.DRINK or false
-            if (drink and not best_drink) or (drink == best_drink and n > best_n) then
-                best, best_n, best_drink = id, n, drink
-            end
+        if idx then
+            list[#list + 1] = { id = id, idx = idx, n = n,
+                                drink = p.flags.DRINK or false,
+                                under = subterranean(p) }
         end
     end
-    return best, best_n
+    table.sort(list, function(x, y)
+        if x.drink ~= y.drink then return x.drink end
+        if x.n ~= y.n then return x.n > y.n end
+        return x.id < y.id
+    end)
+    return list
 end
+
+-- The best crop for ground of a given kind, or nil if the fort has no seed for it.
+local function best_seed(want_subterranean)
+    for _, e in ipairs(crops_by_preference()) do
+        if e.under == want_subterranean then return e.id, e.n end
+    end
+    return nil
+end
+
 
 
 
@@ -555,37 +567,47 @@ local function plantable(x, y, z, want_indoors)
     return true
 end
 
--- Find a w x h block of plantable floor where the fort's OWN seeds will grow.
+-- Find a w x h block of plantable floor that suits the crop actually intended.
 --
--- A dwarven embark ships six crops and every one of them is subterranean — measured on
--- this fort: plump helmet, cave wheat, pig tail, sweet pod, dimple cup, quarry bush, all
--- BIOME_SUBTERRANEAN_WATER. So a surface plot is not a worse choice, it is a plot that
--- grows nothing, and an earlier version of this happily built one and reported success.
--- If the fort has not dug out any soil yet, the answer is to dig, not to farm outdoors.
+-- Which ground is right depends on WHAT is to be planted, not on the fort being dwarven.
+-- This embark happened to ship six crops that are all subterranean, so a surface plot
+-- would have grown nothing — and the first version of this built one and reported
+-- success — but an embark carrying wheat or another surface plant wants the opposite.
+-- So: take the intended crop (named, or the best one the fort has seed for), demand
+-- ground that matches it, and fall back through the remaining crops rather than
+-- building somewhere nothing will grow.
 --
--- The search runs DOWN from the citizen's level, not across it: the dug-out soil is
--- under the embark, and an earlier version scanned only the dwarf's own z and found
--- nothing while 165 usable tiles sat a few levels below.
-local function farm_site(pw, ph)
+-- The search runs DOWN from the citizen's level as well as across it: dug-out soil is
+-- under the embark, and an earlier pass scanned only the dwarf's own z and found nothing
+-- while 165 usable tiles sat a few levels below.
+local function farm_site(pw, ph, want_plant)
     if not u1 then return nil end
-    local want_indoors = true
-    for id in pairs(seed_counts()) do
-        local idx, p = plant_index(id)
-        if idx and not subterranean(p) then want_indoors = false end
+
+    local candidates = {}
+    if want_plant and want_plant ~= '' and want_plant ~= 'best' then
+        local idx, p = plant_index(want_plant)
+        if not idx then return nil end          -- asked for a crop that does not exist
+        candidates[1] = { id = want_plant, under = subterranean(p) }
+    else
+        candidates = crops_by_preference()
     end
-    for dz = 0, -10, -1 do
-        local z = u1.pos.z + dz
-        for r = 1, 30 do
-            for dx = -r, r do
-                for dy = -r, r do
-                    local x0, y0 = u1.pos.x + dx, u1.pos.y + dy
-                    local all = true
-                    for x = x0, x0 + pw - 1 do
-                        for y = y0, y0 + ph - 1 do
-                            if not plantable(x, y, z, want_indoors) then all = false end
+    if #candidates == 0 then return nil end     -- no seed at all: nothing to plant
+
+    for _, crop in ipairs(candidates) do
+        for dz = 0, -10, -1 do
+            local z = u1.pos.z + dz
+            for r = 1, 30 do
+                for dx = -r, r do
+                    for dy = -r, r do
+                        local x0, y0 = u1.pos.x + dx, u1.pos.y + dy
+                        local all = true
+                        for x = x0, x0 + pw - 1 do
+                            for y = y0, y0 + ph - 1 do
+                                if not plantable(x, y, z, crop.under) then all = false end
+                            end
                         end
+                        if all then return x0, y0, z, crop.id end
                     end
-                    if all then return x0, y0, z, want_indoors end
                 end
             end
         end
@@ -805,7 +827,8 @@ for line in f:lines() do
         pcall(function()
             local pw = math.max(1, math.min(tonumber(a[2]) or 3, 10))
             local ph = math.max(1, math.min(tonumber(a[3]) or pw, 10))
-            local x, y, z, indoors = farm_site(pw, ph)
+            local want_plant = a[4] or ""       -- name the crop, or let it choose
+            local x, y, z, crop = farm_site(pw, ph, want_plant)
             if not x then return end
             local b = dfhack.buildings.constructBuilding {
                 type = df.building_type.FarmPlot,
@@ -816,7 +839,10 @@ for line in f:lines() do
             -- waiting on a construction job that carries no reagent
             pcall(function() b:setBuildStage(b:getMaxBuildStage()) end)
             pcall(function() b.flags.exists = true end)
-            _G.BONSAI_PLACE.farm_indoors = indoors
+            -- sow it with the crop the ground was chosen for, so a plot is never left
+            -- built-but-empty and never sown with something that cannot grow there
+            local idx = crop and plant_index(crop) or nil
+            if idx then for s = 0, 3 do b.plant_id[s] = idx end end
             c.build_farm_plot = c.build_farm_plot + 1
         end)
     elseif verb == "set_crop" then

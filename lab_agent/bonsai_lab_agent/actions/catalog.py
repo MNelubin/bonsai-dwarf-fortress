@@ -162,19 +162,26 @@ CATALOG: tuple[Verb, ...] = (
     ),
     Verb(
         name="build_farm_plot", category="food-water", tranche=0,
-        doc="Lay out a farm plot on ground the fort's own seeds will grow in.",
+        doc="Lay out a farm plot on ground that suits the crop you mean to grow.",
         observable="a building of type FarmPlot exists; seed and plant counts move",
         args=(
             Arg("width", "int", "tiles", lo=1, hi=10, required=False, default=3),
             Arg("height", "int", "tiles", lo=1, hi=10, required=False, default=3),
+            Arg("plant", "str",
+                "plant raw id to site it for, or 'best' to use what the fort has seed for",
+                required=False, default="best"),
         ),
         guide="24:32",
-        note="Refuses rather than building somewhere useless. A dwarven embark ships six "
-             "crops and every one is subterranean, so a surface plot is not a worse "
-             "choice, it is a plot that grows nothing while reading as built and planted "
-             "- measured, an earlier version did exactly that. If nothing is dug out yet "
-             "the answer is designate_dig, and the refusal says so by leaving the count "
-             "at zero.",
+        note="Which ground is right depends on WHAT is being planted. A subterranean "
+             "crop in a surface plot grows nothing while the plot reads as built and "
+             "sown — measured, the first version did exactly that on an embark whose "
+             "six crops all happened to be subterranean. Another embark carrying wheat "
+             "or a surface plant wants the opposite ground, so the crop is chosen first "
+             "and the site demanded to match, falling through the fort's other seeds "
+             "rather than building somewhere nothing will grow. If nothing suitable is "
+             "dug out yet the answer is designate_dig, and the refusal says so by "
+             "leaving the count at zero. The plot is sown on the spot with the crop its "
+             "ground was chosen for.",
     ),
     Verb(
         name="set_crop", category="food-water", tranche=0,
