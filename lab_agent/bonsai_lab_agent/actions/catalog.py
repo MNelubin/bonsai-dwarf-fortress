@@ -161,46 +161,53 @@ CATALOG: tuple[Verb, ...] = (
              "lies in the order, not the office.",
     ),
     Verb(
-        name="build_farm_plot", category="food-water", status="planned", tranche=1,
-        doc="Lay out a farm plot on soil. Without plants there is nothing to eat, "
-            "nothing to brew and nothing to cook.",
+        name="build_farm_plot", category="food-water", tranche=0,
+        doc="Lay out a farm plot on ground the fort's own seeds will grow in.",
         observable="a building of type FarmPlot exists; seed and plant counts move",
         args=(
-            Arg("width", "int", "tiles", lo=1, hi=10, required=False, default=6),
+            Arg("width", "int", "tiles", lo=1, hi=10, required=False, default=3),
             Arg("height", "int", "tiles", lo=1, hi=10, required=False, default=3),
         ),
         guide="24:32",
-        note="The guide's 6x3 plot is said to feed roughly fifty dwarves, so the sizes "
-             "that matter are small and the interesting decision is placement on soil, "
-             "not scale.",
+        note="Refuses rather than building somewhere useless. A dwarven embark ships six "
+             "crops and every one is subterranean, so a surface plot is not a worse "
+             "choice, it is a plot that grows nothing while reading as built and planted "
+             "- measured, an earlier version did exactly that. If nothing is dug out yet "
+             "the answer is designate_dig, and the refusal says so by leaving the count "
+             "at zero.",
     ),
     Verb(
-        name="set_crop", category="food-water", status="planned", tranche=1,
-        doc="Choose what a farm plot grows in a given season.",
+        name="set_crop", category="food-water", tranche=0,
+        doc="Choose what the farm plots grow, per season.",
         observable="the plot's per-season plant id",
         args=(
+            Arg("plant", "str", "plant raw id, or 'best' to pick from the fort's seeds",
+                required=False, default="best"),
             Arg("season", "enum", "which season",
-                choices=("spring", "summer", "autumn", "winter", "all")),
-            Arg("plant", "str", "plant raw id, e.g. MUSHROOM_HELMET_PLUMP"),
+                choices=("all", "spring", "summer", "autumn", "winter"),
+                required=False, default="all"),
         ),
         guide="26:04",
-        note="Plump helmets are the guide's staple: edible raw, brewable, and the seeds "
-             "survive both — which is why the kitchen flags below matter so much.",
+        note="'best' picks per plot from the seeds the fort actually holds, matched to "
+             "where that plot is - a subterranean crop in a surface plot grows nothing "
+             "and looks fine - and prefers one that can be brewed, because drink is what "
+             "a fort runs out of first.",
     ),
     Verb(
-        name="set_kitchen_flag", category="food-water", status="planned", tranche=1,
-        doc="Forbid or allow cooking, brewing or seed use of one material.",
-        observable="the kitchen exclusion list for that material",
+        name="set_kitchen_flag", category="food-water", tranche=0,
+        doc="Forbid or allow cooking an item type, for every material the fort holds.",
+        observable="the kitchen exclusion list",
         args=(
-            Arg("material", "str", "plant or drink raw id"),
-            Arg("use", "enum", "which use to change",
-                choices=("cook", "brew", "seed")),
-            Arg("allow", "bool", "allow it or forbid it", required=False, default=False),
+            Arg("item", "str", "df.item_type name, e.g. SEEDS or DRINK"),
+            Arg("allow", "bool", "allow cooking it, or forbid it",
+                required=False, default=False),
         ),
         guide="11:18",
         note="The guide's most emphasised early setting and pure downside protection: "
-             "cooking destroys seeds, and cooking drinks turns the beer supply into "
-             "meals. Two clicks that decide whether the fort has a second year.",
+             "cooking destroys seeds, and cooking drink turns the beer supply into "
+             "meals. Reports reaching the requested state, not only changing it - DF "
+             "ships with seeds already excluded, so a correct call looked like a failed "
+             "verb.",
     ),
     Verb(
         name="add_workorder_conditional", category="production", tranche=0,

@@ -12,7 +12,8 @@ local cits = dfhack.units.getCitizens(true)
 local u1 = cits[1]
 local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
             build_workshop = 0, advance = 0, assign_noble = 0,
-            add_workorder_conditional = 0 }
+            add_workorder_conditional = 0, build_farm_plot = 0, set_crop = 0,
+            set_kitchen_flag = 0 }
 
 -- Work orders live in _G.BONSAI_ORDERS (declared with the order code below) and survive
 -- between dispatches within one DF process. They are re-checked on every dispatch, which
@@ -467,6 +468,132 @@ local function site(n, radius)
            u1.pos.z
 end
 
+-- ---------------------------------------------------------------- the food chain
+-- A fort that cannot farm is on a countdown. The measured year under the earlier verb
+-- set ended drink 12 -> 0 with nothing planted and two of seven dwarves dead, so this is
+-- the root of the survival tranche: a plot, a crop on it, and a kitchen that is not
+-- allowed to eat the seed corn.
+
+-- The plant raws index for a crop id, e.g. MUSHROOM_HELMET_PLUMP.
+local function plant_index(id)
+    for i, p in ipairs(w.raws.plants.all) do
+        if p.id == id then return i, p end
+    end
+    return nil
+end
+
+-- Seeds the fort actually holds, as {id -> count}, so "best" means plantable now rather
+-- than whatever the raws list first.
+local function seed_counts()
+    local counts = {}
+    for _, it in ipairs(w.items.all) do
+        if it:getType() == df.item_type.SEEDS and not it.flags.rotten then
+            local mi = dfhack.matinfo.decode(it:getMaterial(), it:getMaterialIndex())
+            if mi and mi.plant then
+                counts[mi.plant.id] = (counts[mi.plant.id] or 0) + 1
+            end
+        end
+    end
+    return counts
+end
+
+-- Does this plant grow underground? Getting this wrong is silent: plump helmet is the
+-- obvious staple and grows nothing at all in a surface plot, while the plot still reads
+-- as built and planted. Measured — this code's own first farm went outdoors and was
+-- sown with plump helmet.
+local function subterranean(p)
+    for k, v in pairs(p.flags) do
+        if v == true and type(k) == 'string' and k:match('^BIOME_SUBTERRANEAN') then
+            return true
+        end
+    end
+    return false
+end
+
+-- The best crop for a plot in this place: something the fort has seed for, that grows
+-- where the plot actually is, preferring one that can be brewed — drink is what a fort
+-- runs out of first.
+local function best_seed(want_subterranean)
+    local best, best_n, best_drink = nil, -1, false
+    for id, n in pairs(seed_counts()) do
+        local idx, p = plant_index(id)
+        if idx and subterranean(p) == want_subterranean then
+            local drink = p.flags.DRINK or false
+            if (drink and not best_drink) or (drink == best_drink and n > best_n) then
+                best, best_n, best_drink = id, n, drink
+            end
+        end
+    end
+    return best, best_n
+end
+
+
+
+-- Soil a crop will actually grow in. Farm plots need soil or muddied stone, and the
+-- staple crop is subterranean — plump helmet carries BIOME_SUBTERRANEAN_WATER, so a plot
+-- out in the sun grows nothing and reads as a working farm anyway.
+local SOIL_MATS = {
+    [df.tiletype_material.SOIL] = true,
+    [df.tiletype_material.GRASS_LIGHT] = true,
+    [df.tiletype_material.GRASS_DARK] = true,
+    [df.tiletype_material.GRASS_DRY] = true,
+    [df.tiletype_material.GRASS_DEAD] = true,
+}
+
+local function plantable(x, y, z, want_indoors)
+    local ok, tt = pcall(function() return dfhack.maps.getTileType(x, y, z) end)
+    if not ok or not tt then return false end
+    local at = df.tiletype.attrs[tt]
+    if at.shape ~= df.tiletype_shape.FLOOR or not SOIL_MATS[at.material] then
+        return false
+    end
+    if dfhack.buildings.findAtTile(xyz2pos(x, y, z)) then return false end
+    if want_indoors then
+        local des = dfhack.maps.getTileFlags(x, y, z)
+        if not des or des.outside then return false end
+    end
+    return true
+end
+
+-- Find a w x h block of plantable floor where the fort's OWN seeds will grow.
+--
+-- A dwarven embark ships six crops and every one of them is subterranean — measured on
+-- this fort: plump helmet, cave wheat, pig tail, sweet pod, dimple cup, quarry bush, all
+-- BIOME_SUBTERRANEAN_WATER. So a surface plot is not a worse choice, it is a plot that
+-- grows nothing, and an earlier version of this happily built one and reported success.
+-- If the fort has not dug out any soil yet, the answer is to dig, not to farm outdoors.
+--
+-- The search runs DOWN from the citizen's level, not across it: the dug-out soil is
+-- under the embark, and an earlier version scanned only the dwarf's own z and found
+-- nothing while 165 usable tiles sat a few levels below.
+local function farm_site(pw, ph)
+    if not u1 then return nil end
+    local want_indoors = true
+    for id in pairs(seed_counts()) do
+        local idx, p = plant_index(id)
+        if idx and not subterranean(p) then want_indoors = false end
+    end
+    for dz = 0, -10, -1 do
+        local z = u1.pos.z + dz
+        for r = 1, 30 do
+            for dx = -r, r do
+                for dy = -r, r do
+                    local x0, y0 = u1.pos.x + dx, u1.pos.y + dy
+                    local all = true
+                    for x = x0, x0 + pw - 1 do
+                        for y = y0, y0 + ph - 1 do
+                            if not plantable(x, y, z, want_indoors) then all = false end
+                        end
+                    end
+                    if all then return x0, y0, z, want_indoors end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+
 for line in f:lines() do
     local a = split(line)
     local verb = a[1]
@@ -669,6 +796,107 @@ for line in f:lines() do
             }
             c.add_workorder_conditional = c.add_workorder_conditional + 1
             c.add_workorder = c.add_workorder + dispatch_orders()
+        end)
+    elseif verb == "build_farm_plot" then
+        -- Without this the fort eats what it embarked with and then starves. Plots need
+        -- no material, so the failure mode is not a missing reagent but a plot on the
+        -- wrong ground: subterranean crops grow nothing in the sun and the plot still
+        -- looks built.
+        pcall(function()
+            local pw = math.max(1, math.min(tonumber(a[2]) or 3, 10))
+            local ph = math.max(1, math.min(tonumber(a[3]) or pw, 10))
+            local x, y, z, indoors = farm_site(pw, ph)
+            if not x then return end
+            local b = dfhack.buildings.constructBuilding {
+                type = df.building_type.FarmPlot,
+                pos = xyz2pos(x, y, z), width = pw, height = ph,
+            }
+            if not b then return end
+            -- a plot takes no items to build, so finish it rather than leaving the fort
+            -- waiting on a construction job that carries no reagent
+            pcall(function() b:setBuildStage(b:getMaxBuildStage()) end)
+            pcall(function() b.flags.exists = true end)
+            _G.BONSAI_PLACE.farm_indoors = indoors
+            c.build_farm_plot = c.build_farm_plot + 1
+        end)
+    elseif verb == "set_crop" then
+        -- Which crop, in which season, PER PLOT: a surface plot and a dug-out one want
+        -- different plants, and sowing the wrong one is invisible — the plot reads as
+        -- planted and grows nothing.
+        pcall(function()
+            local want = a[2]
+            local season = a[3]
+            local n = 0
+            for _, b in ipairs(w.buildings.all) do
+                if b:getType() == df.building_type.FarmPlot then
+                    local des = dfhack.maps.getTileFlags(b.x1, b.y1, b.z)
+                    local underground = not (des and des.outside)
+                    local crop = want
+                    if not crop or crop == "" or crop == "best" then
+                        crop = best_seed(underground)
+                    end
+                    local idx = crop and plant_index(crop) or nil
+                    if idx then
+                        if season == nil or season == "" or season == "all" then
+                            for s = 0, 3 do b.plant_id[s] = idx end
+                        else
+                            local s = tonumber(season)
+                            if s and s >= 0 and s <= 3 then b.plant_id[s] = idx end
+                        end
+                        n = n + 1
+                    end
+                end
+            end
+            if n > 0 then c.set_crop = c.set_crop + 1 end
+        end)
+    elseif verb == "set_kitchen_flag" then
+        -- The two clicks that decide a second year: cooking seeds destroys next year's
+        -- crop, and cooking drink turns the beer supply into meals.
+        pcall(function()
+            local item = a[2]                       -- SEEDS or DRINK
+            local allowed = (a[3] == "true" or a[3] == "True" or a[3] == "1")
+            local itype = df.item_type[item]
+            if itype == nil then return end
+            local k = df.global.plotinfo.kitchen
+            local changed, reached = 0, 0
+            -- one exclusion per (item type, material) the fort actually holds
+            local seen = {}
+            for _, it in ipairs(w.items.all) do
+                if it:getType() == itype then
+                    local mt, mi = it:getMaterial(), it:getMaterialIndex()
+                    local key = mt .. ":" .. mi
+                    if not seen[key] then
+                        seen[key] = true
+                        local at = -1
+                        for i = 0, #k.item_types - 1 do
+                            if k.item_types[i] == itype and k.mat_types[i] == mt
+                                and k.mat_indices[i] == mi then at = i end
+                        end
+                        if allowed == (at < 0) then reached = reached + 1 end
+                        if allowed then
+                            if at >= 0 then
+                                k.item_types:erase(at); k.item_subtypes:erase(at)
+                                k.mat_types:erase(at); k.mat_indices:erase(at)
+                                k.exc_types:erase(at)
+                                changed = changed + 1
+                            end
+                        elseif at < 0 then
+                            k.item_types:insert('#', itype)
+                            k.item_subtypes:insert('#', it:getSubtype())
+                            k.mat_types:insert('#', mt)
+                            k.mat_indices:insert('#', mi)
+                            k.exc_types:insert('#', 0)   -- 0 = cookery
+                            changed = changed + 1
+                        end
+                    end
+                end
+            end
+            -- Report reaching the requested state, not only changing it. DF ships with
+            -- seeds already excluded from cooking, so a correct `set_kitchen_flag SEEDS
+            -- false` looked like a failed verb.
+            if changed > 0 or reached > 0 then
+                c.set_kitchen_flag = c.set_kitchen_flag + 1
+            end
         end)
     end
 end

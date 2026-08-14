@@ -137,27 +137,29 @@ def test_an_uninterpretable_boolean_is_refused():
 
 # ---------------------------------------------------------------- planned verbs
 def test_a_planned_verb_is_refused_with_its_tranche():
-    d = judge({"verb": "build_farm_plot"})
-    assert not d.ok and "tranche 1" in d.reason
+    d = judge({"verb": "create_zone"})
+    assert not d.ok and "tranche 2" in d.reason
 
 
 def test_planned_verbs_stay_out_of_the_advertised_actions():
     live = {a["verb"] for a in available_actions()}
-    assert "build_farm_plot" not in live
-    assert "build_farm_plot" in {a["verb"] for a in available_actions(True)}
+    assert "create_zone" not in live
+    assert "create_zone" in {a["verb"] for a in available_actions(True)}
 
 
 def test_the_roadmap_is_ordered_by_tranche():
     tr = [r["tranche"] for r in roadmap()]
     assert tr == sorted(tr)
-    assert tr and tr[0] == 1
+    assert tr and tr[0] == min(tr)
 
 
-def test_tranche_one_is_the_food_and_drink_chain():
+def test_the_food_and_drink_chain_has_shipped():
     """The measured year failed on consumables: drink 12 to 0, nothing brewed. Tranche 1
-    exists to fix exactly that, so it should not quietly fill up with anything else."""
-    first = {r["verb"] for r in roadmap() if r["tranche"] == 1}
-    assert first == {"build_farm_plot", "set_crop", "set_kitchen_flag"}
+    existed to fix exactly that, and it is now delivered — so these must be LIVE, and
+    nothing may quietly refile them as future work."""
+    live = {a["verb"] for a in available_actions()}
+    assert {"build_farm_plot", "set_crop", "set_kitchen_flag"} <= live
+    assert not [r for r in roadmap() if r["tranche"] == 1]
 
 
 def test_standing_orders_are_live_and_guard_a_stock_level():
@@ -235,5 +237,8 @@ def test_advertised_actions_carry_argument_schemas():
 
 
 def test_the_schema_stays_small_enough_to_ship_every_round():
+    """It rides in every controller prompt, so it is a running cost, not a one-off. The
+    ceiling moved once when the order verbs gained real DF condition arguments and the
+    food chain went live; it is a budget to defend, not a formality."""
     import json
-    assert len(json.dumps(available_actions())) < 4000
+    assert len(json.dumps(available_actions())) < 6000
