@@ -181,3 +181,85 @@ gone, so patching the field names is not enough.
 
 Meanwhile the direct workshop-job path works and produces beds, so the agent is not
 blocked on this.
+
+## The mechanism, finally measured — and two real bugs in our own code
+
+Everything above was reasoning about a fort in isolation. Running our fort and a
+**hand-played 259-year, 119-dwarf fort side by side on the same binary** (ports 5006 and
+5005, DF 53.16 + DFHack 53.16-r1.1) turned the guessing into A/B measurement. The
+hand-played save is the user's `region3`; it is loaded read-only and backed up at
+`/srv/df-bonsai/backups/region3-orig`.
+
+### How validation actually works
+
+Not a timer tick — **a job**. The manager takes `ManageWorkOrders` and performs it. The
+clock that schedules it is `plotinfo.nobles.manager_cooldown` (Toady's
+`manager_job_delay`, documented range 0–1008):
+
+* it counts down **1 per 10 ticks**, measured identically on both forts
+* on reaching 0 DF looks for an officeholder; if it finds one, the duty runs and the
+  cooldown reloads to 1008
+* with no officeholder it sits at **0 forever** — which is exactly our fort's state
+
+`plotinfo.manager_timer` (`quota_checktime`) is a red herring: it oscillates 0–10 on a
+fort with 57 orders and sits at 0 on a fort with one, i.e. it behaves like a cursor into
+the order list, and it keeps moving on their fort even with the manager unseated.
+
+### Bug 1 — our orders carried no material, so they could never dispatch
+
+An order created by the shipped `workorder` has `material_category` empty. On the
+hand-played fort, `ConstructBed` order #665 sat at `left=2` for 12,000 ticks **while
+validated and active**. Setting `material_category.wood = true` on an otherwise identical
+order made it complete and vanish from the list. So a validated order is not enough: the
+order must name a material class or DF never picks a reagent.
+
+### Bug 2 — `assign_noble` only wrote half the seat, twice over
+
+Proven by transplant: seating a manager with **our own code on their working fort**, and
+watching whether `manager_cooldown` reloads within ~2,500 frames.
+
+| what our code did | result |
+|---|---|
+| wrote `assignment.histfig` + the POSITION entity link | cooldown stayed 0 — DF finds nobody |
+| ...plus `assignment.histfig2 = histfig` and `hf.flags.never_cull` | cooldown reloaded to 1008 |
+
+Every position DF had appointed itself on their fort carried `histfig2 == histfig`; the
+two our code appointed carried `-1`. On our own fort, `EXPEDITION_LEADER` (seated by DF
+at embark) had it; `MANAGER` and `BOOKKEEPER` (seated by us) did not. Same shape as the
+two earlier traps in this file — one side of a two-sided link.
+
+The picker had a second defect: `pick_best` ranks by skill and had chosen a dwarf who was
+**in a military squad**, which DF refuses for an office. Seating a squad-free citizen on
+the same fort woke the cooldown immediately. Both fixes are in `bonsai-apply-actions.lua`,
+along with stripping the stale POSITION link a previous holder keeps for a reassigned seat.
+
+### What is NOT required, measured rather than assumed
+
+* **An office.** Their working manager owns a *bedroom and nothing else*, and the
+  cooldown cycles normally. Removing the previous manager's office ownership did not stop
+  it either. The office presumably still gates the order actually being validated, but it
+  is not what our fort is missing.
+* **20 population.** Refuted properly this time. The earlier "21 citizens" measurement was
+  counting `#world.units.active`, which on our fort is mostly troglodytes and storks —
+  `getCitizens` said 7 the whole time. Forcing real migrants with `migrants-now` took our
+  fort to **36 citizens** and changed nothing.
+* first_year, fortress_rank, `progress_population/production/trade`, `king_arrived`,
+  `justice_active`, `save_progress.stage`, site→entity links, `whereabouts.site_id`,
+  `assignment_vector_idx`, workshop `profile.max_general_orders`, zone extents byte
+  values, `possible_appointable` (MANAGER is correctly absent from ours, so DF does see
+  the seat filled).
+
+### Still open
+
+On our scripted-embark save the cooldown **decrements normally** (1008 → 808 over 2,000
+frames) and then fails its check at 0, with a manager seated exactly the way that works
+on the hand-played fort. So DF reaches the check and rejects our officeholder for a
+reason not yet found. Hand-creating the `ManageWorkOrders` job does not help — DF drops
+it within a few hundred ticks without assigning a worker, the same as the earlier
+`job_type 195` attempt.
+
+The remaining split is: **our embark procedure produces a defective fort**, versus
+**something about a 5-year-old world**. The experiment that separates them is a scripted
+embark inside the user's 259-year world; `bonsai-setsite.lua` exists for it but the
+embark-screen map click still does not select a tile.
+

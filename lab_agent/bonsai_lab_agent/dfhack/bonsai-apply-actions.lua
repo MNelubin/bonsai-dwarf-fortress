@@ -56,7 +56,32 @@ local function assign_noble(code, unit)
         end
     end
     if not asg then return false end                -- office already taken
+
+    -- Strip the POSITION link a PREVIOUS holder still carries for this assignment.
+    -- DF's own lookup walks histfig links rather than the assignment, so a stale link
+    -- leaves two figures claiming one seat.
+    if asg.histfig ~= -1 and asg.histfig ~= hf.id then
+        local old = df.historical_figure.find(asg.histfig)
+        if old then
+            for i = #old.entity_links - 1, 0, -1 do
+                local l = old.entity_links[i]
+                if df.histfig_entity_link_positionst:is_instance(l)
+                    and l.entity_id == ent.id and l.assignment_id == asg.id then
+                    old.entity_links:erase(i)
+                end
+            end
+        end
+    end
+
+    -- histfig2 is the half DF fills in and we did not. Measured on a hand-played fort:
+    -- seating with histfig alone left plotinfo.nobles.manager_cooldown pinned at 0
+    -- forever (DF never finds the officeholder, so orders are never validated); every
+    -- position DF had appointed itself carried histfig2 == histfig. never_cull is the
+    -- other bit DF stamps on a seated noble.
     asg.histfig = hf.id
+    asg.histfig2 = hf.id
+    hf.flags.never_cull = true
+
     for _, v in ipairs(hf.entity_links) do          -- idempotent: never link twice
         if df.histfig_entity_link_positionst:is_instance(v)
            and v.entity_id == ent.id and v.assignment_id == asg.id then return true end
@@ -67,6 +92,18 @@ local function assign_noble(code, unit)
         assignment_vector_idx = idx, link_strength = 100,
         start_year = df.global.cur_year })
     return true
+end
+
+-- A dwarf in a military squad is refused the office by DF. Measured: seating the
+-- squad member our "best by skill" picker chose left the manager cooldown dead, and
+-- seating a squad-free citizen on the same fort woke it within 70 ticks.
+local function in_squad(unit)
+    local hf = df.historical_figure.find(unit.hist_figure_id)
+    if not hf then return false end
+    for _, l in ipairs(hf.entity_links) do
+        if df.histfig_entity_link_squadst:is_instance(l) then return true end
+    end
+    return (unit.military and unit.military.squad_id or -1) ~= -1
 end
 
 -- A free building material, or nil. Workshops need one and DFHack will NOT find it for
@@ -341,7 +378,15 @@ for line in f:lines() do
                     if tostring(x.id) == who then u = x end
                 end
             end
-            u = u or pick_best(cits)
+            if not u then
+                -- DF refuses an officeholder who is in a squad, so exclude them before
+                -- ranking rather than discovering it as a silently dead noble later.
+                local free = {}
+                for _, x in ipairs(cits) do
+                    if not in_squad(x) then free[#free + 1] = x end
+                end
+                u = pick_best(#free > 0 and free or cits)
+            end
             if u and assign_noble(code, u) then
                 c.assign_noble = c.assign_noble + 1
             end
