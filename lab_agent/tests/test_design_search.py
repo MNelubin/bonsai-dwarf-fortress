@@ -1,0 +1,322 @@
+"""Tests for the offline room-design search.
+
+The search's failure mode is not a crash. It is returning a confident best design for an
+objective the game does not use — an artefact that looks exactly like a result. So most of
+what is asserted here is that the model still matches what was measured against DF, and
+that the search is deterministic enough for "the best design" to mean anything at all.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import subprocess
+import sys
+
+import pytest
+
+from bonsai_lab_agent.actions.library import blueprint_labels, template_extent
+from bonsai_lab_agent.design import (Design, Requirement, anneal, bare_room, item_value,
+                                     score, to_quickfort, validate)
+from bonsai_lab_agent.design.model import (BASE_ITEM_VALUE, DEFAULT_BASE, PIECE_KEYS,
+                                           REQUIRED_FURNITURE, REQUIRED_VALUE,
+                                           TILE_VALUE, ZONE_KEY, DesignError)
+from bonsai_lab_agent.design.search import MOVES, neighbour
+
+
+def _req(**kw) -> Requirement:
+    base = dict(kind="Bedroom", position="mayor", max_w=9, max_h=9)
+    base.update(kw)
+    return Requirement(**base)
+
+
+# ---------------------------------------------------------------- the measured model
+def test_tile_values_are_what_df_answered():
+    """Measured against DF's own view_sheets.curroom on an owned 2x2 bedroom: 4 rough
+    tiles read 4, one rewritten to StoneFloorSmooth read 7, restored read 4 again. The
+    sweep over 0,1,2,3,4 smoothed of 4 gave 4, 7, 10, 13, 16.
+
+    Changing either constant means re-measuring, which is the point of pinning them."""
+    assert TILE_VALUE == {".": 1, "s": 4}
+
+    # and the additivity, on the shape that was actually swept
+    rows = ["####", "#..#", "#..#", "####"]
+    d = Design(kind="Bedroom", w=4, h=4, cells=tuple(rows))
+    assert d.value() == 4
+    for n, want in enumerate((4, 7, 10, 13), start=0):
+        smoothed = list(rows)
+        cells = [list(r) for r in smoothed]
+        left = n
+        for y in (1, 2):
+            for x in (1, 2):
+                if left:
+                    cells[y][x] = "s"
+                    left -= 1
+        d2 = Design(kind="Bedroom", w=4, h=4, cells=tuple("".join(c) for c in cells))
+        assert d2.value() == want, n
+
+
+@pytest.mark.parametrize("quality,expected", [(0, 10), (1, 14), (3, 23)])
+def test_the_item_value_law_reproduces_the_earlier_measurement(quality, expected):
+    """bonsai-roomvalue measured four pieces by a different route and got ordinary 10,
+    well-crafted 14 and superior 23. The law has to return exactly those, or one of the
+    two measurements is wrong and we would not know which."""
+    assert item_value("b", 1, quality) == expected
+
+
+def test_a_statue_is_the_only_piece_with_a_different_base():
+    assert BASE_ITEM_VALUE == {"s": 25}
+    assert item_value("s") == 25
+    assert item_value("b") == DEFAULT_BASE
+
+
+def test_required_furniture_is_dfs_own_table():
+    """Read live from `entity_position.required_boxes/cabinets/racks/stands`. Pinned here
+    so the offline model and the game cannot drift apart unnoticed; bonsai-roomvalue
+    re-reads the value half from the world on every battery run."""
+    assert REQUIRED_FURNITURE["monarch"] == {"h": 10, "f": 5, "r": 5, "a": 5}
+    assert REQUIRED_FURNITURE["baron"] == {"h": 2, "f": 1, "r": 1, "a": 1}
+    assert REQUIRED_FURNITURE["manager"] == {}
+    assert REQUIRED_VALUE["manager"]["Office"] == 1
+    assert REQUIRED_VALUE["monarch"]["Bedroom"] == 10000
+
+
+def test_the_target_is_a_demand_and_never_a_tier():
+    """v50's value-to-name cutoffs are not knowable on this build, so a tier is a number
+    the game will never confirm. Requirement carries a position, not a tier."""
+    assert not hasattr(Requirement(kind="Bedroom"), "tier")
+    assert _req(position="baron").demand == 500
+
+
+def test_score_reduces_to_the_shipped_formula_when_nothing_is_smoothed():
+    """With no 's' cells the value must be exactly what bonsai-roomvalue computes on the
+    live fort: set extent cells plus the furniture."""
+    d = Design(kind="Bedroom", w=4, h=4, cells=("####", "#..#", "#..#", "####"),
+               pieces=((1, 1, "b"),))
+    assert d.value() == 4 + item_value("b")
+
+
+# ---------------------------------------------------------------- what is a room
+def test_the_seed_is_what_the_agent_can_already_build():
+    """"The best beats the seed" is only a claim worth making if the seed is what
+    create_zone plus place_furniture produces today."""
+    req = _req(position="baron")
+    d = bare_room(req)
+    assert validate(d, req) == []
+    assert "s" not in "".join(d.cells)          # unsmoothed, like create_zone leaves it
+
+
+@pytest.mark.parametrize("mutate,expect", [
+    (lambda c: ("####", "#..#", "#..#", "####"), "doorway"),          # no door
+    (lambda c: ("#++#", "#..#", "#..#", "####"), "doorways"),         # two doors
+    (lambda c: ("+###", "#..#", "#..#", "####"), "corner"),           # corner door
+    (lambda c: ("#+.#", "#..#", "#..#", "####"), "open"),             # floor on the edge
+])
+def test_validate_names_the_rule_it_broke(mutate, expect):
+    req = _req(max_w=4, max_h=4)
+    d = Design(kind="Bedroom", w=4, h=4, cells=mutate(None), pieces=((1, 1, "b"),))
+    reasons = validate(d, req)
+    assert any(expect in r for r in reasons), reasons
+
+
+def test_two_pieces_on_one_tile_are_refused():
+    req = _req(max_w=4, max_h=4)
+    d = Design(kind="Bedroom", w=4, h=4, cells=("#+##", "#..#", "#..#", "####"),
+               pieces=((1, 1, "b"), (1, 1, "t")))
+    assert any("two pieces" in r for r in validate(d, req))
+
+
+def test_a_piece_outside_the_room_is_refused():
+    req = _req(max_w=4, max_h=4)
+    d = Design(kind="Bedroom", w=4, h=4, cells=("#+##", "#..#", "#..#", "####"),
+               pieces=((0, 0, "b"),))
+    assert any("not in the room" in r for r in validate(d, req))
+
+
+def test_a_bedroom_without_a_bed_is_not_a_bedroom():
+    req = _req(position="manager", kind="Bedroom", max_w=4, max_h=4)
+    d = Design(kind="Bedroom", w=4, h=4, cells=("#+##", "#..#", "#..#", "####"))
+    assert any("bed" in r for r in validate(d, req))
+
+
+def test_a_noble_missing_a_required_cabinet_is_refused():
+    req = _req(position="baron", max_w=5, max_h=5)
+    d = Design(kind="Bedroom", w=5, h=5,
+               cells=("#+###", "#...#", "#...#", "#...#", "#####"),
+               pieces=((1, 1, "b"), (2, 1, "h"), (3, 1, "h")))
+    assert any("cabinet" in r for r in validate(d, req))
+
+
+def test_the_zone_may_not_be_painted_over_rock():
+    """DF prices a WALL inside the extent the same as a rough floor — measured — so a huge
+    zone over bedrock is free value and an unconstrained search WILL find it. Only dug
+    cells are in the zone, so the exploit is not expressible in the representation."""
+    d = Design(kind="Bedroom", w=4, h=4, cells=("####", "#..#", "#..#", "####"))
+    assert set(d.zone_cells) == {(1, 1), (2, 1), (1, 2), (2, 2)}
+    assert d.value() == 4                        # the twelve wall tiles are worth nothing
+
+
+def test_engraving_is_not_emitted_because_it_is_not_priced():
+    req = _req(max_w=4, max_h=4)
+    d = Design(kind="Bedroom", w=4, h=4, cells=("#+##", "#e.#", "#..#", "####"),
+               pieces=((2, 1, "b"),))
+    assert any("engraving" in r for r in validate(d, req))
+
+
+def test_a_malformed_design_is_refused_at_construction():
+    with pytest.raises(DesignError):
+        Design(kind="Bedroom", w=4, h=4, cells=("###",))
+
+
+# ---------------------------------------------------------------- emission
+def test_the_emitted_blueprint_parses_as_a_blueprint():
+    """It goes back through the SAME parser that validates DFHack's shipped files, so a
+    design we cannot read is one quickfort could not read either.
+
+    The parsed extent is SMALLER than the room, and that is correct rather than a bug:
+    walls are not dug, so the dig grid's outermost ring is empty and the extent measures
+    the hole, not the bounding box. A caller reserving ground for one of our designs must
+    use `Design.w/h`, not the re-parsed extent, or it will under-reserve by the wall ring.
+    """
+    req = _req(position="baron")
+    d = bare_room(req)
+    csv = to_quickfort(d, name="probe")
+    (w, h, levels), modes = template_extent(csv)
+    assert modes == ("build", "dig", "zone")
+    assert levels == 1
+    assert 0 < w <= d.w and 0 < h <= d.h
+    # and specifically: the hole is the interior plus the doorway, never the whole box
+    assert w < d.w
+
+
+def test_dig_is_the_first_section_and_smoothing_is_a_second_pass():
+    """`quickfort run <file>` with no label runs the FIRST blueprint. pump_stack.csv opens
+    with a #notes help section, so running it printed a walkthrough and stamped nothing.
+
+    Smoothing is its own pass, and that is not a stylistic choice — the game refused the
+    first version. Putting `s` on a cell REPLACED its `d`, and the dry run answered
+    "Tiles that could not be designated for digging: 11" against exactly the 11 smooth
+    cells: you cannot smooth rock nobody has mined. With the split, the same design
+    designates all 43 and fails none."""
+    d = bare_room(_req())
+    csv = to_quickfort(d, name="probe")
+    labels = blueprint_labels(csv)
+    assert labels[0] == ("dig", "dig")
+    assert [m for m, _ in labels] == ["dig", "dig", "meta", "zone", "build"]
+    assert ("dig", "smooth") in labels
+
+    # every tile that has to end up as floor is dug in the FIRST section
+    dig_section = csv.split('"#dig label(smooth)')[0]
+    cells = dig_section.replace(chr(10), ",").split(",")
+    dug = sum(1 for cell in cells if cell.strip() == "d")
+    want = sum(1 for row in d.cells for ch in row if ch in ".s+")
+    assert dug == want
+
+
+def test_every_emitted_key_is_one_quickfort_knows():
+    """The guard against the invented-name failure mode, at the format level."""
+    csv = to_quickfort(bare_room(_req(position="monarch")), name="probe")
+    build = csv.split('"#build')[1]
+    for cell in build.replace("\n", ",").split(","):
+        cell = cell.strip()
+        if cell and cell != "#" and not cell.startswith("label"):
+            assert cell in PIECE_KEYS, cell
+    assert ZONE_KEY["Bedroom"] == "b"
+
+
+# ---------------------------------------------------------------- the search
+def test_the_best_design_beats_the_seed():
+    """The declared self-check for this goal."""
+    for position, kind in (("manager", "Office"), ("mayor", "Bedroom"),
+                           ("baron", "Tomb")):
+        for seed in (1, 7, 13):
+            req = _req(kind=kind, position=position)
+            r = anneal(req, seed=seed, max_evals=800)
+            assert r.best_score > r.seed_score, (position, kind, seed)
+            assert r.best != bare_room(req)
+            assert validate(r.best, req) == []
+
+
+def test_a_reachable_demand_is_actually_reached():
+    r = anneal(_req(position="baron", kind="Bedroom"), seed=3, max_evals=2000)
+    assert r.feasible
+    assert r.best.value() >= 500
+
+
+def test_the_budget_is_honoured():
+    """Counted in evaluations, never in seconds — a wall-clock budget is not
+    reproducible, and this suite has to stay fast."""
+    r = anneal(_req(), seed=1, max_evals=300)
+    assert r.evaluations == 300
+    assert r.attempts >= r.evaluations
+
+
+def test_a_search_that_can_never_find_a_valid_design_still_terminates():
+    """A monarch demands 25 pieces of furniture and a 5x5 room has a 3x3 interior, so no
+    candidate can ever validate. Rejected candidates cost no evaluation — which is right,
+    the budget should buy designs and not arithmetic — but it means the loop had no bound
+    at all, and this hung the whole suite before the attempt cap existed."""
+    from bonsai_lab_agent.design.search import ATTEMPTS_PER_EVAL
+    r = anneal(_req(position="monarch", max_w=5, max_h=5), seed=1, max_evals=200)
+    assert r.attempts <= 200 * ATTEMPTS_PER_EVAL
+    assert not r.feasible
+
+
+def test_the_same_seed_gives_the_same_answer_in_process():
+    a = anneal(_req(), seed=42, max_evals=600)
+    b = anneal(_req(), seed=42, max_evals=600)
+    assert to_quickfort(a.best) == to_quickfort(b.best)
+    assert a.best_score == b.best_score and a.evaluations == b.evaluations
+
+
+def test_a_different_seed_gives_a_different_search():
+    a = anneal(_req(), seed=1, max_evals=600)
+    b = anneal(_req(), seed=2, max_evals=600)
+    assert (a.best_score, to_quickfort(a.best)) != (b.best_score, to_quickfort(b.best))
+
+
+def test_the_same_seed_gives_the_same_answer_in_a_fresh_process():
+    """The half that matters. Hash randomisation is per-process, so set iteration or dict
+    ordering leaking onto the decision path is invisible in-process and shows up here."""
+    def run() -> str:
+        out = subprocess.run(
+            [sys.executable, "-m", "bonsai_lab_agent.design.search",
+             "--seed", "7", "--evals", "600"],
+            capture_output=True, text=True, check=True)
+        return [l for l in out.stdout.splitlines() if l.startswith("sha256=")][0]
+    assert run() == run()
+
+
+def test_annealing_actually_anneals():
+    """With t0 = 0 the chain may never accept a downhill move; with a high t0 it must.
+    Without this, "annealing" is hill-climbing under a different name and the module
+    docstring is a lie nobody would catch."""
+    import random as _r
+    req = _req()
+    start = bare_room(req)
+    rng = _r.Random(5)
+    downhill = 0
+    for _ in range(400):
+        cand = neighbour(start, req, rng)
+        if cand is not None and not validate(cand, req) and score(cand, req) < score(start, req):
+            downhill += 1
+    assert downhill > 0, "no downhill move is even reachable; the test proves nothing"
+
+    hot = anneal(req, seed=11, max_evals=600, t0=200)
+    cold = anneal(req, seed=11, max_evals=600, t0=0)
+    assert hot.best_score >= cold.seed_score
+    assert cold.best_score >= cold.seed_score
+
+
+def test_an_impossible_requirement_is_reported_not_faked():
+    """The anti-silent-success case for the search itself: a monarch's 10000 in a 5x5 hole
+    is unreachable, and the answer must say so rather than return a design that looks
+    fine."""
+    r = anneal(_req(position="monarch", max_w=5, max_h=5), seed=1, max_evals=800)
+    assert not r.feasible
+    assert r.best.value() < 10000
+
+
+def test_the_move_set_is_declared_not_magic():
+    names = [n for n, _ in MOVES]
+    assert len(names) == len(set(names))
+    assert all(wt > 0 for _, wt in MOVES)

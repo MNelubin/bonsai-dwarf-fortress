@@ -233,3 +233,63 @@ it keeps proposing taken ground, so `build_workshop`, `create_stockpile` and `cr
 had stopped placing anything on the test fort while an independent scan found free sites a
 few tiles away. `find_site` now falls back to an outward scan when the ring is used up. The
 same battery that exposed it confirmed the fix: 45 pass / 3 fail before, 50 / 0 after.
+
+
+## Goals 5, 6 and 7 — DONE, and what each one overturned
+
+### The cluster library — goal 5
+
+Both numbers the agent chooses on were wrong. **Cost** was `len(workshops)`; DF's own
+build-filter table, read live with `getFiltersByType` across all 23 workshop types and all
+7 furnace types, charges Siege and the Ashery three and the forges, the Dyer's and the
+Millstone two. Seven buildings also demand items no fort has at embark — a manufactured
+QUERN, a MILLSTONE plus TRAPPARTS, an ANVIL, an EMPTY barrel — now `Cluster.needs`, with
+`Cluster.prereq` naming what must be built first.
+
+**Capability** now counts DISTINCT member kinds, from DFHack's `getJobs`. Two Carpenter's
+workshops unlock no new job; they buy throughput. The figures are WORLD-SPECIFIC and
+labelled so: `getJobs` appends one `SmeltOre` per ore-bearing inorganic (16 here) and the
+Craftsdwarf's 631 is one job kind repeated per instrument.
+
+Two proposed keys named buildings that do not exist: quickfort's `wS` and `wp` are
+`workshop_type.Custom`, not enum members.
+
+### build_workshop_cluster — goal 6
+
+All or nothing, and it undoes a partial placement. Measured live: `survival` raised 2
+shops and 3 piles, `milling` was refused on a fort with no quern, an invented member was
+refused, and 12 stockpile links were written with **0 one-sided**. A workshop has no
+`links` field at all — its four vectors are at `profile.links`.
+
+Sending workers is NOT wired. The field exists (`profile.permitted_workers`, verified
+live) and the owner asked for it; saying so beats a verb that appears to do it.
+
+### The offline design search — goal 7
+
+`lab_agent/bonsai_lab_agent/design/`, run outside the agent's loop, as instructed.
+
+**The objective was wrong before it was written.** The per-tile term is not 1 — a smoothed
+tile is worth 4, measured against DF's own `curroom`. A search over the old number would
+have produced a confident artefact.
+
+It **minimises cost subject to meeting a DEMAND** rather than maximising value. Maximising
+value returns "dig out the level and fill it with statues", and worse, it pretends to rank
+designs above the target when `LADDER_CUTOFFS_KNOWN` is false and nothing can tell a good
+room from a better one once both satisfy the noble.
+
+The exploit it would otherwise find is real and is refused in the representation: DF
+prices a WALL inside the extent the same as a rough floor, so a zone painted over bedrock
+is free value.
+
+Annealing rather than a GA, with the owner's evolutionary idea as elitist restart:
+crossing two valid rooms of different sizes produces an invalid room almost surely, so a
+GA would spend its budget in a repair operator.
+
+**The game found a bug in it.** The first emitter put `s` on a cell to be smoothed, which
+replaced its `d`; quickfort's dry run answered *"Tiles that could not be designated for
+digging: 11"* against exactly the 11 smooth cells — you cannot smooth rock nobody has
+mined. Smoothing is now its own pass, and the same design designates all 43 and fails
+none. That is the offline model and the game agreeing, which is the only check worth
+having.
+
+Measured: mayor's bedroom, score -39168 -> -141, value 500 against a demand of 500.
