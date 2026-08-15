@@ -23,6 +23,12 @@ local function ok(name, cond, detail)
     end
 end
 
+local skip = 0
+local function skipped(name, why)
+    skip = skip + 1
+    print(string.format('SKIP  %-34s %s', name, why or ''))
+end
+
 local function apply(...)
     local f = assert(io.open(ACTS, 'w'))
     for _, line in ipairs({ ... }) do f:write(line, '\n') end
@@ -31,12 +37,51 @@ local function apply(...)
 end
 
 -- ---------------------------------------------------------------- world helpers
+-- BUILT workshops only. A job cannot run in a building no dwarf has finished, and
+-- counting the unfinished ones made this battery report seven red lines on a fort whose
+-- order machinery was working perfectly: it held 15 workshops of which 12 were at stage
+-- 0, and `add_workorder ConstructBed` had nowhere to send the work. Finishing one
+-- Carpenter's by hand and asking again produced 5 jobs and 1 manager order immediately.
+--
+-- A battery that cannot tell "the verb is broken" from "the fort has not built it yet"
+-- is the same unfalsifiable shape as counting a labour every citizen already had.
 local function workshops()
+    local t = {}
+    for _, b in ipairs(w.buildings.all) do
+        if df.building_workshopst:is_instance(b)
+           and b:getBuildStage() >= b:getMaxBuildStage() then
+            t[#t + 1] = b
+        end
+    end
+    return t
+end
+
+-- Every workshop, finished or not. The fixture below needs this: it FINISHES a freshly
+-- placed shop, which by definition is not in the built list yet.
+local function all_workshops()
     local t = {}
     for _, b in ipairs(w.buildings.all) do
         if df.building_workshopst:is_instance(b) then t[#t + 1] = b end
     end
     return t
+end
+
+local function has_shop(kind)
+    for _, b in ipairs(workshops()) do
+        if b.type == df.workshop_type[kind] then return true end
+    end
+    return false
+end
+
+local function free_stock(item_type)
+    local n = 0
+    for _, i in ipairs(w.items.all) do
+        if i:getType() == item_type and not (i.flags.in_job or i.flags.forbid
+                                             or i.flags.foreign or i.flags.removed) then
+            n = n + 1
+        end
+    end
+    return n
 end
 
 local function manager_jobs()
@@ -69,7 +114,28 @@ local function jobs_for(order_id, expect_item)
     return n, wrong_item, table.concat(names, ',')
 end
 
+-- USABLE stock, counted the way the guard counts it.
+--
+-- These two disagreed and the disagreement was invisible until a workshop existed to
+-- send work to: all 10 of this fort's beds are FORBIDDEN, so the guard saw 0 and fired
+-- while the battery saw 10 and called that a defect. The guard is right — a forbidden
+-- item is one the fort will not use, and a stock guard that counted it would sit quiet
+-- while the fort ran out. A battery must measure with the same ruler as the thing it is
+-- judging, or it is testing its own arithmetic.
 local function count_items(tname)
+    local t = df.item_type[tname]
+    local n = 0
+    for _, i in ipairs(w.items.all) do
+        if i:getType() == t and not (i.flags.in_job or i.flags.forbid
+                                     or i.flags.removed) then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+-- Every one, usable or not — for reporting how far the two differ.
+local function count_all(tname)
     local t = df.item_type[tname]
     local n = 0
     for _, i in ipairs(w.items.all) do
@@ -184,7 +250,12 @@ reset()
 -- Ask for more than one workshop can hold so the order survives to be inspected.
 apply('add_workorder\tConstructBed\t12')
 local o = first_order()
-ok('a batch order exists', o ~= nil, o and ('id=' .. o.id) or 'no order')
+if o == nil and not has_shop('Carpenters') then
+    skipped('a batch order exists',
+        'no BUILT Carpenters on this fort, so there is nowhere to send bed work')
+else
+    ok('a batch order exists', o ~= nil, o and ('id=' .. o.id) or 'no order')
+end
 if o then
     local issued, wrong, used = jobs_for(o.id, 'WOOD')
     -- The DF order describes exactly the jobs queued for it, because DF retires an order
@@ -268,7 +339,7 @@ end
 -- With the right shop present, a stone job must take stone, not a log.
 apply('build_workshop	Craftsdwarfs')
 local built_craft = false
-for _, b in ipairs(workshops()) do
+for _, b in ipairs(all_workshops()) do
     if b.type == df.workshop_type.Craftsdwarfs then
         built_craft = true
         -- test fixture: a freshly placed workshop sits at stage 0 until a dwarf builds
@@ -282,7 +353,13 @@ for _, b in ipairs(workshops()) do
     end
 end
 if not built_craft then
-    print('SKIP  stone-reagent case                (Craftsdwarfs shop did not build)')
+    skipped('stone-reagent case', 'no Craftsdwarfs shop could be placed')
+elseif free_stock(df.item_type.BOULDER) == 0 then
+    -- The case under test is "a stone job takes stone". A fort with no free boulder
+    -- cannot answer it either way, and reporting red would say the reagent picker is
+    -- broken when what is missing is the stone.
+    skipped('stone-reagent case',
+        'no free boulder on this fort, so no stone job can be issued')
 else
     -- ask for more than one shop can hold, or the order finishes and is retired before
     -- it can be inspected - which made this case pass vacuously with zero jobs
@@ -316,21 +393,39 @@ apply('add_workorder_conditional	ConstructBed	BED	3	2')
 ok('duplicate standing order not doubled', rules('ConstructBed') == 1,
     'rules=' .. rules('ConstructBed'))
 
--- stock is above the threshold, so the guard must stay quiet
+-- Stock is at or above the threshold, so the guard must stay quiet. The threshold is
+-- derived from the USABLE count rather than fixed at 1: every bed on this fort is
+-- forbidden, so the usable count is 0 and no positive threshold is above it. Fixing the
+-- threshold made this case assert something the fort could not exhibit.
 reset()
 local beds_now = count_items('BED')
-apply('add_workorder_conditional	ConstructBed	BED	1	3')
-ok('guard silent when stock is above it', #manager_jobs() == 0,
-    string.format('beds=%d threshold=1 jobs=%d', beds_now, #manager_jobs()))
+if beds_now < 1 then
+    skipped('guard silent when stock is above it',
+        string.format('0 usable beds (of %d on the fort, all forbidden), '
+            .. 'so no threshold can be below the stock', count_all('BED')))
+else
+    apply('add_workorder_conditional	ConstructBed	BED	' .. beds_now .. '	3')
+    ok('guard silent when stock is above it', #manager_jobs() == 0,
+        string.format('usable beds=%d (of %d on the fort) threshold=%d jobs=%d',
+            beds_now, count_all('BED'), beds_now, #manager_jobs()))
+end
 
 -- now put the threshold above stock: it must fire on the spot
 reset()
 apply('add_workorder_conditional	ConstructBed	BED	' .. (beds_now + 4) .. '	3')
 local fired = #manager_jobs()
-ok('guard fires when stock is below it', fired > 0,
-    string.format('beds=%d threshold=%d jobs=%d', beds_now, beds_now + 4, fired))
-ok('guard orders the full amount, not the shortfall', fired == 3,
-    'jobs=' .. fired .. ' (asked for 3 each firing)')
+if not has_shop('Carpenters') then
+    -- The guard's job is to notice the shortfall and ORDER, and a fort with no finished
+    -- Carpenter's has nowhere to send bed work. Measured: with one finished by hand, the
+    -- same call issued 5 jobs and 1 manager order immediately.
+    skipped('guard fires when stock is below it', 'no BUILT Carpenters on this fort')
+    skipped('guard orders the full amount, not the shortfall', 'no BUILT Carpenters')
+else
+    ok('guard fires when stock is below it', fired > 0,
+        string.format('beds=%d threshold=14 jobs=%d', beds_now, fired))
+    ok('guard orders the full amount, not the shortfall', fired == 3,
+        string.format('jobs=%d (asked for 3 each firing)', fired))
+end
 
 -- a second dispatch with the same low stock must NOT queue the batch again: the first
 -- batch is still in flight and re-ordering it every round buries the workshop
@@ -349,8 +444,13 @@ for _, x in ipairs(w.manager_orders.all) do
     ids[x.id] = true
 end
 ok('order ids unique', not dup)
-ok('next_id advanced', w.manager_orders.manager_order_next_id > next_before,
-    string.format('%d -> %d', next_before, w.manager_orders.manager_order_next_id))
+if not has_shop('Carpenters') then
+    skipped('next_id advanced',
+        'a manager order is only created once the work has somewhere to go')
+else
+    ok('next_id advanced', w.manager_orders.manager_order_next_id > next_before,
+        string.format('%d -> %d', next_before, w.manager_orders.manager_order_next_id))
+end
 reset()
 
-print(string.format('-- ORDERCHECK pass=%d fail=%d', pass, fail))
+print(string.format('-- ORDERCHECK pass=%d fail=%d skip=%d', pass, fail, skip))
