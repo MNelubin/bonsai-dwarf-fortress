@@ -416,36 +416,50 @@ across all materials rather than per material.
 
 ## Not yet a tool: brewing
 
-`BrewDrink` is deliberately absent from `ORDERABLE_JOBS`, because its job shape is unknown
-and guessing it produces jobs DF cancels thousands of ticks later.
+Deliberately absent from `ORDERABLE_JOBS`. Four things are now known for certain, and the
+last one is why it is still not shipped.
 
-What is known:
+**1. There is no `BrewDrink` job type.** Not on this build — nothing in `df.job_type`
+matches `brew` at all. That is the third enum name written from memory that turned out not
+to exist, after `ConstructBarrel` (it is `MakeBarrel`) and a workshop kind that silently
+became Carpenters, which is why `bonsai-toolcheck` now asserts every name in `JOB_SPEC`
+resolves.
 
-* A workshop job whose reagent is a **specification** rather than a pinned item works —
-  DF fills it and a dwarf takes it (measured: beds 37 → 38). That is the shape the food
-  chain needs, because a real `PrepareMeal` job carries four flag-filtered requirements
-  (`unrotten`, `cookable`, one also `solid`) and no item type at all.
-* DFHack ships a canonical `PrepareMeal` order in `basic.json` — `meal_ingredients: 4`,
-  conditions `AtLeast 20 {unrotten,cookable,solid}`, `AtLeast 80 {unrotten,cookable}`,
-  `AtMost 2000 FOOD {unrotten}` — which is a working example to copy for cooking.
-* **There is no `BrewDrink` in `df.job_type` at all** on this build. Brewing is
-  `ProcessPlantsBarrel` — plants that are `processable_to_barrel`, turned into drink in a
-  barrel — which is exactly what DFHack's shipped library orders: "at least 150 unrotten
-  barrel-processable plants and at least 5 empty barrels". That is the third enum name
-  written from memory that turned out not to exist, after `ConstructBarrel` (it is
-  `MakeBarrel`) and a workshop kind that silently became Carpenters, so `bonsai-toolcheck`
-  now asserts every name in `JOB_SPEC` resolves in `df.job_type`.
-* **DF does NOT fill job_items in for us.** A `ProcessPlantsBarrel` job created bare at a
-  Still was cancelled — twice, measured. The specification has to be written by us. That
-  settles the question the previous note left open.
-* No shipped order library contains a brewing order and no live one appeared on the
-  hand-played fort during the probe window, so the spec is derived rather than copied:
-  one `PLANT` that is `unrotten` and `processable_to_barrel`, plus one `empty` `BARREL`.
-  `bonsai-brewprobe` builds exactly that.
+**2. Brewing is a REACTION.** The raws carry `BREW_DRINK_FROM_PLANT` (index 135) and
+`BREW_DRINK_FROM_PLANT_GROWTH` (136) among 1,109 reactions. That is also why several of
+the hand-played fort's food orders read `CustomReaction` rather than a named job. Plump
+helmet's structural material lists `DRINK_MAT` and `SEED_MAT` as its reaction products,
+so the staple crop does brew.
 
-**Why it is still not a tool.** The derived spec has never been seen to produce drink. The
-test fort is starving and had zero plants both times: twenty plump helmets created for the
-probe were gone within 8,000 ticks — thirty hungry dwarves ate them. Until a job built
-from this spec is watched turning a plant into a barrel of booze, `ProcessPlantsBarrel`
-stays out of `ORDERABLE_JOBS`, because a wrong reagent is not a soft failure: DF cancels
-the job thousands of ticks later with the order's count already spent.
+**3. DF does not fill `job_items` in for us.** A job created bare at a Still is cancelled
+— measured twice. The requirements have to be written by us. This is worth stating plainly
+because furniture jobs work *either* way: a pinned item and a specification both produce a
+bed, which made it look as though DF was doing the work.
+
+**4. What has been tried and still gets cancelled.** Three shapes, each with 98–102 free
+plants and 15 barrels standing in the fort:
+
+| attempt | result |
+|---|---|
+| `ProcessPlantsBarrel` at a Still, bare | cancelled |
+| `ProcessPlantsBarrel` at a Still, with a derived spec — one `unrotten`+`processable_to_barrel` PLANT and one `empty` BARREL | cancelled |
+| `CustomReaction` with `reaction_name = BREW_DRINK_FROM_PLANT`, job_items copied verbatim from the reaction's own reagents (2 of 2) | cancelled |
+
+So a `CustomReaction` job needs more than a name and the right reagents. The leads not yet
+followed, in the order worth trying:
+
+* the job may need its own index into the reaction list, not only `reaction_name`;
+* the Still may need the reaction permitted in its `profile`, the way a workshop's
+  `max_general_orders` gates manager orders;
+* the fort entity knows 36 reactions (`entity.resources.reaction_idx`) — whether index 135
+  is among them has not been checked, and a reaction the civilisation does not know would
+  be refused;
+* the shipped `workorder` script creates `CustomReaction` orders on the hand-played fort
+  that DO run, so its code path is a working example to read rather than reinvent.
+
+**Why it stays out of the tool list meanwhile.** A wrong reagent is not a soft failure:
+DF cancels the job thousands of ticks later with the order's count already spent, which is
+exactly the silent-success shape every other verb here has been fixed to avoid. Shipping a
+brew verb that produces cancelled jobs would be worse than not having one.
+
+`bonsai-brewprobe` builds the current best attempt and reports what DF made of it.
