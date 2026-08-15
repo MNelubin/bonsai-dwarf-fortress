@@ -60,10 +60,12 @@ class Arg:
         # rides in every controller prompt on every argument of every verb. The schema is
         # a running cost, not a one-off.
         d: dict[str, Any] = {"name": self.name, "type": self.kind, "doc": self.doc}
-        if not self.required:
-            d["required"] = False
         if self.default is not None:
+            # a default IMPLIES optional, so saying both is a redundancy paid on every
+            # argument of every verb in every controller prompt
             d["default"] = self.default
+        elif not self.required:
+            d["required"] = False
         if self.choices:
             d["choices"] = list(self.choices)
         if self.lo is not None or self.hi is not None:

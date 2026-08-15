@@ -12,8 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from bonsai_lab_agent.actions.library import (CLUSTER_NAMES, CLUSTERS, GROUND_MODES,
-                                              STOCKPILE_KEYS, TEMPLATES,
+from bonsai_lab_agent.actions.library import (BUILD_COST, BUILDING_KEYS, CLUSTER_NAMES,
+                                              CLUSTERS, FURNACE_KEYS, GROUND_MODES,
+                                              JOBS_OFFERED, STOCKPILE_KEYS, TEMPLATES,
                                               TEMPLATES_BY_NAME, WORKSHOP_KEYS, Cluster,
                                               LibraryError, Template, blueprint_extents,
                                               cluster, template_extent)
@@ -57,9 +58,26 @@ def test_cluster_keys_are_quickforts_own():
     one it does not know would build the wrong thing, silently."""
     for c in CLUSTERS:
         for k in c.workshops:
-            assert k in WORKSHOP_KEYS, (c.name, k)
+            assert k in BUILDING_KEYS, (c.name, k)
         for k in c.stockpiles:
             assert k in STOCKPILE_KEYS, (c.name, k)
+
+
+def test_no_key_names_a_building_the_verb_cannot_build():
+    """`build_workshop` takes a `df.workshop_type` name. quickfort also ships `wS` (Soap
+    Maker) and `wp` (Screw Press), which are `workshop_type.Custom` with custom=0/1 — real
+    buildings, but NOT members of the enum, and enumerating it live is what caught them
+    before they were transcribed in as though they were."""
+    assert "wS" not in BUILDING_KEYS
+    assert "wp" not in BUILDING_KEYS
+
+
+def test_every_key_has_a_cost_and_a_capability():
+    """A key the agent can choose but the library cannot price is a key that will be
+    chosen blind."""
+    for k in BUILDING_KEYS:
+        assert k in BUILD_COST, k
+        assert k in JOBS_OFFERED, k
 
 
 def test_an_invented_workshop_key_is_refused():
@@ -80,11 +98,49 @@ def test_cluster_size_is_bounded():
                 replenishes=("nothing",))
 
 
-def test_cost_cannot_drift_from_the_workshop_list():
-    """Cost is derived, not stored. A stored number is one more thing to forget to update
-    when the cluster changes — and the agent is choosing on it."""
+def test_cost_is_what_df_charges_not_one_per_workshop():
+    """Cost is derived from DF's own build-filter table, read live with
+    `getFiltersByType`. It used to be `len(workshops)`, which is right for the fifteen
+    buildings whose filter is "any one building material" and wrong for the rest: Siege
+    and the Ashery cost three, the forges and the Dyer's and the Millstone two."""
     for c in CLUSTERS:
-        assert c.cost == len(c.workshops), c.name
+        assert c.cost == sum(BUILD_COST[k] for k in c.workshops), c.name
+    assert BUILD_COST["ws"] == 3 and BUILD_COST["wy"] == 3
+    assert BUILD_COST["wf"] == 2 and BUILD_COST["wM"] == 2
+    assert BUILD_COST["wc"] == 1
+    # and a cluster with an expensive member must cost more than its member count
+    metal = next(c for c in CLUSTERS if c.name == "metal" and c.size == 1)
+    assert metal.cost > len(metal.workshops)
+
+
+def test_capability_counts_distinct_kinds_not_copies():
+    """Two Carpenter's workshops unlock no new job — they buy throughput. Counting the
+    list would make size and capability the same number, and the agent would be choosing
+    on one thing twice."""
+    one = next(c for c in CLUSTERS if c.name == "woodworking" and c.size == 1)
+    two = next(c for c in CLUSTERS if c.name == "woodworking" and c.size == 2)
+    assert two.capabilities == one.capabilities
+    assert two.throughput == 2 * one.throughput
+
+
+def test_a_cluster_states_what_it_cannot_be_built_without():
+    """A cluster the fort cannot SUPPLY is worse than one it cannot afford: it sits there
+    unbuilt looking like progress. `milling` is the case — a Quern needs a manufactured
+    quern item, which no fort has at embark."""
+    milling = next(c for c in CLUSTERS if c.name == "milling" and c.size == 1)
+    assert any("QUERN" in n for n in milling.needs)
+    wood = next(c for c in CLUSTERS if c.name == "woodworking" and c.size == 1)
+    assert wood.needs == ()
+
+
+def test_footprint_uses_the_real_building_sizes():
+    """Most workshops are 3x3, but Siege and Kennels are 5x5 and Quern and Millstone 1x1,
+    from quickfort's own min/max width and height. A cluster sized as if everything were
+    3x3 would be refused a site it actually fits in."""
+    milling = next(c for c in CLUSTERS if c.name == "milling" and c.size == 1)
+    assert milling.footprint == (4, 3)          # a 3x3 Mason's plus a 1x1 Quern
+    wood = next(c for c in CLUSTERS if c.name == "woodworking" and c.size == 2)
+    assert wood.footprint == (6, 3)
 
 
 def test_every_cluster_says_what_it_replenishes():
@@ -105,7 +161,8 @@ def test_clusters_come_in_more_than_one_size():
 def test_lookup_takes_the_largest_that_fits():
     assert cluster("woodworking", 1).size == 1
     assert cluster("woodworking", 2).size == 2
-    assert cluster("woodworking", 4).size == 2      # nothing bigger exists yet
+    assert cluster("woodworking", 3).size == 3
+    assert cluster("woodworking", 4).size == 3      # nothing bigger exists yet
     assert cluster("woodworking", 0) is None
     assert cluster("no_such_cluster", 2) is None
 

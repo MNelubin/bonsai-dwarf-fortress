@@ -330,6 +330,80 @@ do
         #unspecified == 0 and 'none understated' or table.concat(unspecified, ' '))
 end
 
+-- ================================================================ workshop clusters
+-- The gate expands a cluster name into its resolved membership, so the battery hands
+-- over exactly what the dispatcher sees in play: W: for a workshop, F: for a furnace.
+do
+    local function all_shops()
+        local n = 0
+        for _, b in ipairs(w.buildings.all) do
+            if df.building_workshopst:is_instance(b) then n = n + 1 end
+        end
+        return n
+    end
+
+    apply('build_workshop_cluster\tbogus\tW:NoSuchShop\tfood\t3\t3')
+    ok('a cluster naming a building that does not exist is refused',
+        _G.BONSAI_LAST_CLUSTER == nil or _G.BONSAI_LAST_CLUSTER.name ~= 'bogus',
+        'no crash, no change')
+
+    -- ALL OR NOTHING. A Quern needs a manufactured QUERN item, so on a fort without one
+    -- the whole cluster must be refused — not the Mason's built and the Quern skipped.
+    -- Half a cluster is a failure that looks like success: the buildings get counted and
+    -- the capability the rest were built for is missing.
+    _G.BONSAI_LAST_CLUSTER = nil
+    local before_partial = all_shops()
+    apply('build_workshop_cluster\tmilling\tW:Masons,W:Quern\tstone,food\t4\t3')
+    local querns = 0
+    for _, i in ipairs(w.items.all) do
+        if i:getType() == df.item_type.QUERN then querns = querns + 1 end
+    end
+    if querns > 0 then
+        skipped('a cluster it cannot finish is not half-built',
+            'this fort has a QUERN item, so milling is legitimately buildable')
+    else
+        ok('a cluster it cannot finish is not half-built',
+            all_shops() == before_partial and _G.BONSAI_LAST_CLUSTER == nil,
+            string.format('milling needs a QUERN item, fort has %d; shops %d -> %d',
+                querns, before_partial, all_shops()))
+    end
+
+    _G.BONSAI_LAST_CLUSTER = nil
+    local before = all_shops()
+    apply('build_workshop_cluster\tsurvival\tW:Carpenters,W:Still\twood,food,furniture\t6\t3')
+    local L = _G.BONSAI_LAST_CLUSTER
+    if not L then
+        skipped('build_workshop_cluster raises the whole cluster',
+            'nowhere to put two 3x3 shops, or no building material left')
+    else
+        ok('build_workshop_cluster raises the whole cluster',
+            L.shops == 2 and all_shops() == before + 2,
+            string.format('%s: %d shops and %d piles, total %d -> %d',
+                L.name, L.shops, L.piles, before, all_shops()))
+
+        -- One-sided links are this project's signature bug: the noble seat and the room
+        -- owner both shipped with only half the link written. A stockpile carries `links`
+        -- directly; a workshop's live at `profile.links`.
+        local oneSided, linked = 0, 0
+        for _, b in ipairs(w.buildings.all) do
+            if df.building_workshopst:is_instance(b) then
+                pcall(function()
+                    for _, pb in ipairs(b.profile.links.take_from_pile) do
+                        linked = linked + 1
+                        local back = false
+                        for _, wb in ipairs(pb.links.give_to_workshop) do
+                            if wb.id == b.id then back = true end
+                        end
+                        if not back then oneSided = oneSided + 1 end
+                    end
+                end)
+            end
+        end
+        ok('every stockpile link is written on both sides', oneSided == 0,
+            string.format('%d links, %d one-sided', linked, oneSided))
+    end
+end
+
 -- ================================================================ apply_template
 -- The gate expands a template name into these six arguments, so the battery hands over
 -- exactly what the dispatcher will see in play. Mini_Saracen: 11x11, one level, anchored

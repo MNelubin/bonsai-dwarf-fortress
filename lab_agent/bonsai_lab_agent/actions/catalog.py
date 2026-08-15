@@ -30,7 +30,7 @@ that the manager is what turns an order into a job — which is the most plausib
 
 from __future__ import annotations
 
-from .library import TEMPLATE_NAMES
+from .library import CLUSTER_NAMES, TEMPLATE_NAMES
 from .schema import Arg, Verb
 
 # Labours the guide singles out as needing equipment, so they cannot be blanket-assigned
@@ -440,20 +440,26 @@ CATALOG: tuple[Verb, ...] = (
              "not confirm has no business in the contract."
     ),
     Verb(
-        name="build_workshop_cluster", category="composition", status="planned",
-        tranche=4,
-        doc="Place a related group of workshops, e.g. woodworking, and the stockpiles "
-            "that feed them.",
+        name="build_workshop_cluster", category="composition",
+        doc="Place a related group of workshops and the stockpiles that feed them.",
         observable="every workshop in the cluster exists and is reachable",
         args=(
-            Arg("cluster", "str", "cluster name from the library"),
-            Arg("scale", "int", "how many copies", lo=1, hi=4,
+            Arg("cluster", "enum", "which cluster from the library",
+                choices=CLUSTER_NAMES),
+            Arg("scale", "int", "how big a variant to take", lo=1, hi=4,
                 required=False, default=1),
         ),
         guide="",
-        note="Carries its cost and the capabilities it unlocks as metadata, so the "
-             "agent can weigh one against another instead of memorising which workshop "
-             "makes barrels.",
+        note="The owner asked the agent to choose on declared numbers — 'их цена "
+             "создания... и количество их возможностей, и что можно восполнить'. Cost "
+             "comes from DF's own build-filter table (Siege and the Ashery cost three, "
+             "the forges two), capability from DFHack's getJobs over DISTINCT member "
+             "kinds, since a second Carpenter's buys throughput and no new job. ALL OR "
+             "NOTHING: if any member cannot be supplied the verb places none of them and "
+             "undoes what it had, because half a cluster is a failure that looks like "
+             "success. Stockpiles are linked to the workshops on BOTH sides — a pile "
+             "carries `links` directly, a workshop's live at `profile.links`, and a "
+             "one-sided link is this project's signature bug.",
     ),
 )
 

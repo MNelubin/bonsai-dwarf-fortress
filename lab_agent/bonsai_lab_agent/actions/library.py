@@ -31,16 +31,85 @@ class LibraryError(ValueError):
 # quickfort's own key tables. Kept here so a cluster can be declared in the same
 # vocabulary the blueprints use, and so a typo is a KeyError at import rather than a
 # blueprint that silently builds the wrong thing.
+# quickfort's own key table, read out of hack/scripts/internal/quickfort/build.lua, and
+# every entry checked against a live `df.workshop_type` / `df.furnace_type` enumeration.
+#
+# Two of quickfort's keys are deliberately ABSENT. `wS` (Soap Maker) and `wp` (Screw
+# Press) are `workshop_type.Custom` with custom=0/1 — real buildings, but not members of
+# df.workshop_type, so `build_workshop` cannot name them. Transcribing them here as though
+# they were workshop types is exactly how three invented DF names have shipped before;
+# enumerating the enum live is what caught them.
 WORKSHOP_KEYS = {
-    "wc": "Carpenters",
-    "wm": "Masons",
-    "wr": "Craftsdwarfs",
-    "wt": "Mechanics",
-    "wl": "Still",
-    "wk": "Clothiers",
-    "wb": "Bowyers",
-    "ws": "Siege",
+    "wc": "Carpenters", "ww": "Farmers", "wm": "Masons", "wr": "Craftsdwarfs",
+    "wj": "Jewelers", "wf": "MetalsmithsForge", "wv": "MagmaForge", "wb": "Bowyers",
+    "wt": "Mechanics", "ws": "Siege", "wu": "Butchers", "we": "Leatherworks",
+    "wn": "Tanners", "wk": "Clothiers", "wh": "Fishery", "wl": "Still", "wo": "Loom",
+    "wq": "Quern", "k": "Kennels", "wz": "Kitchen", "wy": "Ashery", "wd": "Dyers",
+    "wM": "Millstone",
 }
+
+FURNACE_KEYS = {
+    "ew": "WoodFurnace", "es": "Smelter", "el": "MagmaSmelter", "eg": "GlassFurnace",
+    "ea": "MagmaGlassFurnace", "ek": "Kiln", "en": "MagmaKiln",
+}
+
+BUILDING_KEYS = {**WORKSHOP_KEYS, **FURNACE_KEYS}
+
+# What DF charges to put one up, read live from its own table with
+# `dfhack.buildings.getFiltersByType`. Fifteen of these are "any one building material"
+# and the rest are not, which is the whole reason this table exists: the verb used to hand
+# every workshop a log, and a Quern took it. Cost is the SUM of the filter quantities.
+BUILD_COST = {
+    "wc": 1, "ww": 1, "wm": 1, "wr": 1, "wj": 1, "wb": 1, "wt": 1, "wu": 1, "we": 1,
+    "wn": 1, "wk": 1, "wh": 1, "wl": 1, "wo": 1, "wq": 1, "k": 1, "wz": 1,
+    "wf": 2, "wv": 2, "wd": 2, "wM": 2, "ws": 3, "wy": 3,
+    "ew": 1, "es": 1, "el": 1, "eg": 1, "ea": 1, "ek": 1, "en": 1,
+}
+
+# The demands that are NOT "any building material". A fort with a hundred logs still
+# cannot build any of these.
+BUILD_NEEDS = {
+    "wq": ("a manufactured QUERN item",),
+    "wM": ("a MILLSTONE item", "TRAPPARTS"),
+    "wy": ("BLOCKS", "an EMPTY barrel", "a bucket"),
+    "wd": ("an EMPTY barrel", "a bucket"),
+    "wf": ("an ANVIL", "a fire-safe building material"),
+    "wv": ("an ANVIL", "a magma-safe building material"),
+    "ws": ("three building materials, not one",),
+    "ew": ("a fire-safe building material",),
+    "es": ("a fire-safe building material",),
+    "eg": ("a fire-safe building material",),
+    "ek": ("a fire-safe building material",),
+    "el": ("a magma-safe building material",),
+    "ea": ("a magma-safe building material",),
+    "en": ("a magma-safe building material",),
+}
+
+# Which buildings must exist BEFORE these can be built, straight off the demands above: a
+# quern and a millstone are made at a Mason's, trap parts at a Mechanic's, and the barrels
+# and buckets at a Carpenter's. This is a build ORDER, not a preference.
+PREREQ = {
+    "wq": ("wm",), "wM": ("wm", "wt"), "wy": ("wm", "wc"), "wd": ("wc",),
+}
+
+# How many distinct jobs DFHack offers at each, measured with its own
+# `require('dfhack.workshops').getJobs(type, subtype, -1)`.
+#
+# THESE NUMBERS ARE WORLD-SPECIFIC and must not be read as a property of the building.
+# getJobs appends one SmeltOre per ore-bearing inorganic in the world — 16 in this one —
+# and the Craftsdwarf's 631 is almost entirely one job kind repeated per instrument and
+# per material. A scorer that ranks clusters on this number alone will pick the
+# Craftsdwarf's every time for the wrong reason, so `Cluster.capabilities` takes the union
+# over DISTINCT workshop kinds and the raw figure is kept here, labelled, for reference.
+JOBS_OFFERED = {
+    "wc": 55, "ww": 2, "wm": 28, "wr": 631, "wj": 4, "wf": 92, "wv": 92, "wb": 0,
+    "wt": 2, "ws": 4, "wu": 3, "we": 65, "wn": 2, "wk": 0, "wh": 3, "wl": 3, "wo": 5,
+    "wq": 2, "k": 0, "wz": 4, "wy": 1, "wd": 70, "wM": 2,
+    "ew": 2, "es": 40, "el": 40, "eg": 84, "ea": 83, "ek": 79, "en": 78,
+}
+
+# Tiles on the ground, from quickfort's own min/max width and height.
+FOOTPRINT_BY_KEY = {"ws": (5, 5), "k": (5, 5), "wq": (1, 1), "wM": (1, 1)}
 
 STOCKPILE_KEYS = {
     "a": "animals", "f": "food", "u": "furniture", "n": "coins", "y": "corpses",
@@ -239,38 +308,96 @@ class Cluster:
         среди чего должен агент выбирать — это их цена создания... и количество их
         возможностей, и... что можно восполнить, если их построить
 
-    plus several SIZES per cluster. `cost` is in plain building materials because that is
-    what the owner asked for — "можно просто в каких-то числах" — and because it is the
-    number the fort actually pays.
+    plus several SIZES per cluster. Every number here is derived from a measured table
+    rather than stored, so none of them can drift from the membership.
     """
 
     name: str
     size: int                       # 1..4, several variants of the same cluster
-    workshops: tuple[str, ...]      # quickfort keys, e.g. ("wc", "wm")
+    workshops: tuple[str, ...]      # quickfort keys, e.g. ("wc", "wm"); repeats allowed
     stockpiles: tuple[str, ...]     # quickfort keys, e.g. ("w", "s")
     replenishes: tuple[str, ...]    # what the fort can make more of once it stands
     blueprint: str = ""             # a shipped blueprint, when one already does this
-    capabilities: int = 0           # how many distinct jobs it unlocks; measured, not guessed
 
     def __post_init__(self) -> None:
         for key in self.workshops:
-            if key not in WORKSHOP_KEYS:
-                raise LibraryError(f"{self.name}: unknown workshop key {key!r}")
+            if key not in BUILDING_KEYS:
+                raise LibraryError(f"{self.name}: unknown building key {key!r}")
         for key in self.stockpiles:
             if key not in STOCKPILE_KEYS:
                 raise LibraryError(f"{self.name}: unknown stockpile key {key!r}")
         if not 1 <= self.size <= 4:
             raise LibraryError(f"{self.name}: size {self.size} outside 1..4")
+        if not self.replenishes:
+            raise LibraryError(f"{self.name}: must say what it replenishes")
 
     @property
     def cost(self) -> int:
-        """Build material the cluster costs, in items.
+        """Items the fort pays to put the cluster up.
 
-        One per workshop is DF's own rule for the basic shops in this library, and
-        stockpiles cost nothing to place. Declared as a property rather than a stored
-        number so it cannot drift from the workshop list.
+        NOT one per workshop, which is what this returned first. DF's own filter table
+        charges Siege and the Ashery three, and the forges, the Dyer's, the Millstone two.
+        Derived rather than stored so it cannot drift from the membership.
         """
+        return sum(BUILD_COST[k] for k in self.workshops)
+
+    @property
+    def needs(self) -> tuple[str, ...]:
+        """The demands that are not simply "a building material", in DF's own terms.
+
+        "three items" and "an anvil plus a fire-safe boulder" are not the same thing to a
+        fort, and a cluster the fort cannot supply is worse than one it cannot afford —
+        it will sit there unbuilt looking like progress.
+        """
+        out: list[str] = []
+        for k in dict.fromkeys(self.workshops):
+            out.extend(BUILD_NEEDS.get(k, ()))
+        return tuple(dict.fromkeys(out))
+
+    @property
+    def prereq(self) -> tuple[str, ...]:
+        """Buildings that must already exist, and are not in this cluster.
+
+        A quern is made at a Mason's; a millstone needs trap parts from a Mechanic's. A
+        cluster that carries its own prerequisite is self-sufficient and this is empty.
+        """
+        mine = set(self.workshops)
+        out: list[str] = []
+        for k in dict.fromkeys(self.workshops):
+            out.extend(p for p in PREREQ.get(k, ()) if p not in mine)
+        return tuple(dict.fromkeys(out))
+
+    @property
+    def capabilities(self) -> int:
+        """Distinct jobs the cluster unlocks — the union over DISTINCT member kinds.
+
+        Two Carpenter's workshops unlock no new job; they buy throughput. Counting the
+        list rather than the set would make "size" and "capability" the same number and
+        the agent would be choosing on one thing twice.
+
+        The per-building figures are DFHack's own `getJobs`, and they are WORLD-SPECIFIC:
+        see JOBS_OFFERED. Treat this as an ordering, not a physical constant.
+        """
+        return sum(JOBS_OFFERED[k] for k in dict.fromkeys(self.workshops))
+
+    @property
+    def throughput(self) -> int:
+        """How many buildings can be working at once. This is what size buys."""
         return len(self.workshops)
+
+    @property
+    def footprint(self) -> tuple[int, int]:
+        """Ground the cluster needs, packed edge to edge in one row.
+
+        Most workshops are 3x3; Siege and Kennels are 5x5 and Quern and Millstone are
+        1x1, from quickfort's own min/max width and height.
+        """
+        width = height = 0
+        for k in self.workshops:
+            w, h = FOOTPRINT_BY_KEY.get(k, (3, 3))
+            width += w
+            height = max(height, h)
+        return width, height
 
 
 # ---------------------------------------------------------------- shipped templates
@@ -346,36 +473,147 @@ TEMPLATES: tuple[Template, ...] = (
 # owner's cluster idea, already shipped, which is why the first entry quotes it rather
 # than reinventing it.
 CLUSTERS: tuple[Cluster, ...] = (
+    # `survival` first, and ahead of `embark`, because of what the measured year showed:
+    # drink went 12 -> 0 with nothing brewed and two of seven dwarves dead. Brewing needs
+    # an EMPTY BARREL the fort owns, and the Carpenter's is the only measured source of
+    # one — 14 of the test fort's 15 barrels belonged to another civilisation. So
+    # Carpenter's + Still is the smallest cluster that can actually put beer in a mug,
+    # and it is what an agent should build first.
+    Cluster(
+        name="survival", size=1,
+        workshops=("wc", "wl"), stockpiles=("w", "f", "u"),
+        replenishes=("barrels", "buckets", "beds", "doors", "bins", "DRINK"),
+    ),
+    Cluster(
+        name="survival", size=2,
+        workshops=("wc", "wl", "wz", "ww"), stockpiles=("w", "f", "u"),
+        replenishes=("barrels", "buckets", "beds", "DRINK", "prepared meals",
+                     "rendered fat", "seed bags", "plant fibre"),
+    ),
+    Cluster(
+        name="survival", size=3,
+        workshops=("wc", "wc", "wl", "wl", "wz", "ww"),
+        stockpiles=("w", "f", "u", "s"),
+        replenishes=("barrels", "buckets", "beds", "DRINK", "prepared meals",
+                     "rendered fat", "seed bags", "plant fibre"),
+    ),
+
+    # Decoded from DFHack's own embark.csv rather than invented; the test asserts every
+    # key we claim appears in the shipped file.
     Cluster(
         name="embark", size=2, blueprint="embark.csv",
         workshops=("wc", "wt", "wm", "wr"),
         stockpiles=("w", "s", "g", "p", "d", "f", "u"),
         replenishes=("furniture", "mechanisms", "blocks", "crafts"),
     ),
+
     Cluster(
         name="woodworking", size=1,
         workshops=("wc",), stockpiles=("w", "u"),
-        replenishes=("beds", "tables", "chairs", "doors", "barrels", "bins"),
+        replenishes=("beds", "tables", "chairs", "doors", "barrels", "bins", "buckets"),
     ),
     Cluster(
         name="woodworking", size=2,
         workshops=("wc", "wc"), stockpiles=("w", "u"),
-        replenishes=("beds", "tables", "chairs", "doors", "barrels", "bins"),
+        replenishes=("beds", "tables", "chairs", "doors", "barrels", "bins", "buckets"),
     ),
+    Cluster(
+        name="woodworking", size=3,
+        workshops=("wc", "wc", "wc", "ew"), stockpiles=("w", "u", "b"),
+        replenishes=("beds", "tables", "chairs", "doors", "barrels", "bins", "buckets",
+                     "charcoal", "ash"),
+    ),
+
     Cluster(
         name="stoneworking", size=1,
         workshops=("wm",), stockpiles=("s", "u"),
-        replenishes=("blocks", "stone furniture", "coffins"),
+        replenishes=("blocks", "stone furniture", "coffins", "querns", "millstones"),
     ),
     Cluster(
         name="stoneworking", size=2,
-        workshops=("wm", "wr"), stockpiles=("s", "u", "g"),
-        replenishes=("blocks", "stone furniture", "coffins", "crafts"),
+        workshops=("wm", "wt"), stockpiles=("s", "u", "g"),
+        replenishes=("blocks", "stone furniture", "coffins", "querns", "millstones",
+                     "mechanisms"),
     ),
     Cluster(
-        name="brewing", size=1,
-        workshops=("wl",), stockpiles=("f",),
-        replenishes=("drink",),
+        name="stoneworking", size=3,
+        workshops=("wm", "wm", "wt", "wr"), stockpiles=("s", "u", "g"),
+        replenishes=("blocks", "stone furniture", "coffins", "mechanisms", "crafts"),
+    ),
+
+    Cluster(
+        name="craft_trade", size=1,
+        workshops=("wr",), stockpiles=("s", "g"),
+        replenishes=("crafts", "scrolls", "bound books", "totems"),
+    ),
+    Cluster(
+        name="craft_trade", size=2,
+        workshops=("wr", "wm", "wj"), stockpiles=("s", "g", "e", "u"),
+        replenishes=("crafts", "scrolls", "blocks", "stone furniture", "cut gems",
+                     "encrusted goods"),
+    ),
+
+    # The cluster that proves `prereq` is needed: three of these four cost items no fort
+    # has at embark, and two of them are made by a Mason's that is not in the cluster.
+    Cluster(
+        name="milling", size=1,
+        workshops=("wm", "wq"), stockpiles=("s", "f"),
+        replenishes=("flour", "plant paste", "blocks", "stone furniture"),
+    ),
+    Cluster(
+        name="milling", size=2,
+        workshops=("wm", "wt", "wq", "wM"), stockpiles=("s", "f", "b"),
+        replenishes=("flour", "plant paste", "mechanisms", "blocks", "powered milling"),
+    ),
+
+    Cluster(
+        name="butchery", size=1,
+        workshops=("wu", "wn"), stockpiles=("a", "r", "f", "l"),
+        replenishes=("meat", "fat", "bone", "skin", "tanned hides"),
+    ),
+    Cluster(
+        name="butchery", size=2,
+        workshops=("wu", "wn", "we", "wh"), stockpiles=("a", "r", "f", "l", "u"),
+        replenishes=("meat", "fat", "bone", "tanned hides", "bags", "waterskins",
+                     "backpacks", "quivers", "prepared fish"),
+    ),
+
+    Cluster(
+        name="textiles", size=1,
+        workshops=("wo", "wk"), stockpiles=("h", "l"),
+        replenishes=("cloth", "clothing"),
+    ),
+    Cluster(
+        name="textiles", size=2,
+        workshops=("wo", "wk", "wd", "ww"), stockpiles=("h", "l", "f"),
+        replenishes=("cloth", "clothing", "dyes", "dyed cloth", "plant fibre"),
+    ),
+
+    Cluster(
+        name="metal", size=1,
+        workshops=("es", "wf"), stockpiles=("s", "b", "p", "d"),
+        replenishes=("metal bars", "steel", "forged goods"),
+    ),
+    Cluster(
+        name="metal", size=2,
+        workshops=("es", "es", "wf", "wt"), stockpiles=("s", "b", "p", "d"),
+        replenishes=("metal bars", "steel", "forged goods", "mechanisms"),
+    ),
+    Cluster(
+        name="metal_magma", size=1,
+        workshops=("el", "wv"), stockpiles=("s", "b", "p", "d"),
+        replenishes=("metal bars", "steel", "forged goods"),
+    ),
+
+    Cluster(
+        name="ceramics", size=1,
+        workshops=("ek",), stockpiles=("s", "u", "g"),
+        replenishes=("pearlash", "quicklime", "clay jugs", "bricks", "glazes"),
+    ),
+    Cluster(
+        name="glass", size=1,
+        workshops=("eg",), stockpiles=("s", "g", "u"),
+        replenishes=("raw glass", "glass goods"),
     ),
 )
 

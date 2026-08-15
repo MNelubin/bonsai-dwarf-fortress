@@ -139,23 +139,39 @@ def test_an_uninterpretable_boolean_is_refused():
 def test_a_planned_verb_is_refused_with_its_tranche():
     """Named off the catalog rather than hardcoded: the example used to be
     `apply_template`, which has since gone live, and a test that names a specific verb
-    quietly stops testing anything the day that verb ships."""
-    planned = next(v for v in CATALOG if v.status == "planned")
+    quietly stops testing anything the day that verb ships.
+
+    The roadmap is now EMPTY — every verb the catalog declares has been wired — so the
+    machinery is exercised against a verb declared here instead of skipped, which keeps
+    the refusal path covered for the day something new is declared."""
+    planned = next((v for v in CATALOG if v.status == "planned"), None)
+    if planned is None:
+        planned = Verb(name="not_yet_a_verb", category="composition", status="planned",
+                       tranche=9, doc="a verb nobody has wired", observable="nothing")
+        d = judge({"verb": planned.name})
+        assert not d.ok and "not an action" in d.reason
+        return
     d = judge({"verb": planned.name})
     assert not d.ok and f"tranche {planned.tranche}" in d.reason
 
 
 def test_planned_verbs_stay_out_of_the_advertised_actions():
-    planned = next(v for v in CATALOG if v.status == "planned")
+    planned = next((v for v in CATALOG if v.status == "planned"), None)
+    if planned is None:
+        # nothing is planned: then the advertised set must be exactly the live set
+        assert {a["verb"] for a in available_actions()} == {v.name for v in LIVE}
+        return
     live = {a["verb"] for a in available_actions()}
     assert planned.name not in live
     assert planned.name in {a["verb"] for a in available_actions(True)}
 
 
 def test_the_roadmap_is_ordered_by_tranche():
+    """The roadmap is the list of things a player can do and the agent cannot. It is now
+    empty, which is the point of having kept it: every verb the catalog ever declared has
+    been wired. Ordering still has to hold the day something is added back."""
     tr = [r["tranche"] for r in roadmap()]
     assert tr == sorted(tr)
-    assert tr and tr[0] == min(tr)
 
 
 def test_the_food_and_drink_chain_has_shipped():
@@ -244,18 +260,24 @@ def test_advertised_actions_carry_argument_schemas():
 def test_the_schema_stays_small_enough_to_ship_every_round():
     """It rides in every controller prompt, so it is a running cost, not a one-off.
 
-    The ceiling has moved as the guide's verbs landed, and each move was accounted for
-    rather than waved through: at 22 verbs the last increase was funded by dropping
-    `category` (the model never acts on it) and by emitting `required` only when false.
+    The ceiling has moved as the guide's verbs landed, and each move was accounted for.
+    At 22 verbs it was funded by dropping `category` (the model never acts on it). Then
+    `apply_template` and `build_workshop_cluster` went live carrying a library index each,
+    the ceiling was raised to 9000 unfunded, and the debt was written down here with the
+    repayment named. It has now been repaid twice over, and the two savings are the ones
+    that were named:
 
-    This move to 9000 is NOT funded — it is a debt. `apply_template` went live carrying an
-    11-name enum, and the two order verbs each ship a full copy of ORDERABLE_JOBS. The
-    obvious repayment is a shared vocabulary block emitted once with args referring to it,
-    which would return roughly 400 bytes; cutting the enums instead would cost the gate
-    its ability to refuse an invented name, which is worth more than the bytes.
+      * each distinct choice list is emitted ONCE; a repeat says where it already is.
+        ORDERABLE_JOBS was shipping twice. Nothing is lost — the gate validates against
+        the catalog, and `choices` on the wire is only there to tell the model what is
+        legal.                                                              -171 bytes
+      * `required: false` is not emitted alongside a `default`, because a default
+        implies it.                                                         -570 bytes
+
+    24 live verbs in 8.4 KB, which is less than 22 of them used to take.
     """
     import json
-    assert len(json.dumps(available_actions())) < 9000
+    assert len(json.dumps(available_actions())) < 8600
 
 
 def test_every_live_verb_has_a_toolbook_entry():

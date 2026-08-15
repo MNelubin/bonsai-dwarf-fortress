@@ -219,6 +219,53 @@ chamber size against the dig budget.
 
 ---
 
+## build_workshop_cluster
+
+Place a related group of workshops and the stockpiles that feed them.
+
+**Refuses:** a cluster name not in the library, a scale with no variant — and, the part
+that matters, a cluster ANY of whose members the fort cannot supply. It checks every
+member's build filter before placing a single one, and if a placement fails partway it
+DECONSTRUCTS what it had. Half a cluster is a failure that looks like success: the
+buildings get counted, the capability is not there, and the missing member is usually the
+one the rest were built for.
+
+**Measured:** every workshop in the cluster standing with a build job carrying its full
+requirement, plus the stockpiles, plus the links.
+
+**Cost is DF's, not a count of members.** Read live from `getFiltersByType`: Siege and the
+Ashery cost three items, the forges and the Dyer's and the Millstone two, the other
+seventeen one. `Cluster.cost` sums the real table, so `metal` at size 1 costs 3 for two
+buildings.
+
+**Capability counts DISTINCT kinds.** Two Carpenter's workshops unlock no new job; they
+buy throughput. Counting the member list would make size and capability the same number
+and the agent would be choosing on one thing twice. The per-building figures are DFHack's
+own `getJobs` — and they are WORLD-SPECIFIC, which is written down where they live: it
+appends one `SmeltOre` per ore-bearing inorganic (16 in this world), and the Craftsdwarf's
+631 is one job kind repeated per instrument and per material.
+
+**What it cannot be built without.** `Cluster.needs` carries the demands that are not
+"any building material" — a manufactured QUERN item, a MILLSTONE plus TRAPPARTS, an ANVIL,
+an EMPTY barrel — and `Cluster.prereq` names the buildings that have to exist first, off
+the same measured table. `milling` is the case that proves both: three of its four members
+cost items no fort has at embark.
+
+**Both sides of every link.** A stockpile carries `links` directly; a workshop does NOT —
+its four vectors live at `profile.links`, enumerated live. Writing only one side is this
+project's signature bug and has already cost it the noble seat and the room owner.
+
+**Sending workers is NOT wired.** The field exists — `shop.profile.permitted_workers`, a
+`vector<int32_t>` of unit ids, verified live — and the owner asked for it ("когда мы можем
+посылать рабочих"). It is not written yet, and saying so is better than a verb that
+appears to do it.
+
+**Still unknown:** the cluster is laid out as one row of buildings and the stockpiles go
+wherever `find_site` puts them, which is not necessarily next to the shops they feed. A
+real player packs a cluster so the hauling distance is short.
+
+---
+
 ## apply_template
 
 Stamp one of DFHack's shipped room designs — dig, build and zone in one intent.

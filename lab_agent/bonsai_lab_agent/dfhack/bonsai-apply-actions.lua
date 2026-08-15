@@ -24,7 +24,8 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
             configure_stockpile = 0, chop_trees = 0, smooth = 0,
             build_construction = 0, set_standing_order = 0,
-            set_dig_priority = 0, apply_template = 0 }
+            set_dig_priority = 0, apply_template = 0,
+            build_workshop_cluster = 0 }
 
 -- Work orders live in _G.BONSAI_ORDERS (declared with the order code below) and survive
 -- between dispatches within one DF process. They are re-checked on every dispatch, which
@@ -1389,6 +1390,127 @@ for line in f:lines() do
                     end
                 end
             end
+        end)
+    elseif verb == "build_workshop_cluster" then
+        -- A related group of workshops, the stockpiles that feed them, and the link
+        -- between the two. The owner asked for the cluster to be chosen on declared
+        -- numbers — cost, capability, what it replenishes — and those live in the python
+        -- library; this receives the resolved membership and does what it is told:
+        --   a[2] cluster name (for the record only)
+        --   a[3] members, "W:Carpenters,W:Still" — W for workshop, F for furnace
+        --   a[4] stockpile categories, "food,wood,furniture"
+        --   a[5] width  a[6] height of the whole row
+        pcall(function()
+            local name = a[2]
+            if not name or name == '' then return end
+            local members = {}
+            for token in tostring(a[3] or ''):gmatch('[^,]+') do
+                local kind, what = token:match('^(%a):(.+)$')
+                local btype, sub
+                if kind == 'W' then
+                    btype, sub = df.building_type.Workshop, df.workshop_type[what]
+                elseif kind == 'F' then
+                    btype, sub = df.building_type.Furnace, df.furnace_type[what]
+                end
+                -- refuse the whole cluster rather than build the part we understood
+                if sub == nil then return end
+                members[#members + 1] = { btype = btype, sub = sub, what = what }
+            end
+            if #members == 0 then return end
+
+            -- ALL OR NOTHING. The declared observable is "every workshop in the cluster
+            -- exists and is reachable", so half a cluster is a failure that looks like a
+            -- success: the buildings would be counted, the capability would not be there,
+            -- and the missing member is the one the rest were built for. Check every
+            -- member can be supplied BEFORE placing any of them.
+            for _, m in ipairs(members) do
+                local filters = {}
+                local got = pcall(function()
+                    filters = dfhack.buildings.getFiltersByType({}, m.btype, m.sub, -1) or {}
+                end)
+                if not got then return end
+                for _, f in ipairs(filters) do
+                    if not can_supply(f, REACH_GROUPS) then return end
+                end
+                m.filters = filters
+            end
+
+            -- Place them in a row, each on ground the fort can walk to.
+            local built = {}
+            for _, m in ipairs(members) do
+                local fw, fh = 3, 3
+                pcall(function()
+                    local sz = dfhack.buildings.getCorrectSize(1, 1, m.btype, m.sub, -1)
+                    if sz then fw, fh = sz, sz end
+                end)
+                local x, y, z = find_site(fw, fh, 6, P.cluster or 0, 24)
+                P.cluster = (P.cluster or 0) + 1
+                if not x then break end
+                local b
+                pcall(function()
+                    b = dfhack.buildings.constructBuilding{
+                        type = m.btype, subtype = m.sub,
+                        pos = { x = x, y = y, z = z }, filters = m.filters }
+                end)
+                local reqs = 0
+                if b and #b.jobs > 0 then
+                    pcall(function() reqs = #b.jobs[0].job_items.elements end)
+                end
+                if b and reqs >= #m.filters then
+                    built[#built + 1] = b
+                elseif b then
+                    pcall(function() dfhack.buildings.deconstruct(b) end)
+                    break
+                else
+                    break
+                end
+            end
+
+            if #built < #members then
+                -- undo, so a partial cluster is never left standing
+                for _, b in ipairs(built) do
+                    pcall(function() dfhack.buildings.deconstruct(b) end)
+                end
+                return
+            end
+
+            -- The stockpiles that feed it.
+            local piles = {}
+            for cat in tostring(a[4] or ''):gmatch('[^,]+') do
+                local c2 = pile_category(cat)
+                if c2 then
+                    local x, y, z = find_site(2, 2, 4, P.stock, 24)
+                    P.stock = P.stock + 1
+                    if x then
+                        local pb
+                        pcall(function()
+                            pb = dfhack.buildings.constructBuilding{
+                                type = df.building_type.Stockpile, abstract = true,
+                                pos = { x = x, y = y, z = z }, width = 2, height = 2 }
+                        end)
+                        if pb then
+                            pile_apply(pb, { c2 }, 'set')
+                            piles[#piles + 1] = pb
+                        end
+                    end
+                end
+            end
+
+            -- LINK BOTH SIDES. A stockpile carries `links` directly; a workshop does NOT
+            -- — its four vectors live at `profile.links`, enumerated live because a
+            -- one-sided link is this project's signature failure and has already cost it
+            -- the noble seat and the room owner twice.
+            for _, pb in ipairs(piles) do
+                for _, b in ipairs(built) do
+                    pcall(function()
+                        pb.links.give_to_workshop:insert('#', b)
+                        b.profile.links.take_from_pile:insert('#', pb)
+                    end)
+                end
+            end
+
+            c.build_workshop_cluster = c.build_workshop_cluster + 1
+            _G.BONSAI_LAST_CLUSTER = { name = name, shops = #built, piles = #piles }
         end)
     elseif verb == "assign_noble" then
         pcall(function()

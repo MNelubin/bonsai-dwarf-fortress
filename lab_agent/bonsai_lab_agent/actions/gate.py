@@ -26,7 +26,9 @@ it is a model that is supposed to learn the game.
 
 from __future__ import annotations
 
-from .library import TEMPLATES_BY_NAME, start_offset
+from .library import (BUILDING_KEYS, FURNACE_KEYS, STOCKPILE_KEYS,
+                      TEMPLATES_BY_NAME, cluster as pick_cluster,
+                      start_offset)
 from .catalog import BY_NAME, CATALOG, LIVE
 from .schema import Decision, Verb
 
@@ -162,6 +164,13 @@ def judge(intent) -> Decision:
                 return Decision(False, verb=name, reason=f"{a.name!r} was empty")
             out.append(s)
 
+    if name == "build_workshop_cluster":
+        expanded = _expand_cluster(str(out[0]), int(out[1] or 1))
+        if expanded is None:
+            return Decision(False, verb=name,
+                            reason=f"no {out[0]!r} cluster at scale {out[1]}")
+        out = expanded
+
     if name == "apply_template":
         # The library is python's. Expanding here means the DFHack side never holds a
         # second copy of the template table that could drift from this one — it receives
@@ -170,6 +179,23 @@ def judge(intent) -> Decision:
         out = _expand_template(str(out[0]))
 
     return Decision(True, verb=name, args=out, repairs=notes)
+
+
+def _expand_cluster(name: str, scale: int):
+    """Resolve a cluster name into the membership the DFHack side will build.
+
+    Sent as `W:Carpenters,F:Smelter` rather than as quickfort keys, so the Lua holds no
+    second copy of the key table to drift from the library's — the same reason
+    apply_template is expanded here.
+    """
+    c = pick_cluster(name, scale)
+    if c is None:
+        return None
+    members = ",".join(
+        ("F:" if k in FURNACE_KEYS else "W:") + BUILDING_KEYS[k] for k in c.workshops)
+    piles = ",".join(STOCKPILE_KEYS[k] for k in c.stockpiles)
+    w, h = c.footprint
+    return [c.name, members, piles, w, h]
 
 
 def _expand_template(name: str) -> list:
@@ -210,7 +236,30 @@ def available_actions(include_planned: bool = False) -> list[dict]:
     of failure.
     """
     src = CATALOG if include_planned else LIVE
-    return [v.describe() for v in src]
+    out = [v.describe() for v in src]
+
+    # Emit each distinct choice list ONCE.
+    #
+    # The schema rides in every controller prompt, so a duplicated vocabulary is a bill
+    # paid on every round forever. ORDERABLE_JOBS alone was shipping twice, once for
+    # `add_workorder` and once for `add_workorder_conditional`. A repeat now says where
+    # the list already is instead of repeating it — which loses nothing, because the
+    # GATE validates against the catalog and `choices` on the wire is purely there to
+    # tell the model what is legal.
+    seen: dict[tuple, str] = {}
+    for verb in out:
+        for arg in verb["args"]:
+            choices = arg.get("choices")
+            if not choices:
+                continue
+            key = tuple(choices)
+            where = f"{verb['verb']}.{arg['name']}"
+            if key in seen:
+                del arg["choices"]
+                arg["same_as"] = seen[key]
+            else:
+                seen[key] = where
+    return out
 
 
 def roadmap() -> list[dict]:
