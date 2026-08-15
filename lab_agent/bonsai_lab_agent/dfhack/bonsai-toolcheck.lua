@@ -674,13 +674,21 @@ apply('assign_noble\tGOD_EMPEROR\tbest')
 ok('a position that does not exist is refused', nobles().GOD_EMPEROR == nil)
 
 -- ================================================================ the food chain
+-- Remember which plots existed BEFORE, so the case judges what this run built rather
+-- than what the fort has accumulated. A long-lived test fort carries plots from before
+-- the crop-and-ground rule existed — plot #10 is sown with pig tail on an `outside` tile
+-- — and failing on those says nothing about the verb under test.
+local farms_before_ids = {}
+for _, b in ipairs(w.buildings.all) do
+    if b:getType() == df.building_type.FarmPlot then farms_before_ids[b.id] = true end
+end
 local farms = buildings_of(df.building_type.FarmPlot)
 apply('build_farm_plot\t1\t1')
 local farms_now = buildings_of(df.building_type.FarmPlot)
 if farms_now > farms then
     ok('build_farm_plot builds on ground a crop grows in', true,
         string.format('%d -> %d', farms, farms_now))
-    local sown, wrong = 0, 0
+    local sown, wrong, legacy = 0, 0, 0
     for _, b in ipairs(w.buildings.all) do
         if b:getType() == df.building_type.FarmPlot then
             local i = b.plant_id[0]
@@ -694,12 +702,16 @@ if farms_now > farms then
                 end
                 local des = dfhack.maps.getTileFlags(b.x1, b.y1, b.z)
                 local outside = des and des.outside or false
-                if under == outside then wrong = wrong + 1 end
+                if under == outside then
+                    if farms_before_ids[b.id] then legacy = legacy + 1
+                    else wrong = wrong + 1 end
+                end
             end
         end
     end
-    ok('every plot is sown with a crop that grows there', wrong == 0,
-        string.format('%d sown, %d mismatched', sown, wrong))
+    ok('every plot THIS RUN built is sown with a crop that grows there', wrong == 0,
+        string.format('%d sown, %d wrong among the new ones, %d pre-existing plots '
+            .. 'already mismatched', sown, wrong, legacy))
 else
     skipped('build_farm_plot', 'no suitable ground dug yet - the refusal is correct')
 end
