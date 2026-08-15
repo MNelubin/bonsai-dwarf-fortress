@@ -746,6 +746,48 @@ do
         string.format('a 10000 bedroom serves %d ranks',
             #rv.meets('Bedroom', 10000, rv.DEMANDS)))
 
+    -- The per-tile term, which shipped wrong. It was 1 per extent cell; DF prices a
+    -- SMOOTHED tile at 4. Measured against DF's own curroom on an owned 2x2 bedroom by
+    -- poisoning the field to -777 and reopening the sheet: 4 rough -> DF said 4, one
+    -- rewritten StoneFloorSmooth -> DF said 7, restored -> 4 again.
+    ok('a smoothed tile is priced above a rough one',
+        rv.TILE_VALUE.smooth == 4 and rv.TILE_VALUE.rough == 1,
+        string.format('rough=%d smooth=%d feature=%d',
+            rv.TILE_VALUE.rough, rv.TILE_VALUE.smooth, rv.TILE_VALUE.feature))
+
+    -- The enum names this rests on, checked against the game rather than remembered.
+    ok('the tiletype names the price rests on are real',
+        df.tiletype_special.SMOOTH ~= nil and df.tiletype_material.FEATURE ~= nil
+        and df.tiletype.attrs[df.tiletype.StoneFloorSmooth].special
+            == df.tiletype_special.SMOOTH,
+        string.format('SMOOTH=%s FEATURE=%s and StoneFloorSmooth carries SMOOTH',
+            tostring(df.tiletype_special.SMOOTH), tostring(df.tiletype_material.FEATURE)))
+
+    -- End to end on the live map: smoothing one tile of a real zone must move the score
+    -- by exactly the difference, and the map must be put back.
+    local probe
+    for _, b in ipairs(w.buildings.all) do
+        if b:getType() == df.building_type.Civzone
+           and tostring(df.civzone_type[b:getSubtype()]) == 'Bedroom' then probe = b end
+    end
+    if not probe then
+        skipped('smoothing a tile moves the score by exactly its price', 'no bedroom zone')
+    else
+        local before = rv.value_of(probe)
+        local x, y, z = probe.x1, probe.y1, probe.z
+        local blk = dfhack.maps.getTileBlock(x, y, z)
+        local orig = blk.tiletype[x % 16][y % 16]
+        local was_smooth = df.tiletype.attrs[orig].special == df.tiletype_special.SMOOTH
+        blk.tiletype[x % 16][y % 16] = df.tiletype.StoneFloorSmooth
+        local after = rv.value_of(probe)
+        blk.tiletype[x % 16][y % 16] = orig
+        local restored = rv.value_of(probe)
+        local want = was_smooth and 0 or (rv.TILE_VALUE.smooth - rv.TILE_VALUE.rough)
+        ok('smoothing a tile moves the score by exactly its price',
+            after - before == want and restored == before,
+            string.format('%d -> %d -> %d, expected +%d', before, after, restored, want))
+    end
+
     ok('a bare room serves nobody', #rv.meets('Bedroom', 0, rv.DEMANDS) == 0)
     ok('a kind nobody demands is not ranked',
         rv.meets('MeetingHall', 10000, rv.DEMANDS) == nil,

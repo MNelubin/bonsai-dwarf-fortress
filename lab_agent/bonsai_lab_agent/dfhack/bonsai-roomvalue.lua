@@ -26,12 +26,12 @@
 -- throne and two beds (59), a 3x3 bedroom with one superior bed (32), and a bare 2x2
 -- bedroom (4) — exact match on all three.
 --
--- WHAT THAT VALIDATION DOES NOT COVER, stated because it bounds every score returned:
--- all three rooms were outdoor patches at z=49 on unsmoothed ground, some tiles carrying
--- saplings or shrubs, on a fort with zero engravings. Not one dug-out fortress room was
--- measured. DF's own UI says smoothing, engraving, grates, windows, statues and displayed
--- items raise room value; none of that is in this formula, so a finished room will score
--- low here until the per-tile term is re-measured underground.
+-- THAT BOUND CASHED OUT. The three validating rooms were outdoor patches at z=49 on
+-- unsmoothed ground, and the per-tile term was assumed to be 1 per cell. It is not: see
+-- TILE_VALUE below, measured underground against DF's own number. Smoothing is worth 4.
+-- What is STILL outside the formula: engraving (no value measured, and
+-- `df.global.world.engravings` does not exist on this build, so the vector has to be
+-- found before it can be priced), grates, windows, and displayed items.
 --
 -- ---------------------------------------------------------------- the names
 --
@@ -145,22 +145,74 @@ function meets(kind, value, demands)
     return names, best
 end
 
--- How many tiles the zone actually covers. The extent array is what DF paints, and a
--- zone's bounding box is not the same thing as its area.
-function zone_tiles(b)
-    local n = 0
-    local ok = pcall(function()
-        local w = b.x2 - b.x1 + 1
-        local h = b.y2 - b.y1 + 1
-        for i = 0, w * h - 1 do
-            if b.room.extents[i] ~= 0 then n = n + 1 end
+-- What one tile of a room is worth. NOT 1 per cell, which is what this module shipped
+-- first and what its own docstring warned might be wrong.
+--
+-- Measured against DF's own `view_sheets.curroom` on a 2x2 owned bedroom at z=48, by
+-- poisoning curroom to -777 and reopening the owner's sheet so a stale read could not
+-- pass as a fresh one:
+--
+--     4 rough soil tiles                     DF said 4
+--     1 of the 4 rewritten StoneFloorSmooth  DF said 7
+--     restored to soil                       DF said 4 again
+--
+-- So a smoothed tile is worth 4 where a rough one is worth 1, and the terms add per
+-- tile — swept separately over 0,1,2,3,4 smoothed of 4, DF answered 4, 7, 10, 13, 16.
+-- The old formula therefore undercounted every finished room by 3 per tile, which for a
+-- 5x5 study is 100 against 25.
+--
+-- Enum names verified live rather than remembered: `df.tiletype_special.SMOOTH` = 3 and
+-- `StoneFloorSmooth` carries it; `df.tiletype_material.FEATURE` = 3 and `FeatureFloor1`
+-- carries it. `df.tiletype.attrs[tt]` returns NUMBERS, so these are compared numerically.
+TILE_VALUE = { rough = 1, smooth = 4, feature = 2 }
+
+function tile_value(x, y, z)
+    local v = TILE_VALUE.rough
+    pcall(function()
+        local tt = dfhack.maps.getTileType(x, y, z)
+        if not tt then return end
+        local a = df.tiletype.attrs[tt]
+        if a.special == df.tiletype_special.SMOOTH then
+            v = TILE_VALUE.smooth
+        elseif a.material == df.tiletype_material.FEATURE then
+            v = TILE_VALUE.feature
         end
     end)
-    if not ok or n == 0 then
+    return v
+end
+
+-- What the zone's tiles are worth, and how many there are. The extent array is what DF
+-- paints, and a zone's bounding box is not the same thing as its area.
+--
+-- A WALL inside the extent still counts — measured, DF prices it the same as a rough
+-- floor — so a zone painted over bedrock is free value. That is DF's rule and this
+-- function reports it faithfully; refusing to exploit it belongs to whatever generates
+-- designs, not to the thing that measures them.
+function zone_tiles(b)
+    local value, cells = 0, 0
+    local ok = pcall(function()
+        local x0 = b.room.x ~= 0 and b.room.x or b.x1
+        local y0 = b.room.y ~= 0 and b.room.y or b.y1
+        local w = b.room.width > 0 and b.room.width or (b.x2 - b.x1 + 1)
+        local h = b.room.height > 0 and b.room.height or (b.y2 - b.y1 + 1)
+        for dy = 0, h - 1 do
+            for dx = 0, w - 1 do
+                if b.room.extents[dy * w + dx] ~= 0 then
+                    cells = cells + 1
+                    value = value + tile_value(x0 + dx, y0 + dy, b.z)
+                end
+            end
+        end
+    end)
+    if not ok or cells == 0 then
         -- a zone with no extents still occupies its box
-        n = (b.x2 - b.x1 + 1) * (b.y2 - b.y1 + 1)
+        cells = (b.x2 - b.x1 + 1) * (b.y2 - b.y1 + 1)
+        value = 0
+        for x = b.x1, b.x2 do
+            for y = b.y1, b.y2 do value = value + tile_value(x, y, b.z) end
+        end
     end
-    return n
+    return value, cells
 end
 
 -- The furniture DF says the zone contains. `contained_buildings` is maintained by the
@@ -179,9 +231,9 @@ function furniture_value(b)
 end
 
 function value_of(b)
-    local tiles = zone_tiles(b)
+    local tiles, cells = zone_tiles(b)
     local furniture = furniture_value(b)
-    return tiles + furniture, tiles, furniture
+    return tiles + furniture, tiles, furniture, cells
 end
 
 function rooms()
@@ -191,11 +243,11 @@ function rooms()
     for _, b in ipairs(df.global.world.buildings.all) do
         if b:getType() == df.building_type.Civzone then
             local kind = tostring(df.civzone_type[b:getSubtype()])
-            local value, tiles, furniture = value_of(b)
+            local value, tiles, furniture, cells = value_of(b)
             local names, best = meets(kind, value, demands)
             out[#out + 1] = {
                 id = b.id, kind = kind, value = value, tiles = tiles,
-                furniture = furniture, owner = b.assigned_unit_id,
+                furniture = furniture, cells = cells, owner = b.assigned_unit_id,
                 serves = names, threshold = best,
             }
         end
@@ -216,9 +268,9 @@ for _, r in ipairs(list) do
                 and string.format('>=%d: %s', r.threshold, table.concat(r.serves, ','))
                 or 'nobody'
         end
-        print(string.format('zone %-4d %-14s value=%-5d (%d tiles + %d furniture) '
+        print(string.format('zone %-4d %-14s value=%-5d (%d from %d tiles + %d furniture) '
             .. 'owner=%-6s serves %s',
-            r.id, r.kind, r.value, r.tiles, r.furniture,
+            r.id, r.kind, r.value, r.tiles, r.cells, r.furniture,
             r.owner == -1 and 'none' or tostring(r.owner), serves))
     end
 end
