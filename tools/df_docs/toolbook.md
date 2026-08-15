@@ -259,6 +259,15 @@ changing nothing.
 piles, the way DF's own UI makes you pick a type from a menu. Omitting it means
 everything. An unknown category is refused, not substituted.
 
+**How far this is proved, and how far it is not.** The settings are now identical to what
+DFHack's own quickfort produces, and DF's `getStockpileContents` answers **25, 4 and 4**
+for the three preset-configured piles against **0 and 0** for two piles whose flags were
+set by hand with the material vectors left empty — the differential the fix predicts.
+What is NOT observed is a `StoreItemInStockpile` job appearing, and the test fort cannot
+settle that: it is down to six citizens under constant `Interrupted by a tyrannosaurus
+man` cancellations, with both idle dwarves on break. Re-check on a fort that is not under
+attack before calling the hauling path proved.
+
 ---
 
 ## build_workshop
