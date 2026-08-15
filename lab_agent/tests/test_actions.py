@@ -137,14 +137,14 @@ def test_an_uninterpretable_boolean_is_refused():
 
 # ---------------------------------------------------------------- planned verbs
 def test_a_planned_verb_is_refused_with_its_tranche():
-    d = judge({"verb": "smooth"})
-    assert not d.ok and "tranche 3" in d.reason
+    d = judge({"verb": "apply_template"})
+    assert not d.ok and "tranche 4" in d.reason
 
 
 def test_planned_verbs_stay_out_of_the_advertised_actions():
     live = {a["verb"] for a in available_actions()}
-    assert "smooth" not in live
-    assert "smooth" in {a["verb"] for a in available_actions(True)}
+    assert "apply_template" not in live
+    assert "apply_template" in {a["verb"] for a in available_actions(True)}
 
 
 def test_the_roadmap_is_ordered_by_tranche():
@@ -237,13 +237,15 @@ def test_advertised_actions_carry_argument_schemas():
 
 
 def test_the_schema_stays_small_enough_to_ship_every_round():
-    """It rides in every controller prompt, so it is a running cost, not a one-off. The
-    ceiling has moved twice — once when the order verbs gained real DF condition
-    arguments and the food chain went live, once when the guide's room-and-zone set did.
-    It is a budget to defend, not a formality: at 17 verbs it is 7.7 KB, and the next
-    tranche should trim before it adds."""
+    """It rides in every controller prompt, so it is a running cost, not a one-off.
+
+    The ceiling has moved as the guide's verbs landed, and each move was paid for rather
+    than waved through: at 22 verbs the last increase was funded by dropping `category`
+    (the model never acts on it) and by emitting `required` only when false. 8.2 KB for
+    the whole player surface.
+    """
     import json
-    assert len(json.dumps(available_actions())) < 9000
+    assert len(json.dumps(available_actions())) < 8500
 
 
 def test_every_live_verb_has_a_toolbook_entry():

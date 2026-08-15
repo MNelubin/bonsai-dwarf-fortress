@@ -36,58 +36,45 @@ It now carves a solid `len × wide` room hanging off the shaft (default 4×3), w
 first column adjacent to the stair so every tile stays reachable, and rotates which side
 it uses on successive calls so the fort grows instead of re-designating.
 
-## The real blocker underneath: every pick is `foreign`
+## What actually limits digging
 
-The chamber change did not produce excavated soil, and the reason is older and larger
-than the dig shape. On the test fort, after `set_labor MINE true`:
+Not what it first looked like. Every pick on this fort carries `item.flags.foreign` —
+another civilisation's property, which dwarves will not claim — and that looked like a
+complete explanation for dig jobs nobody takes. **Refuted by clearing it:** 14 dig jobs,
+23 miners, still zero workers. `foreign` is not even abnormal; the hand-played fort is 13%
+foreign items, which is what a few years of caravans looks like.
 
-| | |
-|---|---|
-| citizens | 41 |
-| miners (MINE labour) | 30 |
-| picks in the fort | 5 |
-| dig jobs posted | 4 |
-| dig jobs **with a worker** | **0** |
-| idle citizens | 13 |
+The real limits are duller:
 
-Thirteen idle dwarves, thirty of them able to mine, four posted jobs, and nobody takes
-one. Every pick carries `item.flags.foreign` — an item belonging to another
-civilisation, which dwarves will not claim. No pick, no mining, whatever the
-designations say.
+* **Order.** Tiles one level down are unreachable until the staircase above them is cut,
+  and DF says so. A fresh batch of designations looks inert for a while and is not.
+* **Picks.** The fort has three, two lying on the ground, so at most three dwarves mine
+  however many carry the labour — measured about five tiles per 12,000 ticks.
+* **Bad squares.** Played by hand, DF cancelled work with `Dangerous terrain` and
+  `Inappropriate dig square`. Neither is visible from designation counts, and neither is
+  filtered at designation time yet.
 
-`foreign` is not by itself abnormal: the hand-played fort carries 13% foreign items,
-which is what a few years of caravans looks like. What is wrong is that **our fort's own
-picks** are flagged that way — a scripted-embark artefact, and the most plausible
-explanation yet for the long-standing symptom that designations produce no excavation.
+## Brewing: the job was right, the reagent was not
 
-**Status: strongly indicated, not yet confirmed.** Clearing the flag on three picks and
-running was cut short when the reaper reclaimed the instance, so the causal test —
-does digging start once the picks are the fort's own — still has to be run. If it holds,
-the fix belongs at embark or as an explicit repair verb, not as a silent mutation.
+Settled by playing rather than by probing. Drink went **0 → 1** while the farms regrew
+plants, with nobody touching the brewing code.
 
-## Brewing is still unshaped
+Brewing is a reaction, `BREW_DRINK_FROM_PLANT`; there is no `BrewDrink` job type on this
+build. DF does not fill `job_items` in for a DFHack-created job — a bare one is cancelled —
+so the requirements must be written, and copying the reaction's own reagents produces a job
+DF accepts and a dwarf picks up:
 
-`BrewDrink` is not in the orderable job list because its job shape is unknown, and
-guessing it would produce jobs DF cancels thousands of ticks later.
+    need type=PLANT sub=-1 mat=-1:-1 qty=1 flags=[unrotten]
+    need type=NONE  sub=-1 mat=-1:-1 qty=1 flags=[empty,food_storage]
 
-What is known:
+Every earlier attempt failed on plants synthesised with `createItem`, which DF refuses as
+"unrotten plant" — its own words, read out of `world.status.announcements`. A plump helmet
+the farm actually grew is accepted. It also needs an **empty container the fort owns**: 14
+of this fort's 15 barrels belong to another civilisation.
 
-* A workshop job whose reagent is a **specification** rather than a pinned item works —
-  DF fills it and a dwarf takes it (measured: beds 37 → 38). That is the shape the food
-  chain needs, because a real `PrepareMeal` job carries four flag-filtered requirements
-  (`unrotten`, `cookable`, one also `solid`) and no item type at all.
-* DFHack's shipped `basic.json` has a canonical `PrepareMeal` order — `meal_ingredients:
-  4`, conditions `AtLeast 20 {unrotten,cookable,solid}`, `AtLeast 80 {unrotten,cookable}`,
-  `AtMost 2000 FOOD {unrotten}` — which is a working example to copy for cooking.
-* **None of the six shipped order libraries contains a brewing order**, and no live
-  `BrewDrink` job appeared on the hand-played fort during the probe window, so there is
-  no canonical example to read. `job_item.flags1` does carry `processable_to_barrel`,
-  which is what the barrel-brewing condition in the contract doc refers to.
-
-The next experiment is cheap: build a Still, create a `BrewDrink` job with **no**
-job_items, and see whether DF populates them itself. If it does, brewing needs no
-guesswork at all.
-
+So the remaining work to make brewing a verb is bookkeeping, not discovery: order the
+reaction the way `add_workorder` orders a job, and guard it on a real plant and a free
+barrel.
 
 ## Played by hand, year 3 — what a session actually shows
 

@@ -56,8 +56,12 @@ class Arg:
             raise SchemaError(f"{self.name}: optional argument needs a default")
 
     def describe(self) -> dict:
-        d: dict[str, Any] = {"name": self.name, "type": self.kind, "doc": self.doc,
-                             "required": self.required}
+        # `required` is emitted only when FALSE: required is the default, and the flag
+        # rides in every controller prompt on every argument of every verb. The schema is
+        # a running cost, not a one-off.
+        d: dict[str, Any] = {"name": self.name, "type": self.kind, "doc": self.doc}
+        if not self.required:
+            d["required"] = False
         if self.default is not None:
             d["default"] = self.default
         if self.choices:
@@ -104,7 +108,9 @@ class Verb:
             optional_seen = optional_seen or not a.required
 
     def describe(self) -> dict:
-        d = {"verb": self.name, "category": self.category, "doc": self.doc,
+        # category is for the roadmap and this file, not for the controller: it groups
+        # verbs for a reader and the model never acts on it.
+        d = {"verb": self.name, "doc": self.doc,
              "args": [a.describe() for a in self.args]}
         if self.status != "live":
             d["status"] = self.status

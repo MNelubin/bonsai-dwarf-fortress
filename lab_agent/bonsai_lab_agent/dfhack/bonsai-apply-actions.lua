@@ -22,7 +22,9 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             add_workorder_conditional = 0, build_farm_plot = 0, set_crop = 0,
             set_kitchen_flag = 0, create_zone = 0, assign_room = 0,
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
-            configure_stockpile = 0 }
+            configure_stockpile = 0, chop_trees = 0, smooth = 0,
+            build_construction = 0, set_standing_order = 0,
+            set_dig_priority = 0 }
 
 -- Work orders live in _G.BONSAI_ORDERS (declared with the order code below) and survive
 -- between dispatches within one DF process. They are re-checked on every dispatch, which
@@ -631,7 +633,7 @@ local function free_furniture(item_name)
 end
 
 _G.BONSAI_PLACE = _G.BONSAI_PLACE or { stock = 0, shop = 0, dig = nil,
-                                      zone = 0, furn = 0 }
+                                      zone = 0, furn = 0, build = 0 }
 local P = _G.BONSAI_PLACE
 
 -- A ring of candidate build sites around the wagon, walked outwards. Keeps successive
@@ -866,6 +868,11 @@ for line in f:lines() do
                 pcall(function()
                     local des = dfhack.maps.getTileFlags(x, y, z)
                     if not des then return end
+                    -- Played by hand, DF cancelled work here in its own words:
+                    -- "cancels Dig: Dangerous terrain." A tile holding liquid is one a
+                    -- dwarf will refuse or drown in, and neither shows up in a
+                    -- designation count — the batch just quietly never finishes.
+                    if (des.flow_size or 0) > 0 then return end
                     local tt = dfhack.maps.getTileType(x, y, z)
                     local sh = tt and df.tiletype.attrs[tt].shape
                     -- only solid rock is diggable; flagging air or an existing floor
@@ -939,7 +946,7 @@ for line in f:lines() do
                 -- nothing once the ring filled: measured on a fort with three
                 -- stockpiles, `create_stockpile 1` reported 3 -> 3.
                 local placed = false
-                for _ = 1, 12 do
+                for _ = 1, 48 do
                     local x, y, z = site(P.stock, 4)
                     P.stock = P.stock + 1
                     if x and (not reach or reach.site(x, y, z, 2, 2, REACH_GROUPS)) then
@@ -982,11 +989,12 @@ for line in f:lines() do
             end
             if not item then return end          -- nothing to build it out of, so do not
                                                  -- claim we did
-            -- Try several spots on the ring before giving up. One attempt was enough on
-            -- an empty embark and silently did nothing once the ring filled: measured on
-            -- a fort with eight workshops, `build_workshop Still` reported success zero
-            -- times while sixteen logs sat free. A player looks somewhere else.
-            for _ = 1, 12 do
+            -- Try many spots before giving up. One attempt was enough on an empty
+            -- embark and silently did nothing once the ring filled: measured first on a
+            -- fort with eight workshops and again at fifteen, where twelve attempts were
+            -- no longer enough either. site() widens the ring every eight steps, so more
+            -- attempts genuinely search outward rather than retrying the same ground.
+            for _ = 1, 48 do
                 local x, y, z = site(P.shop, 8)
                 P.shop = P.shop + 1
                 -- Skip a spot nobody can reach before asking DF to build there: a
@@ -1213,6 +1221,164 @@ for line in f:lines() do
                 end
             end)
             if touched then c.configure_stockpile = c.configure_stockpile + 1 end
+        end)
+    elseif verb == "chop_trees" then
+        -- Wood is the fort's first material and it runs out. Felling uses the same
+        -- designation field as digging, set on a tile whose material is TREE.
+        pcall(function()
+            local n = math.max(1, math.min(tonumber(a[2]) or 10, 100))
+            if not u1 then return end
+            local marked = 0
+            for r = 1, 25 do
+                for dx = -r, r do
+                    for dy = -r, r do
+                        if marked >= n then break end
+                        local x, y, z = u1.pos.x + dx, u1.pos.y + dy, u1.pos.z
+                        local okt, tt = pcall(function() return dfhack.maps.getTileType(x, y, z) end)
+                        if okt and tt and df.tiletype.attrs[tt].material == df.tiletype_material.TREE then
+                            local des = dfhack.maps.getTileFlags(x, y, z)
+                            if des and des.dig == df.tile_dig_designation.No
+                                and (not reach or reach.adjacent(x, y, z, REACH_GROUPS)) then
+                                des.dig = df.tile_dig_designation.Default
+                                local blk = dfhack.maps.getTileBlock(xyz2pos(x, y, z))
+                                if blk then blk.flags.designated = true end
+                                marked = marked + 1
+                            end
+                        end
+                    end
+                end
+                if marked >= n then break end
+            end
+            if marked > 0 then
+                pcall(function() df.global.process_dig = true end)
+                c.chop_trees = c.chop_trees + marked
+            end
+        end)
+    elseif verb == "smooth" then
+        -- Smoothing raises a room's value and is the step before engraving. It applies
+        -- to dug stone, so it needs a fort that has dug some.
+        pcall(function()
+            local n = math.max(1, math.min(tonumber(a[2]) or 20, 200))
+            if not u1 then return end
+            local marked = 0
+            for dz = 0, 8 do
+                for dx = -12, 12 do
+                    for dy = -12, 12 do
+                        if marked >= n then break end
+                        local x, y, z = u1.pos.x + dx, u1.pos.y + dy, u1.pos.z - dz
+                        local okt, tt = pcall(function() return dfhack.maps.getTileType(x, y, z) end)
+                        if okt and tt then
+                            local at = df.tiletype.attrs[tt]
+                            local stone = at.material == df.tiletype_material.STONE
+                                or at.material == df.tiletype_material.MINERAL
+                            local shape = at.shape
+                            local smoothable = stone
+                                and (shape == df.tiletype_shape.WALL
+                                     or shape == df.tiletype_shape.FLOOR)
+                            local des = smoothable and dfhack.maps.getTileFlags(x, y, z)
+                            if des and des.smooth == 0
+                                and (not reach or reach.adjacent(x, y, z, REACH_GROUPS)) then
+                                des.smooth = 1
+                                local blk = dfhack.maps.getTileBlock(xyz2pos(x, y, z))
+                                if blk then blk.flags.designated = true end
+                                marked = marked + 1
+                            end
+                        end
+                    end
+                end
+                if marked >= n then break end
+            end
+            if marked > 0 then
+                pcall(function() df.global.process_dig = true end)
+                c.smooth = c.smooth + marked
+            end
+        end)
+    elseif verb == "build_construction" then
+        -- Walls, floors, ramps and stairs built out of stored material: how a fort makes
+        -- space it did not dig, and how it seals what it did.
+        pcall(function()
+            local kindname = a[2] or "Floor"
+            local sub = df.construction_type[kindname]
+            if sub == nil then return end
+            local count = math.max(1, math.min(tonumber(a[3]) or 1, 20))
+            for _ = 1, count do
+                local item = free_material(df.item_type.BOULDER, df.item_type.WOOD)
+                if not item then break end
+                local placed = false
+                for _ = 1, 12 do
+                    local x, y, z = site(P.build or 0, 6)
+                    P.build = (P.build or 0) + 1
+                    if x and (not reach or reach.site(x, y, z, 1, 1, REACH_GROUPS)) then
+                        local b = dfhack.buildings.constructBuilding {
+                            type = df.building_type.Construction, subtype = sub,
+                            pos = xyz2pos(x, y, z), items = { item },
+                        }
+                        if b and #b.jobs > 0 and #b.jobs[0].items > 0 then
+                            c.build_construction = c.build_construction + 1
+                            placed = true
+                        end
+                    end
+                    if placed then break end
+                end
+                if not placed then break end
+            end
+        end)
+    elseif verb == "set_standing_order" then
+        -- Fort-wide policy. Fifty of these exist as df.global.standing_orders_*, and the
+        -- guide singles out refuse collection: leave it on and dwarves haul rotting
+        -- vermin indoors, turn it off and the surface stays a rubbish tip.
+        pcall(function()
+            local name = a[2]
+            if not name or name == "" then return end
+            local key = "standing_orders_" .. name
+            if df.global[key] == nil then return end
+            local on = not (a[3] == "False" or a[3] == "false" or a[3] == "0")
+            df.global[key] = on and 1 or 0
+            c.set_standing_order = c.set_standing_order + 1
+        end)
+    elseif verb == "set_dig_priority" then
+        -- Priority is NOT a field on the map block, which is why a first look concluded
+        -- the mechanic did not exist on this build. It lives in a block_square_event of
+        -- type designation_priority, indexed by pos % 16 and stored as priority * 1000 вЂ”
+        -- read out of DFHack's own quickfort/dig.lua rather than guessed at.
+        pcall(function()
+            local want = math.max(1, math.min(tonumber(a[2]) or 4, 7))
+            if not u1 then return end
+            local P2 = P.dig or { u1.pos.x, u1.pos.y, u1.pos.z }
+            local ox, oy, oz = P2[1], P2[2], P2[3]
+            local touched = 0
+            for dz = 0, 10 do
+                for dx = -8, 8 do
+                    for dy = -8, 8 do
+                        local x, y, z = ox + dx, oy + dy, oz - dz
+                        local okd, des = pcall(function()
+                            return dfhack.maps.getTileFlags(x, y, z)
+                        end)
+                        if okd and des and des.dig ~= df.tile_dig_designation.No then
+                            pcall(function()
+                                local blk = dfhack.maps.getTileBlock(xyz2pos(x, y, z))
+                                if not blk then return end
+                                local pbse
+                                for _, ev in ipairs(blk.block_events) do
+                                    if ev:getType()
+                                        == df.block_square_event_type.designation_priority then
+                                        pbse = ev
+                                    end
+                                end
+                                if not pbse then
+                                    blk.block_events:insert('#',
+                                        { new = df.block_square_event_designation_priorityst })
+                                    pbse = blk.block_events[#blk.block_events - 1]
+                                end
+                                pbse.priority[x % 16][y % 16] = want * 1000
+                                blk.flags.designated = true
+                                touched = touched + 1
+                            end)
+                        end
+                    end
+                end
+            end
+            if touched > 0 then c.set_dig_priority = c.set_dig_priority + touched end
         end)
     elseif verb == "build_farm_plot" then
         -- Without this the fort eats what it embarked with and then starves. Plots need

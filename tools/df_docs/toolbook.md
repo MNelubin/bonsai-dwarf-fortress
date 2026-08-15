@@ -655,3 +655,102 @@ the one asked for, which is that act.
 **Still unknown:** it is one category per call, all-or-nothing within that category. DF's
 settings are per-subtype (food → seeds, drink, meat…) and the barrel/bin toggle is not
 wired up.
+
+---
+
+## chop_trees
+
+Mark surface trees for felling.
+
+**Refuses:** a tile that is not a tree, one already designated, and — since it consults
+`bonsai-reach` — one nothing can stand next to. Felling uses the same designation field as
+digging, set on a tile whose material is `TREE`, and needs the block's `designated` flag
+like every other designation.
+
+**Measured:** 8 trees marked on a live fort, out of 21 within twenty tiles.
+
+**Why it matters:** wood is the fort's first material and it runs out. Beds, barrels,
+doors and the constructed walls that seal a breach all come from it, and an embark brings
+about a dozen logs.
+
+**Still unknown:** it takes the nearest trees rather than a chosen stand, and nothing stops
+it clear-cutting the entrance.
+
+---
+
+## smooth
+
+Smooth dug stone.
+
+**Refuses:** anything that is not stone or mineral, anything already smoothed, and
+anything unreachable.
+
+**Measured:** 20 tiles marked on a live fort.
+
+**Why it earns a verb:** it does double duty — it raises a room's value, which is what
+makes a bedroom worth having, and it is the cheap way through an aquifer because a smoothed
+wall stops seeping.
+
+**Still unknown:** engraving is the second half (`smooth = 2`) and is not exposed, and
+there is no way to smooth *a room* rather than a radius.
+
+---
+
+## build_construction
+
+Build a wall, floor, ramp or staircase out of stored material.
+
+**Refuses:** a construction type outside DF's own list (Fortification, Wall, Floor,
+UpStair, DownStair, UpDownStair, Ramp and the track pieces), a site nothing can reach, and
+a fort with no free stone or wood — it claims a reagent up front, like `build_workshop`,
+because a construction job without one is cancelled and removed.
+
+**Measured:** 2 floors placed on a live fort.
+
+**Why it matters:** it is how a fort makes space it did not dig and seals what it did, and
+it is half the standard aquifer technique.
+
+---
+
+## set_standing_order
+
+Flip one of DF's fifty fort-wide policies.
+
+**Refuses:** a name that is not one of the `df.global.standing_orders_*` globals — there
+are exactly 50 and they are enumerated live, not remembered.
+
+**Measured:** `gather_refuse_outside` turned off on a live fort.
+
+**Why the guide singles this one out:** leave refuse collection on and dwarves haul rotting
+vermin indoors past the food; turn it off and the surface becomes a rubbish tip. It is
+policy, not an action, and it is the kind of thing a fort lives or dies by without anyone
+noticing it was set.
+
+**Still unknown:** the fifty are exposed by name with no grouping or explanation, so the
+agent has to know which one it wants.
+
+---
+
+## set_dig_priority
+
+Set the priority of mining designations, 1 highest to 7 lowest.
+
+**Refuses:** nothing — it clamps to 1..7 and applies to every outstanding designation
+around the shaft, reporting how many tiles it touched.
+
+**I reported this mechanic as absent, and that was wrong.** `map_block` carries
+`designation`, `occupancy`, `tiletype` and `walkable` and no priority array, and I
+concluded from that one missing field that the build did not support it. The owner said
+otherwise, and they were right.
+
+**Where it actually lives.** Not a field on the block but a **block square event** of type
+`designation_priority`, indexed by `pos % 16` and stored as `priority * 1000`. Created on
+demand if the block has none. This is exactly how DFHack's own `quickfort/dig.lua` writes
+it — read the working implementation rather than concluding from an absence.
+
+**Measured:** 185 designated tiles set to priority 2, read back from the game as
+`priority=2000` on `DownStair` and `Default` designations alike.
+
+**Why it matters:** at priority 2 dwarves stop wandering off to haul instead of dig, which
+on a fort that mines at five tiles per 12,000 ticks is the difference between a chamber
+this season and next.

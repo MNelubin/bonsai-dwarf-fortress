@@ -339,7 +339,7 @@ CATALOG: tuple[Verb, ...] = (
     # ================================================================ TRANCHE 3
     # The terrain vocabulary. Mostly what it takes to survive an aquifer.
     Verb(
-        name="chop_trees", category="terrain", status="planned", tranche=3,
+        name="chop_trees", category="terrain", tranche=0,
         doc="Mark surface trees for felling.",
         observable="log count rises",
         args=(Arg("count", "int", "how many trees", lo=1, hi=60,
@@ -349,7 +349,7 @@ CATALOG: tuple[Verb, ...] = (
              "aquifer, so this feeds three other chains.",
     ),
     Verb(
-        name="build_construction", category="terrain", status="planned", tranche=3,
+        name="build_construction", category="terrain", tranche=0,
         doc="Build a wall, floor, ramp or staircase out of stored material.",
         observable="the tiletype at the position becomes a construction",
         args=(
@@ -363,7 +363,7 @@ CATALOG: tuple[Verb, ...] = (
              "that was dug in the wrong order (29:02).",
     ),
     Verb(
-        name="smooth", category="terrain", status="planned", tranche=3,
+        name="smooth", category="terrain", tranche=0,
         doc="Smooth dug stone. Stops aquifer seepage and makes rooms worth more.",
         observable="tile special becomes SMOOTH; room value rises",
         args=(Arg("count", "int", "how many tiles", lo=1, hi=200,
@@ -373,15 +373,20 @@ CATALOG: tuple[Verb, ...] = (
              "cheap way to make a bedroom please its owner.",
     ),
     Verb(
-        name="set_dig_priority", category="terrain", status="planned", tranche=3,
+        name="set_dig_priority", category="terrain", tranche=0,
         doc="Set the priority of mining designations, 1 highest to 7 lowest.",
         observable="the designation priority, and miners keeping to mining",
         args=(Arg("priority", "int", "1..7", lo=1, hi=7, required=False, default=4),),
         guide="14:20",
-        note="At priority 2 dwarves stop wandering off to haul instead of dig.",
+        note="At priority 2 dwarves stop wandering off to haul instead of dig. I first "
+             "reported this mechanic as absent because map_block has no priority array - "
+             "wrong, and the owner said so. It is stored in a block_square_event of type "
+             "designation_priority, indexed by pos %% 16 and held as priority * 1000, "
+             "which is how DFHack's own quickfort/dig.lua writes it. Read the working "
+             "implementation instead of concluding from one missing field.",
     ),
     Verb(
-        name="set_standing_order", category="logistics", status="planned", tranche=3,
+        name="set_standing_order", category="logistics", tranche=0,
         doc="Flip a fort-wide standing order, such as collecting refuse left outdoors.",
         observable="the standing order flag",
         args=(

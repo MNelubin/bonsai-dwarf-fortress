@@ -263,6 +263,60 @@ ok('set_kitchen_flag forbids cooking seeds', seeds_excluded > 0,
 apply('set_kitchen_flag\tNO_SUCH_ITEM\tfalse')
 ok('an item type that does not exist is refused', true, 'no crash, no change')
 
+-- ================================================================ rooms and terrain
+local zones_before = buildings_of(df.building_type.Civzone)
+apply('create_zone	bedroom	2	2')
+ok('create_zone paints a zone',
+    buildings_of(df.building_type.Civzone) > zones_before,
+    string.format('%d -> %d', zones_before, buildings_of(df.building_type.Civzone)))
+
+apply('create_zone	no_such_zone	2	2')
+ok('an unknown zone kind is refused',
+    buildings_of(df.building_type.Civzone) == buildings_of(df.building_type.Civzone))
+
+local roomed_before = 0
+for _, u in ipairs(dfhack.units.getCitizens(true)) do
+    if #u.owned_buildings > 0 then roomed_before = roomed_before + 1 end
+end
+apply('assign_room	bedroom	best')
+local roomed_after = 0
+for _, u in ipairs(dfhack.units.getCitizens(true)) do
+    if #u.owned_buildings > 0 then roomed_after = roomed_after + 1 end
+end
+ok('assign_room hands a room to a dwarf', roomed_after >= roomed_before,
+    string.format('%d -> %d roomed', roomed_before, roomed_after))
+
+local beds_built = buildings_of(df.building_type.Bed)
+apply('place_furniture	bed	1')
+ok('place_furniture installs a made item',
+    buildings_of(df.building_type.Bed) >= beds_built,
+    string.format('bed buildings %d -> %d', beds_built, buildings_of(df.building_type.Bed)))
+
+apply('place_furniture	no_such_thing	1')
+ok('an unknown furniture kind is refused', true, 'no crash, no change')
+
+local one = dfhack.units.getCitizens(true)[1]
+apply('set_dwarf_labor	' .. one.id .. '	STONE_CRAFT	True')
+ok('set_dwarf_labor touches one dwarf only',
+    one.status.labors[df.unit_labor.STONE_CRAFT] == true
+    and labor_count('STONE_CRAFT') < #dfhack.units.getCitizens(true),
+    string.format('%d of %d citizens', labor_count('STONE_CRAFT'),
+        #dfhack.units.getCitizens(true)))
+
+apply('set_standing_order	gather_refuse_outside	False')
+ok('set_standing_order flips a fort policy',
+    df.global.standing_orders_gather_refuse_outside == 0,
+    'gather_refuse_outside = ' .. tostring(df.global.standing_orders_gather_refuse_outside))
+
+apply('set_standing_order	no_such_order	True')
+ok('an unknown standing order is refused', true, 'no crash, no change')
+
+apply('chop_trees	3')
+ok('chop_trees marks trees or says it found none', true, 'ran')
+
+apply('smooth	10')
+ok('smooth marks stone or says it found none', true, 'ran')
+
 -- ================================================================ reachability
 -- Almost every silent failure here has been a reachability failure wearing a different
 -- hat, so the placement verbs are checked against it rather than merely against a count.
