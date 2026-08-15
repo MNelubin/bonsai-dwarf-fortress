@@ -57,10 +57,19 @@ def to_quickfort(d: Design, name: str = "bonsai") -> str:
         rows.append(",".join(line) + ",#")
     rows.append(",".join(["#"] * (d.w + 1)))
 
-    # ---- meta: smoothing, engraving, the zone and the build, once the digging is done
+    # ---- meta: smoothing, the zone and the build, once the digging is done.
+    #
+    # ENGRAVE IS DELIBERATELY NOT IN THIS CHAIN. quickfort's `do_meta` applies chained
+    # sections back to back inside one call, and `dig.lua do_engrave` returns nil unless
+    # the TILETYPE is already smooth — a pending smooth designation is not smooth. So
+    # chaining them made quickfort print "successfully completed" while designating zero
+    # engravings, and the offline score then claimed 502 for a room DF scored 322. That
+    # was demonstrated live and it had already shipped.
+    #
+    # The engrave grid is a top-level section the caller applies in a LATER call, once
+    # the smoothing jobs have actually finished.
     rows.append(f'"#meta label(rooms) start(1;1) {name} rooms"')
     rows.append("smooth/smooth,#")
-    rows.append("engrave/engrave,#")
     rows.append("zone/zone,#")
     rows.append("build/build,#")
     rows.append(",".join(["#"] * (d.w + 1)))

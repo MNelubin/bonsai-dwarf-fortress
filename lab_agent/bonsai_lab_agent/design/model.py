@@ -51,6 +51,23 @@ from dataclasses import dataclass, field
 #
 # The ladder is NOT monotonic — Masterful adds 120 and Artifact 70. Surprising enough to
 # write down rather than smooth over; it was read twice.
+# THESE ARE LOWER BOUNDS, not exact values, and the difference matters because this
+# module's whole job is to not overrate a design.
+#
+# The per-tile term depends on the tile's MATERIAL as well as its finish. Swept on an
+# owned zone: MineralFloorSmooth and ConstructedFloor read 3 above rough, FeatureFloorSmooth
+# 10 above, LavaFloorSmooth 17 above. Neither that sweep nor the one that produced the
+# engraving ladder is sound enough to ship as a table — both forced tiletypes into a SOIL
+# block, so only the tiletype's material class varied while the block's stored material
+# stayed soil, and StoneFloorSmooth then read the same as rough. Ordinary stone is the
+# cheapest case, so taking it is safe; a fort cutting into obsidian will simply do better
+# than the search promised.
+#
+# AND SOIL CANNOT BE SMOOTHED AT ALL. quickfort's `dig.lua` lists
+# hard_natural_materials = {STONE, FEATURE, LAVA_STONE, MINERAL, FROZEN_LIQUID} and
+# `do_smooth` refuses anything else, so both 's' and 'e' are silent no-ops in a soil
+# layer. This model has no notion of the layer it will be stamped into, which is the
+# largest thing still wrong with it.
 TILE_VALUE = {".": 1, "s": 4, "e": 14}
 
 ENGRAVING_VALUE = {0: 10, 1: 20, 2: 30, 3: 40, 4: 50, 5: 120, 6: 70}
@@ -182,6 +199,12 @@ class Requirement:
     material_value: int = 1         # what the fort's commonest stone or wood is worth
     quality: int = 0                # what its craftsdwarves reliably produce
     allow_smooth: bool = True
+    # Engraving is only worth banking if somebody will RUN the engrave pass after the
+    # smoothing finishes. One application of the blueprint does not deliver it — the
+    # engrave section is deliberately outside the meta chain, because chaining it made
+    # quickfort report success and designate nothing. Default False, so the search does
+    # not promise value the fort will not get.
+    deliver_engraving: bool = False
 
     @property
     def demand(self) -> int:
@@ -244,8 +267,15 @@ class Design:
         return tuple((x, y) for y in range(self.h) for x in range(self.w)
                      if self.cells[y][x] in TILE_VALUE)
 
-    def value(self, material_value: int = 1, quality: int = 0) -> int:
-        tiles = sum(TILE_VALUE[self.cells[y][x]] for x, y in self.zone_cells)
+    def value(self, material_value: int = 1, quality: int = 0,
+              deliver_engraving: bool = True) -> int:
+        tiles = 0
+        for x, y in self.zone_cells:
+            ch = self.cells[y][x]
+            if ch == "e" and not deliver_engraving:
+                tiles += TILE_VALUE["s"]      # what one application actually delivers
+            else:
+                tiles += TILE_VALUE[ch]
         furniture = sum(item_value(k, material_value, quality) for _, _, k in self.pieces)
         return tiles + furniture
 
@@ -267,7 +297,8 @@ def score(design: Design, req: Requirement) -> int:
     minimises cost subject to MEETING the demand, and the shortfall term gives an
     infeasible design a direction to walk rather than a flat wall.
     """
-    short = max(0, req.demand - design.value(req.material_value, req.quality))
+    short = max(0, req.demand - design.value(req.material_value, req.quality,
+                                             req.deliver_engraving))
     return -SHORTFALL_WEIGHT * short - design.cost()
 
 

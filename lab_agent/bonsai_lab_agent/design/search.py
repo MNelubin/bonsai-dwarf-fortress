@@ -237,7 +237,10 @@ def anneal(req: Requirement, seed: int = 0, max_evals: int = 4000,
             cur[worst], cur_score[worst] = best, best_score
 
     reasons = tuple(validate(best, req))
-    feasible = not reasons and best.value(req.material_value, req.quality) >= req.demand
+    # feasibility has to use the SAME value the objective used, or the search can certify
+    # a room on value it did not optimise for
+    feasible = not reasons and best.value(req.material_value, req.quality,
+                                          req.deliver_engraving) >= req.demand
     return Result(best=best, best_score=best_score, seed_score=seed_score,
                   evaluations=evals, attempts=attempts, feasible=feasible,
                   reasons=reasons)

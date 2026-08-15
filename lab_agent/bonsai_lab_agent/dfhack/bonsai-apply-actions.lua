@@ -813,12 +813,28 @@ local function assign_worker(b, unit)
     -- about what ought to be true rather than from asking.
     --
     -- The LABOUR guard below is different: it is measured, and it is the one that matters.
+
+    -- Traps carry a profile too — building_trapst has `permitted_workers` — so gating on
+    -- the field alone would quietly accept a lever. Decide it rather than inherit it.
+    if b:getType() == df.building_type.Trap then
+        return false, 'a trap is not a workshop; assign its puller some other way'
+    end
+
+    -- AND IT MUST FAIL CLOSED. `get_profile_labors` is a hardcoded 16-entry UI table, not
+    -- a labour oracle: measured live, it returns {} for 17 of the 33 profile-bearing
+    -- subtypes — Mechanics, Kitchen, Loom, Tanners, Clothiers, Dyers, Bowyers, Siege,
+    -- Leatherworks, Kennels, Tool, and every furnace but two. Reading an empty list as
+    -- "no requirement" meant that for exactly those seventeen this guard would have
+    -- created the 2,760-frame silent stall it exists to prevent.
     local labors = {}
     pcall(function()
         labors = require('plugins.orders').get_profile_labors(b:getType(), b:getSubtype())
                  or {}
     end)
-    local can = (#labors == 0)
+    if #labors == 0 then
+        return false, 'no labour list for this building kind, so a master would stall it'
+    end
+    local can = false
     for _, name in ipairs(labors) do
         local id = df.unit_labor[name]
         if id and unit.status.labors[id] then can = true end
@@ -848,9 +864,10 @@ local function worker_for(b, taken)
         labors = require('plugins.orders').get_profile_labors(b:getType(), b:getSubtype())
                  or {}
     end)
+    if #labors == 0 then return nil end        -- fail closed, same as assign_worker
     local fallback
     for _, u in ipairs(cits) do
-        local can = (#labors == 0)
+        local can = false
         for _, name in ipairs(labors) do
             local id = df.unit_labor[name]
             if id and u.status.labors[id] then can = true end
