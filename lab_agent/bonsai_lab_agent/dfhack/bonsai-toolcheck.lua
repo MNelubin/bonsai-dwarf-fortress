@@ -881,19 +881,31 @@ else
     -- A log that exists but cannot be walked to is a real reachability defect. No log at
     -- all is a fort that has not chopped anything yet, and saying FAIL to that teaches
     -- nothing — it just trains us to ignore a red line.
-    local material, logs = nil, 0
+    -- Count only the fort's OWN logs. At embark every item is inside the wagon and
+    -- flagged `foreign` — measured, and it does not clear: after 6,000 ticks with working
+    -- stockpiles the fort had chopped 33 usable logs while the wagon's three were still
+    -- foreign. So "3 logs exist and none is walkable to" was a frame-0 fact about the
+    -- wagon, not the reachability defect this case exists to catch.
+    local material, logs, wagon = nil, 0, 0
     for _, i in ipairs(w.items.all) do
         if i:getType() == df.item_type.WOOD then
-            logs = logs + 1
-            if reach.item(i, groups) then material = i end
+            if i.flags.foreign then
+                wagon = wagon + 1
+            else
+                logs = logs + 1
+                if reach.item(i, groups) then material = i end
+            end
         end
     end
     if logs == 0 then
-        skipped('a claimable reagent is reachable', 'nothing has been chopped yet')
+        skipped('a claimable reagent is reachable',
+            string.format('nothing chopped yet; the %d logs on the fort are still in '
+                .. 'the wagon and read as another civilisation property', wagon))
     else
         ok('a claimable reagent is reachable', material ~= nil,
             material and ('log ' .. material.id)
-                or string.format('%d logs exist and NONE is walkable to', logs))
+                or string.format('%d logs the fort OWNS exist and NONE is walkable to',
+                                 logs))
     end
 
     -- Not an assertion: DF's own words about what it could not finish. A cancellation is

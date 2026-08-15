@@ -922,3 +922,43 @@ it — read the working implementation rather than concluding from an absence.
 **Why it matters:** at priority 2 dwarves stop wandering off to haul instead of dig, which
 on a fort that mines at five tiles per 12,000 ticks is the difference between a chamber
 this season and next.
+
+---
+
+## Resetting the scratch fort
+
+The test fort accumulates. After a day of battery runs port 5006 carried 164 buildings,
+700+ dig designations and farm plots from before the crop rule existed — and three separate
+red lines that session turned out to be that state rather than the code. Reset it when the
+placement cases start skipping for want of room.
+
+Nothing is written to disk unless DF saves, so a reload restores the fort exactly.
+
+    # 1. reboot the 53.16 build on the scratch port. It kills only that port's DF; the
+    #    supervised fort on 5000 is never touched, and boot16.sh checks that.
+    bash /srv/df-bonsai/boot16.sh 5006 ourfort16 7200
+
+    # 2. LOAD THE SAVE BY HAND. Two things that look like they would do this do not:
+    #      * boot16.sh's header promises "the same battle-tested menu walk" and the file
+    #        is 31 lines that stop after BOOTED — there is no walk in it.
+    #      * DFHack's `load-save` script is marked UNTESTED for this version and dies on
+    #        `Cannot write field viewscreen_titlest.sel_menu_line: not found`.
+    #    So drive the menu, which is what bonsai_session.sh has always done:
+    ./dfhack-run click-text "Continue active game"
+    ./dfhack-run click-text "The Planets of Dawning"    # repeat until the save is listed
+    ./dfhack-run click-text "ourfort16"
+    # then poll df.global.cur_year_tick until it is non-zero
+
+    # 3. prep it the way every episode does
+    ./dfhack-run bonsai-headless-init
+    ./dfhack-run lua "df.global.world.status.popups:resize(0); df.global.pause_state=true"
+
+Verified: 164 buildings -> 1, frame 0, seven citizens. A backup of the save sits at
+`/srv/df-bonsai/backups/ourfort16-pre-reset` because `load-save` warns it may corrupt a
+game, and the save directory is writable.
+
+**The order battery needs a BUILT workshop**, and a freshly loaded fort has none — every
+shop it places sits at stage 0 until a dwarf walks over. Run the fort a few thousand frames
+after placing one (`bonsai-run 10000 2500`) before expecting `bonsai-ordercheck` to
+exercise anything. It aborts with `ABORT: no workshop; build one first` rather than
+pretending.
