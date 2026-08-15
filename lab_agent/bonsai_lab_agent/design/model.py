@@ -35,14 +35,32 @@ from dataclasses import dataclass, field
 # and swept over 0,1,2,3,4 smoothed of 4, DF answered 4, 7, 10, 13, 16 — additive, per
 # tile. Smoothing is the single biggest lever the search has, and quickfort can emit it
 # (dig key 's'), which is why it is in the representation at all.
-TILE_VALUE = {".": 1, "s": 4}
+# An ENGRAVED cell is a smoothed one that also carries an engraving, so its 14 is 4 + 10.
+#
+# Engravings are not on the tile at all: an engraved floor is still StoneFloorSmooth with
+# special = SMOOTH, which is why a tiletype-only scorer is structurally blind to them. They
+# are records in `df.global.world.event.engravings` — NOT `world.engravings`, which does
+# not exist on this build — matched to a tile by `pos` in all three axes.
+#
+# Measured with the same poison-and-reopen oracle that established smooth = 4, by adding
+# one record to a 2x2 bedroom worth 4 and sweeping its quality. DF answered:
+#
+#     quality  0    1    2    3    4    5     6
+#     curroom  14   24   34   44   54   124   74
+#     adds     +10  +20  +30  +40  +50  +120  +70
+#
+# The ladder is NOT monotonic — Masterful adds 120 and Artifact 70. Surprising enough to
+# write down rather than smooth over; it was read twice.
+TILE_VALUE = {".": 1, "s": 4, "e": 14}
 
-# ENGRAVING IS NOT PRICED and the search must not emit it. quickfort has a key for it
-# (dig 'e'), but there is no ENGRAVED entry in `df.tiletype_special` and
-# `df.global.world.engravings` does not exist on this build, so the vector that holds them
-# has to be found before the oracle can price one. Emitting an unpriced improvement would
-# make the offline score drift from DF silently, in the optimistic direction.
-ALLOW_ENGRAVE = False
+ENGRAVING_VALUE = {0: 10, 1: 20, 2: 30, 3: 40, 4: 50, 5: 120, 6: 70}
+
+# The search banks the GUARANTEED 10, not the expected value. A real engraver routinely
+# lands quality 2-5, worth 30 to 120, but a blueprint cannot request a quality — so
+# counting on anything above Ordinary would make the offline score drift from DF in the
+# optimistic direction, which is exactly what this guard was written to prevent.
+# Underrating is safe; overrating is not.
+ALLOW_ENGRAVE = True
 
 # Base value of a piece of furniture, before material and quality.
 BASE_ITEM_VALUE = {"s": 25}          # a statue; everything else is 10
@@ -135,6 +153,7 @@ REQUIRED_VALUE = {
 # plus the haul plus the build.
 DIG_COST = 1
 SMOOTH_COST = 1
+ENGRAVE_COST = 1        # an engraved cell is three jobs: mine it, smooth it, engrave it
 BUILD_COST = 3
 
 # How hard a shortfall against the demand hurts. Large enough that no amount of saved
@@ -186,6 +205,7 @@ class Design:
         '#'  undug rock: the wall ring, and any pillar
         '.'  dug interior, in the zone, rough
         's'  dug interior, in the zone, smoothed
+        'e'  dug, smoothed AND engraved — DF will not engrave rough stone
         '+'  the doorway: dug, NOT in the zone
         ' '  the corridor tile outside the door
     """
@@ -230,9 +250,11 @@ class Design:
         return tiles + furniture
 
     def cost(self) -> int:
-        dug = sum(1 for row in self.cells for ch in row if ch in ".s+")
-        smoothed = sum(1 for row in self.cells for ch in row if ch == "s")
-        return DIG_COST * dug + SMOOTH_COST * smoothed + BUILD_COST * len(self.pieces)
+        dug = sum(1 for row in self.cells for ch in row if ch in ".se+")
+        smoothed = sum(1 for row in self.cells for ch in row if ch in "se")
+        engraved = sum(1 for row in self.cells for ch in row if ch == "e")
+        return (DIG_COST * dug + SMOOTH_COST * smoothed + ENGRAVE_COST * engraved
+                + BUILD_COST * len(self.pieces))
 
 
 def score(design: Design, req: Requirement) -> int:

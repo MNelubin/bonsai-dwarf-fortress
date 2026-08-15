@@ -166,7 +166,34 @@ end
 -- carries it. `df.tiletype.attrs[tt]` returns NUMBERS, so these are compared numerically.
 TILE_VALUE = { rough = 1, smooth = 4, feature = 2 }
 
-function tile_value(x, y, z)
+-- What an ENGRAVING adds, by quality. A whole term the scorer was blind to.
+--
+-- Engravings do not live on the tile: an engraved floor is still `StoneFloorSmooth` with
+-- special = SMOOTH, so a tiletype-only scorer cannot see one at all. They are records in
+-- `df.global.world.event.engravings` (NOT `world.engravings`, which does not exist on this
+-- build), matched to a tile by `pos` in all three axes.
+--
+-- Measured on an owned 2x2 bedroom worth 4, by adding ONE record and sweeping its quality
+-- with the poison-and-reopen oracle: DF answered 14, 24, 34, 44, 54, 124, 74.
+--
+-- The ladder is NOT monotonic. Masterful (5) adds 120 and Artifact (6) adds 70. That is
+-- surprising enough to be worth writing down rather than smoothing over; it was read twice.
+ENGRAVING_VALUE = { [0] = 10, [1] = 20, [2] = 30, [3] = 40, [4] = 50, [5] = 120, [6] = 70 }
+
+-- Index every engraving once per report rather than once per zone. The vector is short on
+-- a young fort and thousands of records long on an old one, and rooms() walks every zone.
+local function engraving_index()
+    local by = {}
+    pcall(function()
+        for _, e in ipairs(df.global.world.event.engravings) do
+            local k = e.pos.z * 1000000 + e.pos.y * 1000 + e.pos.x
+            by[k] = (by[k] or 0) + (ENGRAVING_VALUE[e.quality] or 0)
+        end
+    end)
+    return by
+end
+
+function tile_value(x, y, z, engravings)
     local v = TILE_VALUE.rough
     pcall(function()
         local tt = dfhack.maps.getTileType(x, y, z)
@@ -178,6 +205,9 @@ function tile_value(x, y, z)
             v = TILE_VALUE.feature
         end
     end)
+    if engravings then
+        v = v + (engravings[z * 1000000 + y * 1000 + x] or 0)
+    end
     return v
 end
 
@@ -188,7 +218,7 @@ end
 -- floor — so a zone painted over bedrock is free value. That is DF's rule and this
 -- function reports it faithfully; refusing to exploit it belongs to whatever generates
 -- designs, not to the thing that measures them.
-function zone_tiles(b)
+function zone_tiles(b, engravings)
     local value, cells = 0, 0
     local ok = pcall(function()
         local x0 = b.room.x ~= 0 and b.room.x or b.x1
@@ -199,7 +229,7 @@ function zone_tiles(b)
             for dx = 0, w - 1 do
                 if b.room.extents[dy * w + dx] ~= 0 then
                     cells = cells + 1
-                    value = value + tile_value(x0 + dx, y0 + dy, b.z)
+                    value = value + tile_value(x0 + dx, y0 + dy, b.z, engravings)
                 end
             end
         end
@@ -209,7 +239,7 @@ function zone_tiles(b)
         cells = (b.x2 - b.x1 + 1) * (b.y2 - b.y1 + 1)
         value = 0
         for x = b.x1, b.x2 do
-            for y = b.y1, b.y2 do value = value + tile_value(x, y, b.z) end
+            for y = b.y1, b.y2 do value = value + tile_value(x, y, b.z, engravings) end
         end
     end
     return value, cells
@@ -230,20 +260,21 @@ function furniture_value(b)
     return total
 end
 
-function value_of(b)
-    local tiles, cells = zone_tiles(b)
+function value_of(b, engravings)
+    local tiles, cells = zone_tiles(b, engravings or engraving_index())
     local furniture = furniture_value(b)
     return tiles + furniture, tiles, furniture, cells
 end
 
 function rooms()
+    local engravings = engraving_index()
     local demands = live_demands()
     if #demands == 0 then demands = DEMANDS end
     local out = {}
     for _, b in ipairs(df.global.world.buildings.all) do
         if b:getType() == df.building_type.Civzone then
             local kind = tostring(df.civzone_type[b:getSubtype()])
-            local value, tiles, furniture, cells = value_of(b)
+            local value, tiles, furniture, cells = value_of(b, engravings)
             local names, best = meets(kind, value, demands)
             out[#out + 1] = {
                 id = b.id, kind = kind, value = value, tiles = tiles,

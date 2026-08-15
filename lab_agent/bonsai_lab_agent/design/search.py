@@ -23,14 +23,15 @@ import math
 import random
 from dataclasses import dataclass
 
-from .model import (FUNCTIONAL, PIECE_KEYS, Design, Requirement, TILE_VALUE, bare_room,
-                    score)
+from .model import (ALLOW_ENGRAVE, FUNCTIONAL, PIECE_KEYS, Design, Requirement,
+                    TILE_VALUE, bare_room, score)
 from .validate import validate
 
 # Move weights, in a module constant so a test can pin them: a search whose behaviour
 # depends on undeclared magic is not reproducible in any useful sense.
 MOVES = (
     ("toggle_smooth", 4),
+    ("toggle_engrave", 3),
     ("resize", 2),
     ("smooth_rect", 2),
     ("add_piece", 2),
@@ -73,6 +74,15 @@ def neighbour(d: Design, req: Requirement, rng: random.Random) -> Design | None:
         x, y = inside[rng.randrange(len(inside))]
         rows[y][x] = "." if rows[y][x] == "s" else "s"
 
+    elif move == "toggle_engrave":
+        # An engraved cell is worth 14 against a smoothed 4, for one more job. That makes
+        # it the best value-per-job the search has, which is exactly why it is banked at
+        # the GUARANTEED Ordinary quality and not at what an engraver usually lands.
+        if not inside or not req.allow_smooth or not ALLOW_ENGRAVE:
+            return None
+        x, y = inside[rng.randrange(len(inside))]
+        rows[y][x] = "s" if rows[y][x] == "e" else "e"
+
     elif move == "smooth_rect":
         if len(inside) < 2 or not req.allow_smooth:
             return None
@@ -108,7 +118,7 @@ def neighbour(d: Design, req: Requirement, rng: random.Random) -> Design | None:
                     row.append("#")
                 else:
                     old = d.at(x, y)
-                    row.append("s" if old == "s" else ".")
+                    row.append(old if old in "se" else ".")
             new_rows.append(row)
         doors = [(x, y) for y in range(d.h) for x in range(d.w) if d.cells[y][x] == "+"]
         dx = doors[0][0] if doors else nw // 2

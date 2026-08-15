@@ -36,7 +36,7 @@ def test_tile_values_are_what_df_answered():
     sweep over 0,1,2,3,4 smoothed of 4 gave 4, 7, 10, 13, 16.
 
     Changing either constant means re-measuring, which is the point of pinning them."""
-    assert TILE_VALUE == {".": 1, "s": 4}
+    assert TILE_VALUE == {".": 1, "s": 4, "e": 14}
 
     # and the additivity, on the shape that was actually swept
     rows = ["####", "#..#", "#..#", "####"]
@@ -155,11 +155,44 @@ def test_the_zone_may_not_be_painted_over_rock():
     assert d.value() == 4                        # the twelve wall tiles are worth nothing
 
 
-def test_engraving_is_not_emitted_because_it_is_not_priced():
-    req = _req(max_w=4, max_h=4)
+def test_the_engraving_ladder_is_what_df_answered():
+    """Engravings are not on the tile — an engraved floor is still StoneFloorSmooth with
+    special = SMOOTH, which is why a tiletype-only scorer is blind to them. They are
+    records in `df.global.world.event.engravings`.
+
+    Measured by adding ONE record to a 2x2 bedroom worth 4 and sweeping its quality with
+    the poison-and-reopen oracle: DF answered 14, 24, 34, 44, 54, 124, 74. The ladder is
+    NOT monotonic — Masterful adds 120 and Artifact 70 — which is surprising enough that
+    pinning it is the point."""
+    from bonsai_lab_agent.design.model import ENGRAVING_VALUE
+    assert ENGRAVING_VALUE == {0: 10, 1: 20, 2: 30, 3: 40, 4: 50, 5: 120, 6: 70}
+    assert ENGRAVING_VALUE[5] > ENGRAVING_VALUE[6]
+
+    # an engraved cell is a smoothed cell plus a GUARANTEED Ordinary engraving
+    assert TILE_VALUE["e"] == TILE_VALUE["s"] + ENGRAVING_VALUE[0]
+    d = Design(kind="Bedroom", w=4, h=4, cells=("####", "#ee#", "#..#", "####"))
+    assert d.value() == 14 + 14 + 1 + 1
+
+
+def test_an_engraved_cell_costs_three_jobs():
+    """Mine it, smooth it, engrave it. A cost model that charged one would make engraving
+    look free and the search would engrave everything."""
+    rough = Design(kind="Bedroom", w=4, h=4, cells=("####", "#..#", "#..#", "####"))
+    engraved = Design(kind="Bedroom", w=4, h=4, cells=("####", "#e.#", "#..#", "####"))
+    assert engraved.cost() == rough.cost() + 2      # + one smooth job + one engrave job
+
+
+def test_engraving_needs_smoothing_and_the_requirement_can_forbid_it():
+    """DF will not engrave rough stone. Verified against the game: the engrave section of
+    a generated blueprint, dry-run on raw rock, answered "Tiles that could not be
+    designated for digging: 15" — exactly its 15 engraved cells."""
+    # `manager` needs no furniture, so the only thing under test here is the engraving
     d = Design(kind="Bedroom", w=4, h=4, cells=("#+##", "#e.#", "#..#", "####"),
                pieces=((2, 1, "b"),))
-    assert any("engraving" in r for r in validate(d, req))
+    allowed = _req(position="manager", max_w=4, max_h=4)
+    assert validate(d, allowed) == []
+    forbidden = _req(position="manager", max_w=4, max_h=4, allow_smooth=False)
+    assert any("smoothed first" in r for r in validate(d, forbidden))
 
 
 def test_a_malformed_design_is_refused_at_construction():
@@ -201,14 +234,15 @@ def test_dig_is_the_first_section_and_smoothing_is_a_second_pass():
     csv = to_quickfort(d, name="probe")
     labels = blueprint_labels(csv)
     assert labels[0] == ("dig", "dig")
-    assert [m for m, _ in labels] == ["dig", "dig", "meta", "zone", "build"]
+    assert [m for m, _ in labels] == ["dig", "dig", "dig", "meta", "zone", "build"]
     assert ("dig", "smooth") in labels
+    assert ("dig", "engrave") in labels
 
     # every tile that has to end up as floor is dug in the FIRST section
     dig_section = csv.split('"#dig label(smooth)')[0]
     cells = dig_section.replace(chr(10), ",").split(",")
     dug = sum(1 for cell in cells if cell.strip() == "d")
-    want = sum(1 for row in d.cells for ch in row if ch in ".s+")
+    want = sum(1 for row in d.cells for ch in row if ch in ".se+")
     assert dug == want
 
 

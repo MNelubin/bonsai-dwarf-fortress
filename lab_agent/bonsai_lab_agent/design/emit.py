@@ -34,7 +34,7 @@ def to_quickfort(d: Design, name: str = "bonsai") -> str:
     for y in range(d.h):
         line = []
         for x in range(d.w):
-            line.append("d" if d.cells[y][x] in ".s+" else "")
+            line.append("d" if d.cells[y][x] in ".se+" else "")
         rows.append(",".join(line) + ",#")
     rows.append(",".join(["#"] * (d.w + 1)))
 
@@ -43,13 +43,24 @@ def to_quickfort(d: Design, name: str = "bonsai") -> str:
     for y in range(d.h):
         line = []
         for x in range(d.w):
-            line.append("s" if d.cells[y][x] == "s" else "")
+            line.append("s" if d.cells[y][x] in "se" else "")
         rows.append(",".join(line) + ",#")
     rows.append(",".join(["#"] * (d.w + 1)))
 
-    # ---- meta: smoothing, the zone and the build, once the digging is done
+    # ---- engrave: the third pass. DF will not engrave rough stone, so an engraved cell
+    # is dug in pass one and smoothed in pass two before it gets here.
+    rows.append(f'"#dig label(engrave) start(1;1) hidden() {name} engraving"')
+    for y in range(d.h):
+        line = []
+        for x in range(d.w):
+            line.append("e" if d.cells[y][x] == "e" else "")
+        rows.append(",".join(line) + ",#")
+    rows.append(",".join(["#"] * (d.w + 1)))
+
+    # ---- meta: smoothing, engraving, the zone and the build, once the digging is done
     rows.append(f'"#meta label(rooms) start(1;1) {name} rooms"')
     rows.append("smooth/smooth,#")
+    rows.append("engrave/engrave,#")
     rows.append("zone/zone,#")
     rows.append("build/build,#")
     rows.append(",".join(["#"] * (d.w + 1)))

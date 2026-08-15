@@ -123,5 +123,9 @@ def validate(d: Design, req: Requirement) -> list[str]:
         reasons.append("the requirement forbids smoothing")
     if not ALLOW_ENGRAVE and any("e" in row for row in d.cells):
         reasons.append("engraving is not priced, so it may not be emitted")
+    if any("e" in row for row in d.cells) and not req.allow_smooth:
+        # DF will not engrave rough stone: the tile has to be smoothed first, and an
+        # engraved cell is therefore a smoothed cell that also carries a record.
+        reasons.append("an engraved tile must be smoothed first, and smoothing is off")
 
     return reasons
