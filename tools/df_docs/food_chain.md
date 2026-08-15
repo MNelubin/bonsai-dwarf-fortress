@@ -117,3 +117,43 @@ drink 12 → 0.
 Neither was visible from designation counts. "Inappropriate dig square" is a staircase
 marked where one cannot go; "dangerous terrain" is water or a fall. Both are filterable at
 designation time and are not filtered today.
+
+
+## Second session, with the whole guide set
+
+Same fort, now with all 22 verbs. The point was to run the guide's order properly rather
+than one link at a time.
+
+    START          cits=17 roomed=9  food=0 drink=1 plants=11 wood=21
+    dig + priority designate_dig=60  set_dig_priority=215  set_labor=1
+    wood + policy  chop_trees=9      set_standing_order=1
+    AFTER          wood 21 -> 20
+    make furniture add_workorder=4   (ConstructTable x3, ConstructThrone x3)
+    AFTER          wood 20 -> 18,  plants 11 -> 13
+    furnish        place_furniture=1
+    standing order add_workorder_conditional=1  (keep 8 barrels)
+    AFTER          wood 18 -> 15
+
+**The lesson from session one held.** `place_furniture` produced nothing for tables last
+time because the fort had no table items. Ordering `ConstructTable` first and *then*
+placing worked — and the wood count falling 21 → 20 → 18 → 15 is the fort actually
+spending logs on furniture rather than the verbs merely reporting numbers.
+
+**A new cancellation reason appeared, and it is one we can act on:**
+
+    4  Item inaccessible.
+    3  Needs unrotten processable (to barrel) plant.
+    2  No food available.
+
+`Item inaccessible` is exactly what `bonsai-reach` measures — stock the fort owns and
+cannot walk to. It had been invisible; four jobs died of it in one session.
+
+**What the fort still cannot do is feed itself.** Food has been 0 throughout, plants hover
+around 11 because seventeen dwarves eat them as fast as the farm grows them, and drink sits
+at 1. Every verb works; the *policy* of using them does not exist yet. That is the
+controller's job, and it is now a question about play rather than about tools:
+
+* the farms are small and there are two of them
+* nothing cooks, so nothing is preserved
+* raw plants are eaten before they can be brewed, which is what `set_kitchen_flag` and a
+  standing brew order are for
