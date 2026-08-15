@@ -20,7 +20,9 @@ local REACH_GROUPS = reach and reach.fort_groups() or nil
 local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
             build_workshop = 0, advance = 0, assign_noble = 0,
             add_workorder_conditional = 0, build_farm_plot = 0, set_crop = 0,
-            set_kitchen_flag = 0 }
+            set_kitchen_flag = 0, create_zone = 0, assign_room = 0,
+            place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
+            configure_stockpile = 0 }
 
 -- Work orders live in _G.BONSAI_ORDERS (declared with the order code below) and survive
 -- between dispatches within one DF process. They are re-checked on every dispatch, which
@@ -525,7 +527,111 @@ end
 -- between dfhack-run calls). Without it every create_stockpile call recomputed the same
 -- spots relative to the first citizen, so only the FIRST round ever placed anything and
 -- the development term could be earned exactly once per episode.
-_G.BONSAI_PLACE = _G.BONSAI_PLACE or { stock = 0, shop = 0, dig = nil }
+
+-- ---------------------------------------------------------------- rooms and zones
+-- What turns a dug hole into a fort. The guide spends its middle third here: a bedroom
+-- per dwarf, a dining hall, a meeting area, and the furniture that makes a room count.
+--
+-- civzone_type runs to 97 on this build and the player-facing zones live at the TOP of
+-- it вЂ” Bedroom is 92, not something near Home. Reading the low end of the enum finds
+-- MeadHall and ThroneRoom, which are worldgen site vocabulary, and picking one of those
+-- would produce a zone the fort never uses. Enumerated live rather than remembered.
+local ZONE_KINDS = {
+    bedroom      = 'Bedroom',
+    dining       = 'DiningHall',
+    meeting      = 'MeetingHall',
+    pasture      = 'Pen',
+    office       = 'Office',
+    gather_fruit = 'PlantGathering',
+    dormitory    = 'Dormitory',
+    refuse       = 'Dump',
+    barracks     = 'Barracks',
+    tomb         = 'Tomb',
+}
+
+-- A civzone needs three things that are each optional to DFHack and each fatal to omit:
+-- abstract = true, or constructBuilding simply fails; extents cast through
+-- df.reinterpret_cast, because a raw uint8_t array assigned afterwards silently does not
+-- take; and spec_sub_flag.active, without which the zone exists and does nothing.
+local function make_zone(kind, x, y, z, width, height)
+    local sub = df.civzone_type[ZONE_KINDS[kind] or '']
+    if sub == nil then return nil end
+    local area = width * height
+    local ext = df.reinterpret_cast(df.building_extents_type, df.new('uint8_t', area))
+    for i = 0, area - 1 do ext[i] = 1 end
+    local b = dfhack.buildings.constructBuilding {
+        type = df.building_type.Civzone, subtype = sub, abstract = true,
+        pos = xyz2pos(x, y, z), width = width, height = height,
+    }
+    if not b then return nil end
+    b.room.extents = ext
+    b.room.x, b.room.y, b.room.width, b.room.height = x, y, width, height
+    pcall(function() b.spec_sub_flag.active = true end)
+    return b
+end
+
+-- Give a room to a dwarf. setOwner early-returns `true` when the zone already names that
+-- unit, so writing assigned_unit_id first makes the call a no-op that reports success
+-- while owned_buildings stays empty вЂ” the same one-sided-link trap as seating a noble.
+local function own_room(b, unit)
+    if not (b and unit) then return false end
+    b.assigned_unit_id = -1
+    local ok = pcall(function() dfhack.buildings.setOwner(b, unit) end)
+    if not ok then return false end
+    for _, owned in ipairs(unit.owned_buildings) do
+        if owned == b then return true end
+    end
+    return false
+end
+
+-- A citizen by id, or one that does not already have a room.
+local function pick_citizen(who, want_roomless)
+    if who and who ~= '' and who ~= 'best' then
+        for _, u in ipairs(cits) do
+            if tostring(u.id) == who then return u end
+        end
+        return nil
+    end
+    if want_roomless then
+        for _, u in ipairs(cits) do
+            if #u.owned_buildings == 0 then return u end
+        end
+    end
+    return cits[1]
+end
+
+-- Furniture the agent can install, and the item each one is made from. A bed built from
+-- a table is not a soft failure: constructBuilding takes the item and DF cancels the job.
+local FURNITURE = {
+    bed     = { building = 'Bed',     item = 'BED' },
+    table_  = { building = 'Table',   item = 'TABLE' },
+    chair   = { building = 'Chair',   item = 'CHAIR' },
+    door    = { building = 'Door',    item = 'DOOR' },
+    cabinet = { building = 'Cabinet', item = 'CABINET' },
+    coffer  = { building = 'Box',     item = 'BOX' },
+    coffin  = { building = 'Coffin',  item = 'COFFIN' },
+}
+FURNITURE.table = FURNITURE.table_
+
+-- A made piece of furniture standing free. `contained_items[].use == 0` distinguishes the
+-- item a building IS from stock it merely holds, which is why a filter that rejected
+-- everything held by a building could not find the chair a workshop had just produced.
+local function free_furniture(item_name)
+    local want = df.item_type[item_name]
+    if want == nil then return nil end
+    for _, it in ipairs(w.items.all) do
+        if it:getType() == want and not it.flags.in_building then
+            local usable = reach and reach.item(it, REACH_GROUPS)
+                or not (it.flags.forbid or it.flags.in_job or it.flags.removed
+                        or it.flags.foreign)
+            if usable then return it end
+        end
+    end
+    return nil
+end
+
+_G.BONSAI_PLACE = _G.BONSAI_PLACE or { stock = 0, shop = 0, dig = nil,
+                                      zone = 0, furn = 0 }
 local P = _G.BONSAI_PLACE
 
 -- A ring of candidate build sites around the wagon, walked outwards. Keeps successive
@@ -969,6 +1075,144 @@ for line in f:lines() do
             }
             c.add_workorder_conditional = c.add_workorder_conditional + 1
             c.add_workorder = c.add_workorder + dispatch_orders()
+        end)
+    elseif verb == "create_zone" then
+        -- Paint a zone. A dug room is not a bedroom until something says so.
+        pcall(function()
+            local kind = a[2]
+            if not (kind and ZONE_KINDS[kind]) then return end
+            local width = math.max(1, math.min(tonumber(a[3]) or 6, 20))
+            local height = math.max(1, math.min(tonumber(a[4]) or width, 20))
+            local x, y, z
+            for _ = 1, 16 do
+                local cx, cy, cz = site(P.zone or 0, 5)
+                P.zone = (P.zone or 0) + 1
+                if cx and (not reach or reach.site(cx, cy, cz, width, height, REACH_GROUPS)) then
+                    x, y, z = cx, cy, cz
+                    break
+                end
+            end
+            if not x then return end
+            if make_zone(kind, x, y, z, width, height) then
+                c.create_zone = c.create_zone + 1
+            end
+        end)
+    elseif verb == "assign_room" then
+        -- Give a room to somebody. An unowned bedroom is furniture in a hole.
+        pcall(function()
+            local kind = a[2]
+            local want = kind and ZONE_KINDS[kind] and df.civzone_type[ZONE_KINDS[kind]]
+            local unit = pick_citizen(a[3], true)
+            if not (want and unit) then return end
+            for _, b in ipairs(w.buildings.all) do
+                if b:getType() == df.building_type.Civzone and b:getSubtype() == want
+                    and b.assigned_unit_id == -1 then
+                    if own_room(b, unit) then
+                        c.assign_room = c.assign_room + 1
+                        return
+                    end
+                end
+            end
+        end)
+    elseif verb == "place_furniture" then
+        -- Install something already made. The item has to exist first: this verb does
+        -- not build a bed, it puts one down.
+        pcall(function()
+            local spec = FURNITURE[a[2] or ""]
+            if not spec then return end
+            local count = math.max(1, math.min(tonumber(a[3]) or 1, 10))
+            for _ = 1, count do
+                local item = free_furniture(spec.item)
+                if not item then break end
+                local placed = false
+                for _ = 1, 12 do
+                    local x, y, z = site(P.furn or 0, 3)
+                    P.furn = (P.furn or 0) + 1
+                    if x and (not reach or reach.site(x, y, z, 1, 1, REACH_GROUPS)) then
+                        local b = dfhack.buildings.constructBuilding {
+                            type = df.building_type[spec.building],
+                            pos = xyz2pos(x, y, z), items = { item },
+                        }
+                        -- same rule as build_workshop: only a build job that actually
+                        -- carries a reagent counts, because constructBuilding returns a
+                        -- building even when DF is about to cancel and remove it
+                        if b and #b.jobs > 0 and #b.jobs[0].items > 0 then
+                            c.place_furniture = c.place_furniture + 1
+                            placed = true
+                        end
+                    end
+                    if placed then break end
+                end
+                if not placed then break end
+            end
+        end)
+    elseif verb == "set_dwarf_labor" then
+        -- One dwarf, one labour. set_labor is a fort-wide switch; a player specialises.
+        pcall(function()
+            local unit = pick_citizen(a[2], false)
+            local lid = df.unit_labor[a[3] or ""]
+            if not (unit and lid) then return end
+            local on = not (a[4] == "False" or a[4] == "false" or a[4] == "0")
+            unit.status.labors[lid] = on
+            c.set_dwarf_labor = c.set_dwarf_labor + 1
+        end)
+    elseif verb == "cancel_dwarf_job" then
+        -- Free a dwarf who is doing something less important than what is needed now.
+        pcall(function()
+            local unit = pick_citizen(a[2], false)
+            if not (unit and unit.job.current_job) then return end
+            local job = unit.job.current_job
+            if pcall(function() dfhack.job.removeJob(job) end) then
+                c.cancel_dwarf_job = c.cancel_dwarf_job + 1
+            end
+        end)
+    elseif verb == "configure_stockpile" then
+        -- Narrow what a pile accepts. The guide's first act on a new stockpile is to
+        -- remove stone and wood so bulk goods cannot crowd out food.
+        pcall(function()
+            local which = tonumber(a[2]) or 0
+            local kind = a[3]
+            local groups = {
+                food = "food", drink = "food", wood = "wood", stone = "stone",
+                furniture = "furniture", refuse = "refuse", corpses = "corpses",
+                bars_blocks = "bars_blocks", gems = "gems", finished_goods = "finished_goods",
+                leather = "leather", cloth = "cloth", ammo = "ammo", weapons = "weapons",
+                armor = "armor", animals = "animals", coins = "coins", sheet = "sheet",
+                misc = "misc", ore = "ore",
+            }
+            local field = groups[kind or ""]
+            if not field then return end
+            -- address a specific pile, so a fort with several can narrow them
+            -- differently: one for food, one for wood, the way a player lays them out
+            local piles = {}
+            for _, b in ipairs(w.buildings.all) do
+                if b:getType() == df.building_type.Stockpile then piles[#piles + 1] = b end
+            end
+            local target = piles[which + 1] or piles[1]
+            if not target then return end
+            -- Turn everything off, then turn on only what was asked for. A pile that
+            -- accepts the default everything is the problem being fixed here.
+            local touched = false
+            for name in pairs(groups) do
+                local ok = pcall(function()
+                    local g = target.settings[name]
+                    if type(g) == "userdata" then
+                        for k, v in pairs(g) do
+                            if type(v) == "boolean" then g[k] = false end
+                        end
+                    end
+                end)
+                touched = touched or ok
+            end
+            pcall(function()
+                local g = target.settings[field]
+                if type(g) == "userdata" then
+                    for k, v in pairs(g) do
+                        if type(v) == "boolean" then g[k] = true end
+                    end
+                end
+            end)
+            if touched then c.configure_stockpile = c.configure_stockpile + 1 end
         end)
     elseif verb == "build_farm_plot" then
         -- Without this the fort eats what it embarked with and then starves. Plots need

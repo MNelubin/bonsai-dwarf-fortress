@@ -539,3 +539,119 @@ where a hand-made item does not.
 exactly the silent-success shape every other verb here has been fixed to avoid.
 
 `bonsai-brewprobe` builds the current best attempt and reports what DF made of it.
+
+---
+
+## create_zone
+
+Paint a zone: bedroom, dining hall, meeting area, pen, office, plant gathering, dormitory,
+refuse dump, barracks or tomb. A dug room is not a bedroom until something says so.
+
+**Refuses:** a zone kind not in the list, and any site where the rectangle is not entirely
+free, walkable floor a citizen can reach — it walks a ring of candidate spots and gives up
+rather than painting a zone in rock.
+
+**The enum trap.** `civzone_type` runs to 97 on this build and the player-facing zones live
+at the **top** of it: Bedroom is 92, DiningHall 80, MeetingHall 87, Pen 88, Office 93. The
+low end is worldgen site vocabulary — Home, MeadHall, ThroneRoom, forty kinds of workshop
+pit — and picking one of those produces a zone the fort never uses. Enumerated live rather
+than remembered, after three enum names written from memory turned out not to exist.
+
+**Three things DFHack treats as optional and DF treats as fatal**, all found the hard way
+while building the manager an office:
+
+* `abstract = true`, or `constructBuilding` simply fails
+* extents cast through `df.reinterpret_cast(df.building_extents_type, ...)` — a raw
+  `uint8_t` array assigned afterwards silently does not take
+* `spec_sub_flag.active`, without which the zone exists and does nothing
+
+**Measured:** Bedroom, DiningHall and MeetingHall all created on a live fort.
+
+**Still unknown:** it places on a ring around the wagon rather than inside a room you dug
+for it. Pairing a zone with a specific chamber is what `apply_template` is for.
+
+---
+
+## assign_room
+
+Give a room to a dwarf. An unowned bedroom is furniture in a hole.
+
+**Refuses:** a room kind that does not exist, and a dwarf id that is not a citizen.
+Without an id it picks a citizen who does not already own a room.
+
+**The trap:** `dfhack.buildings.setOwner` early-returns `true` when the zone already names
+that unit, so writing `assigned_unit_id` first makes the call a no-op that reports success
+while `owned_buildings` stays empty. The same one-sided-link shape as seating a noble with
+`histfig` but no entity link. Ownership is confirmed by reading the dwarf's
+`owned_buildings` back, not by trusting the return value.
+
+**Measured:** a bedroom assigned on a live fort, confirmed through `owned_buildings`.
+
+---
+
+## place_furniture
+
+Install something already made: bed, table, chair, door, cabinet, coffer or coffin.
+
+**Refuses:** a furniture kind not in the list; and it will not invent the item — this verb
+puts a bed down, it does not build one. `add_workorder ConstructBed` makes the item first.
+
+**Measured:** two beds installed on a live fort out of 44 free bed items.
+
+**Two traps it inherits from build_workshop.** A build only counts when DF actually
+attached a job carrying a reagent — `constructBuilding` returns a building even when DF is
+about to cancel and remove it. And the item must be free: `flags.in_building` distinguishes
+the item a building *is* from stock it merely holds, which is why a filter that rejected
+everything held by a building could not find the chair a workshop had just produced.
+
+**Still unknown:** placement is a ring around the wagon, not "in that bedroom". Furniture
+lands where there is room, and the zone it ends up in is luck.
+
+---
+
+## set_dwarf_labor
+
+One dwarf, one labour. `set_labor` is a fort-wide switch; a player specialises.
+
+**Refuses:** an unrecognised `df.unit_labor` name, and a dwarf id that is not a citizen.
+
+**Measured:** `CARPENTER` set on a single citizen without touching the rest.
+
+**Still unknown:** the guide's actual move is to pull a dwarf *out of the general pool* so
+they only do their speciality — that is a different operation from enabling one labour, and
+it is not expressible yet.
+
+---
+
+## cancel_dwarf_job
+
+Drop one dwarf's current job so somebody else can take it, or so they can do something
+that matters more.
+
+**Refuses:** a dwarf who is not a citizen, and one who is idle — there is nothing to
+cancel, and reporting a cancellation that did not happen is the failure mode this whole
+toolkit is built against.
+
+**Why it earns a verb:** DF cancels jobs constantly for reasons it writes down —
+`Interrupted by a tyrannosaurus`, `Hunting vermin for food` — and a fort can sit with
+every dwarf busy on something trivial. See `bonsai-reach why`.
+
+---
+
+## configure_stockpile
+
+Say what a pile accepts. Addressed by index, so a fort with several can narrow them
+differently.
+
+**Refuses:** a category outside DF's own list (food, wood, stone, furniture, refuse,
+corpses, bars_blocks, gems, finished_goods, leather, cloth, ammo, weapons, armor, animals,
+coins, sheet, misc, ore).
+
+**Why it matters more than it looks.** `create_stockpile` accepts the default everything,
+and the guide's first act on a new pile is to NARROW it — removing stone and wood so bulk
+goods cannot crowd out perishables. This turns every category off and then turns on only
+the one asked for, which is that act.
+
+**Still unknown:** it is one category per call, all-or-nothing within that category. DF's
+settings are per-subtype (food → seeds, drink, meat…) and the barrel/bin toggle is not
+wired up.

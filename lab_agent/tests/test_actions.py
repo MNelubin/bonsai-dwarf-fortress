@@ -137,14 +137,14 @@ def test_an_uninterpretable_boolean_is_refused():
 
 # ---------------------------------------------------------------- planned verbs
 def test_a_planned_verb_is_refused_with_its_tranche():
-    d = judge({"verb": "create_zone"})
-    assert not d.ok and "tranche 2" in d.reason
+    d = judge({"verb": "smooth"})
+    assert not d.ok and "tranche 3" in d.reason
 
 
 def test_planned_verbs_stay_out_of_the_advertised_actions():
     live = {a["verb"] for a in available_actions()}
-    assert "create_zone" not in live
-    assert "create_zone" in {a["verb"] for a in available_actions(True)}
+    assert "smooth" not in live
+    assert "smooth" in {a["verb"] for a in available_actions(True)}
 
 
 def test_the_roadmap_is_ordered_by_tranche():
@@ -238,10 +238,12 @@ def test_advertised_actions_carry_argument_schemas():
 
 def test_the_schema_stays_small_enough_to_ship_every_round():
     """It rides in every controller prompt, so it is a running cost, not a one-off. The
-    ceiling moved once when the order verbs gained real DF condition arguments and the
-    food chain went live; it is a budget to defend, not a formality."""
+    ceiling has moved twice — once when the order verbs gained real DF condition
+    arguments and the food chain went live, once when the guide's room-and-zone set did.
+    It is a budget to defend, not a formality: at 17 verbs it is 7.7 KB, and the next
+    tranche should trim before it adds."""
     import json
-    assert len(json.dumps(available_actions())) < 6000
+    assert len(json.dumps(available_actions())) < 9000
 
 
 def test_every_live_verb_has_a_toolbook_entry():

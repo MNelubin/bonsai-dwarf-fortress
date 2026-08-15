@@ -87,3 +87,46 @@ What is known:
 The next experiment is cheap: build a Still, create a `BrewDrink` job with **no**
 job_items, and see whether DF populates them itself. If it does, brewing needs no
 guesswork at all.
+
+
+## Played by hand, year 3 — what a session actually shows
+
+Seventeen citizens, no food, no drink, 44 beds lying in a pile, two dwarves with a room.
+Driven through the guide's order with the live verbs and observed between steps:
+
+    BEFORE          roomed=2  zones=4  furniture=3  food=0 drink=0 plants=53
+    bedrooms        create_zone=3 place_furniture=4 assign_room=3
+    AFTER           roomed=5  zones=7  furniture=7  food=0 drink=0 plants=53
+    dining hall     create_zone=1   place_furniture table/chair -> NOTHING
+    farming         set_crop=1 set_labor=2
+    AFTER           plants 53 -> 0
+    12,000 ticks    plants 0 -> 11,  drink 0 -> 1
+
+Four things learned that no unit test would have shown.
+
+**1. Brewing works. The reagent was the problem all along.** Drink went 0 → 1 while the
+farms regrew plants, with nobody touching the brewing code. Every earlier attempt failed on
+plants made with `createItem`, which DF refuses as "unrotten plant"; a plump helmet the
+farm actually grew is accepted. So the `CustomReaction` job shape recorded above is right,
+and the missing piece was never the job.
+
+**2. `place_furniture` refuses correctly and that is the guide's point.** Four beds went
+down; tables and chairs produced nothing, because the fort has 44 bed items and no table or
+chair items. The order is make the furniture, *then* place it — `add_workorder
+ConstructTable` before `place_furniture table`. The verb declining is the fort telling you
+what it is short of.
+
+**3. The fort eats faster than it grows.** Plants 53 → 0 in 9,000 ticks with seventeen
+dwarves, then back to 11. Raw plants are food, so a farm feeds the fort only if it
+outpaces them, and every plant eaten raw is one not brewed. That is what
+`set_kitchen_flag` and a brewing order are for, and it is why the measured year ended
+drink 12 → 0.
+
+**4. DF names two defects in `designate_dig` out loud:**
+
+    cancels Dig: Dangerous terrain.
+    cancels Carve up/down staircase: Inappropriate dig square.
+
+Neither was visible from designation counts. "Inappropriate dig square" is a staircase
+marked where one cannot go; "dangerous terrain" is water or a fall. Both are filterable at
+designation time and are not filtered today.

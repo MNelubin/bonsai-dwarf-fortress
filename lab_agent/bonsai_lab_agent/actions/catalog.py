@@ -250,7 +250,7 @@ CATALOG: tuple[Verb, ...] = (
     # ================================================================ TRANCHE 2
     # Rooms, zones and the furniture that makes them count.
     Verb(
-        name="place_furniture", category="quality-of-life", status="planned", tranche=2,
+        name="place_furniture", category="quality-of-life", tranche=0,
         doc="Install an already-made bed, table, chair, door, cabinet or coffer into a "
             "dug room.",
         observable="a building of that furniture type exists at the position",
@@ -264,7 +264,7 @@ CATALOG: tuple[Verb, ...] = (
              "in a stockpile. A bed is not a bedroom until it is built into one.",
     ),
     Verb(
-        name="create_zone", category="quality-of-life", status="planned", tranche=2,
+        name="create_zone", category="quality-of-life", tranche=0,
         doc="Paint a zone: bedroom, dining hall, meeting area, pen and pasture, office, "
             "or a surface fruit-gathering area.",
         observable="a civzone of that type covering the rectangle",
@@ -281,7 +281,7 @@ CATALOG: tuple[Verb, ...] = (
              "can dance.",
     ),
     Verb(
-        name="assign_room", category="quality-of-life", status="planned", tranche=2,
+        name="assign_room", category="quality-of-life", tranche=0,
         doc="Give a room to a specific dwarf, or let the next claimant take it.",
         observable="the zone's assigned unit id",
         args=(
@@ -296,26 +296,29 @@ CATALOG: tuple[Verb, ...] = (
              "this stops being cosmetic and starts being a requirement.",
     ),
     Verb(
-        name="set_dwarf_labor", category="labour", status="planned", tranche=2,
+        name="set_dwarf_labor", category="labour", tranche=0,
         doc="Set one dwarf's labours, or pull them out of the general pool so they only "
             "do their speciality.",
         observable="that unit's labor flags, and the job it picks up next",
         args=(
             Arg("dwarf", "str", "citizen id, or 'best' for the evaluator's pick"),
             Arg("labor", "str", "df.unit_labor name"),
-            Arg("only", "bool", "remove them from the general labour pool",
+            Arg("on", "bool", "enable it, or turn it off",
                 required=False, default=False),
         ),
         guide="29:44",
         note="The guide's fix for a fort where smoothing was starving mining of hands.",
     ),
     Verb(
-        name="configure_stockpile", category="logistics", status="planned", tranche=2,
+        name="configure_stockpile", category="logistics", tranche=0,
         doc="Say what a stockpile accepts, and whether it uses barrels or bins.",
         observable="the pile's accept flags and container limit",
         args=(
             Arg("index", "int", "which stockpile", lo=0, hi=64),
-            Arg("accepts", "str", "category list, e.g. 'food:seeds' or 'refuse'"),
+            Arg("accepts", "str",
+                "the one category to accept: food, wood, stone, furniture, refuse, "
+                "corpses, bars_blocks, gems, finished_goods, leather, cloth, ammo, "
+                "weapons, armor, animals, coins, sheet, misc or ore"),
             Arg("containers", "bool", "allow barrels and bins in this pile",
                 required=False, default=True),
         ),
@@ -325,7 +328,7 @@ CATALOG: tuple[Verb, ...] = (
              "fort, and a starter pile with stone and wood excluded.",
     ),
     Verb(
-        name="cancel_dwarf_job", category="labour", status="planned", tranche=2,
+        name="cancel_dwarf_job", category="labour", tranche=0,
         doc="Drop one dwarf's current job so somebody else can take it.",
         observable="that unit's current job becomes empty, then differs",
         args=(Arg("dwarf", "str", "citizen id"),),
