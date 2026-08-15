@@ -773,6 +773,96 @@ local function can_supply(f, groups)
     return false, found
 end
 
+-- Send a dwarf to a workshop, the way a player does on its Workers tab.
+--
+-- The owner asked for this — "когда мы можем посылать рабочих" — and it is a normal
+-- mechanic. `building.profile.permitted_workers` is what DF's own Workers tab edits,
+-- proved causally rather than by reading the field back: two identical Carpenters
+-- workshops restricted to different dwarves, then the assignment SWAPPED, and the working
+-- dwarf swapped with it three times out of three while other capable dwarves declined.
+--
+-- Three things that are easy to get wrong and each silent:
+--
+--   * The vector must be written with `utils.insert_sorted`, NOT `insert('#', id)`.
+--     DF itself scans it linearly and honours an unsorted list, but DFHack's binsearch
+--     then returns FALSE for an id that is physically in the vector — so our own
+--     read-back would deny an assignment that is really there.
+--   * There is NO back-reference. `df.unit` has only `owned_buildings`, which is rooms.
+--     Here the one-sided link is correct by design, which is worth stating because in
+--     this project it is normally the bug.
+--   * A permitted worker who lacks the LABOUR makes the job sit forever with no
+--     announcement at all — measured at 2,760 frames of WORKER=none, then one labour bit
+--     flipped and the same dwarf took it within 540. So `#permitted_workers > 0` is a
+--     worthless assertion, and this refuses rather than creating that silence.
+--
+-- `min_level`/`max_level` go inert once a master is named — DF hides the skill slider —
+-- so they are left alone.
+local function assign_worker(b, unit)
+    if not (b and unit) then return false, 'no building or unit' end
+    local prof
+    if not pcall(function() prof = b.profile end) or not prof then
+        return false, 'building has no profile'
+    end
+    if not pcall(function() return #prof.permitted_workers end) then
+        return false, 'profile has no permitted_workers'
+    end
+    -- NO build-stage guard. A master name sticks on a workshop at stage 0/3 and DFHack's
+    -- binsearch finds it — measured on a freshly placed Carpenters. Refusing until the
+    -- building is finished made a cluster structurally unable to staff itself, since
+    -- every shop it places is unbuilt at that moment. That guard came from reasoning
+    -- about what ought to be true rather than from asking.
+    --
+    -- The LABOUR guard below is different: it is measured, and it is the one that matters.
+    local labors = {}
+    pcall(function()
+        labors = require('plugins.orders').get_profile_labors(b:getType(), b:getSubtype())
+                 or {}
+    end)
+    local can = (#labors == 0)
+    for _, name in ipairs(labors) do
+        local id = df.unit_labor[name]
+        if id and unit.status.labors[id] then can = true end
+    end
+    if not can then return false, 'the dwarf has none of this shop\'s labours' end
+
+    local okw = pcall(function()
+        -- one master per shop, the way DF's own Workers tab holds it
+        prof.permitted_workers:resize(0)
+        require('utils').insert_sorted(prof.permitted_workers, unit.id)
+    end)
+    if not okw then return false, 'the write failed' end
+    local back = false
+    pcall(function()
+        for _, id in ipairs(prof.permitted_workers) do
+            if id == unit.id then back = true end
+        end
+    end)
+    return back, back and '' or 'the id did not stick'
+end
+
+-- Somebody who can actually work here, preferring whoever is not already master of
+-- another shop so a cluster does not hand every building to the same dwarf.
+local function worker_for(b, taken)
+    local labors = {}
+    pcall(function()
+        labors = require('plugins.orders').get_profile_labors(b:getType(), b:getSubtype())
+                 or {}
+    end)
+    local fallback
+    for _, u in ipairs(cits) do
+        local can = (#labors == 0)
+        for _, name in ipairs(labors) do
+            local id = df.unit_labor[name]
+            if id and u.status.labors[id] then can = true end
+        end
+        if can then
+            if not (taken and taken[u.id]) then return u end
+            fallback = fallback or u
+        end
+    end
+    return fallback
+end
+
 -- The ring runs out, and when it does every placing verb stops working forever.
 --
 -- Measured on the test fort after five battery runs: `build_workshop`, `create_stockpile`
@@ -1403,6 +1493,13 @@ for line in f:lines() do
         pcall(function()
             local name = a[2]
             if not name or name == '' then return end
+            -- A refusal nobody can read is a refusal nobody can act on, and this verb has
+            -- five separate ways to decline.
+            local function decline(why)
+                _G.BONSAI_LAST_CLUSTER = nil
+                _G.BONSAI_CLUSTER_REASON = why
+            end
+            _G.BONSAI_CLUSTER_REASON = nil
             local members = {}
             for token in tostring(a[3] or ''):gmatch('[^,]+') do
                 local kind, what = token:match('^(%a):(.+)$')
@@ -1413,7 +1510,9 @@ for line in f:lines() do
                     btype, sub = df.building_type.Furnace, df.furnace_type[what]
                 end
                 -- refuse the whole cluster rather than build the part we understood
-                if sub == nil then return end
+                if sub == nil then
+                    return decline('no such building: ' .. tostring(token))
+                end
                 members[#members + 1] = { btype = btype, sub = sub, what = what }
             end
             if #members == 0 then return end
@@ -1428,9 +1527,13 @@ for line in f:lines() do
                 local got = pcall(function()
                     filters = dfhack.buildings.getFiltersByType({}, m.btype, m.sub, -1) or {}
                 end)
-                if not got then return end
+                if not got then
+                    return decline('could not read the filters for ' .. m.what)
+                end
                 for _, f in ipairs(filters) do
-                    if not can_supply(f, REACH_GROUPS) then return end
+                    if not can_supply(f, REACH_GROUPS) then
+                        return decline('the fort cannot supply ' .. m.what)
+                    end
                 end
                 m.filters = filters
             end
@@ -1445,7 +1548,11 @@ for line in f:lines() do
                 end)
                 local x, y, z = find_site(fw, fh, 6, P.cluster or 0, 24)
                 P.cluster = (P.cluster or 0) + 1
-                if not x then break end
+                if not x then
+                    _G.BONSAI_CLUSTER_REASON = string.format(
+                        'no free %dx%d site for %s', fw, fh, m.what)
+                    break
+                end
                 local b
                 pcall(function()
                     b = dfhack.buildings.constructBuilding{
@@ -1462,6 +1569,7 @@ for line in f:lines() do
                     pcall(function() dfhack.buildings.deconstruct(b) end)
                     break
                 else
+                    _G.BONSAI_CLUSTER_REASON = 'constructBuilding refused ' .. m.what
                     break
                 end
             end
@@ -1471,7 +1579,9 @@ for line in f:lines() do
                 for _, b in ipairs(built) do
                     pcall(function() dfhack.buildings.deconstruct(b) end)
                 end
-                return
+                return decline(_G.BONSAI_CLUSTER_REASON
+                    or string.format('only %d of %d members could be placed',
+                                     #built, #members))
             end
 
             -- The stockpiles that feed it.
@@ -1509,8 +1619,22 @@ for line in f:lines() do
                 end
             end
 
+            -- and send workers to it, which is the half the owner asked for by name.
+            local taken, staffed = {}, 0
+            for _, b in ipairs(built) do
+                local u = worker_for(b, taken)
+                if u then
+                    local okw = assign_worker(b, u)
+                    if okw then
+                        taken[u.id] = true
+                        staffed = staffed + 1
+                    end
+                end
+            end
+
             c.build_workshop_cluster = c.build_workshop_cluster + 1
-            _G.BONSAI_LAST_CLUSTER = { name = name, shops = #built, piles = #piles }
+            _G.BONSAI_LAST_CLUSTER = { name = name, shops = #built, piles = #piles,
+                                       staffed = staffed }
         end)
     elseif verb == "assign_noble" then
         pcall(function()

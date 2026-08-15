@@ -55,15 +55,27 @@ end
 -- was nowhere left", which is not a defect. Three cases failed that way before this
 -- existed — the same unfalsifiable shape as counting a labour every citizen already had.
 local function room_for(bw, bh)
-    local u = dfhack.units.getCitizens(true)[1]
-    if not u then return false end
+    -- Mirror what find_site actually searches: EVERY z-level a citizen stands on, not
+    -- just the first one's. The narrower version said "there is room" while the verb was
+    -- refusing, which is the yardstick problem again — the third time in this battery.
+    local cits = dfhack.units.getCitizens(true)
+    if #cits == 0 then return false end
     local reach = reqscript('bonsai-reach')
     local groups = reach.fort_groups()
-    for r = 2, 30 do
-        for dx = -r, r do
-            for dy = -r, r do
-                if reach.site(u.pos.x + dx, u.pos.y + dy, u.pos.z, bw, bh, groups) then
-                    return true
+    local seen, anchors = {}, {}
+    for _, u in ipairs(cits) do
+        if not seen[u.pos.z] then
+            seen[u.pos.z] = true
+            anchors[#anchors + 1] = { u.pos.x, u.pos.y, u.pos.z }
+        end
+    end
+    for _, a in ipairs(anchors) do
+        for r = 2, 30 do
+            for dx = -r, r do
+                for dy = -r, r do
+                    if reach.site(a[1] + dx, a[2] + dy, a[3], bw, bh, groups) then
+                        return true
+                    end
                 end
             end
         end
@@ -401,6 +413,52 @@ do
         end
         ok('every stockpile link is written on both sides', oneSided == 0,
             string.format('%d links, %d one-sided', linked, oneSided))
+
+        -- WORKERS. The owner asked for this by name — "когда мы можем посылать рабочих" —
+        -- and `#permitted_workers > 0` is a worthless assertion: a master who lacks the
+        -- shop's LABOUR makes the job sit forever with no announcement at all, measured at
+        -- 2,760 frames of WORKER=none before one labour bit was flipped.
+        local utils = require('utils')
+        local orders = require('plugins.orders')
+        ok('the cluster staffs every shop it raises', (L.staffed or 0) == L.shops,
+            string.format('%d of %d shops have a master', L.staffed or 0, L.shops))
+
+        local bad, seen, checked = {}, {}, 0
+        for _, b in ipairs(w.buildings.all) do
+            if df.building_workshopst:is_instance(b) then
+                local n = 0
+                pcall(function() n = #b.profile.permitted_workers end)
+                if n > 0 then
+                    checked = checked + 1
+                    local id = b.profile.permitted_workers[0]
+                    -- the vector must be SORTED: DF scans it linearly and honours an
+                    -- unsorted list, but DFHack's binsearch then denies an id that is
+                    -- physically there, so our own read-back would lie
+                    if utils.binsearch(b.profile.permitted_workers, id) == nil then
+                        bad[#bad + 1] = 'unsorted#' .. b.id
+                    end
+                    local u = df.unit.find(id)
+                    if not u then
+                        bad[#bad + 1] = 'no unit ' .. id
+                    else
+                        local labors = orders.get_profile_labors(b:getType(),
+                                                                 b:getSubtype()) or {}
+                        local can = (#labors == 0)
+                        for _, nm in ipairs(labors) do
+                            local lid = df.unit_labor[nm]
+                            if lid and u.status.labors[lid] then can = true end
+                        end
+                        if not can then
+                            bad[#bad + 1] = string.format('%d cannot work #%d', id, b.id)
+                        end
+                    end
+                    seen[id] = (seen[id] or 0) + 1
+                end
+            end
+        end
+        ok('every master can actually do the work and is findable', #bad == 0,
+            string.format('%d staffed shops checked; %s', checked,
+                #bad == 0 and 'all sound' or table.concat(bad, ' ')))
     end
 end
 
