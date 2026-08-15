@@ -1030,16 +1030,55 @@ for line in f:lines() do
             local wide = math.max(1, math.min(tonumber(a[4]) or 3, 10))
             local DIRS = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } }
             P.digring = (P.digring or 0)
+            -- How far out a chamber may start. Bounded so a saturated fort cannot walk
+            -- this to the map edge looking for virgin rock.
+            local MAX_REACH = 30
+
+            local function at(step, side, d)
+                if d[1] ~= 0 then return ox + d[1] * step, oy + side end
+                return ox + side, oy + d[2] * step
+            end
+
+            -- Is there anything left to cut at this distance: an undug wall nobody has
+            -- already marked.
+            local function fresh_step(z, d, step, hh)
+                for side = -hh, hh do
+                    local x, y = at(step, side, d)
+                    local ok, des = pcall(function()
+                        return dfhack.maps.getTileFlags(x, y, z)
+                    end)
+                    if ok and des and des.dig == DIG.No then
+                        local tt = dfhack.maps.getTileType(x, y, z)
+                        if tt and df.tiletype.attrs[tt].shape == df.tiletype_shape.WALL then
+                            return true
+                        end
+                    end
+                end
+                return false
+            end
+
+            -- Start from the FRONTIER, not from the shaft.
+            --
+            -- `len` used to mean "the first len steps out", so once those were designated
+            -- the verb could never extend the fort again: on the test fort it reported 0
+            -- with 374 designations standing and virgin rock a few tiles further out.
+            -- Walking outward to the first step that still has undug, unmarked wall fixes
+            -- that WITHOUT orphaning anything — everything between the shaft and the
+            -- frontier is by definition already designated, so the new chamber stays
+            -- connected to the fort through tiles that are going to be dug. That
+            -- connectivity is the whole reason to derive the offset from the map instead
+            -- of from a call counter: an arbitrary band offset would sit behind a wall of
+            -- virgin rock and be dug by nobody, while still reporting a healthy count.
             local function chamber(z, d)
                 local hh = math.floor(wide / 2)
-                for step = 1, len do
+                local start
+                for s = 1, MAX_REACH do
+                    if fresh_step(z, d, s, hh) then start = s; break end
+                end
+                if not start then return end          -- nothing left this way
+                for step = start, math.min(start + len - 1, MAX_REACH) do
                     for side = -hh, hh do
-                        local x, y
-                        if d[1] ~= 0 then
-                            x, y = ox + d[1] * step, oy + side
-                        else
-                            x, y = ox + side, oy + d[2] * step
-                        end
+                        local x, y = at(step, side, d)
                         mark(x, y, z, DIG.Default)
                         if placed >= n then return end
                     end
@@ -1051,8 +1090,18 @@ for line in f:lines() do
                 chamber(oz - dz, DIRS[((P.digring + dz - 1) % 4) + 1])
                 if placed >= n then break end
             end
+            -- The ring MUST advance whether or not anything was placed. It used to
+            -- advance only under `placed > 0`, which was harmless while `mark()` counted
+            -- its own no-ops: every call "placed" something, so the ring always turned.
+            -- Adding the idempotence guard removed those phantom counts and turned that
+            -- condition into a wedge — a call that finds its four sides already
+            -- designated returns 0, the ring freezes, and `DIRS[((digring+dz-1)%4)+1]`
+            -- re-walks the identical directions for the rest of the episode. The verb
+            -- would report 0 forever and the fort would stop growing. Turning the ring is
+            -- what makes the NEXT call look somewhere new, so it is exactly what must
+            -- happen when this one found nothing.
+            P.digring = P.digring + 1
             if placed > 0 then
-                P.digring = P.digring + 1
                 -- ask the engine to run its dig-job scan on the next tick
                 pcall(function() df.global.process_dig = true end)
                 pcall(function() df.global.process_jobs = true end)
@@ -1135,10 +1184,17 @@ for line in f:lines() do
             end)
 
             -- quickfort prints its own statistics, which is not evidence: count the map.
-            if census() > before then
+            --
+            -- Record the attempt whether or not anything changed, and say which. A caller
+            -- cannot otherwise tell "there was nowhere to put it" from "it was already
+            -- stamped here" — re-running a template over its own designations correctly
+            -- changes nothing, and the battery was reporting that as a refusal of a site
+            -- that exists.
+            local after = census()
+            _G.BONSAI_LAST_TEMPLATE = { name = name, x = x0, y = y0, z = z0,
+                                        w = bw, h = bh, new = after - before }
+            if after > before then
                 c.apply_template = c.apply_template + 1
-                _G.BONSAI_LAST_TEMPLATE = { name = name, x = x0, y = y0, z = z0,
-                                            w = bw, h = bh }
             end
         end)
     elseif verb == "create_stockpile" then

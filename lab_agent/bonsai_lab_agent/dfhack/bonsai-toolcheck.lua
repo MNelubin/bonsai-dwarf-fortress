@@ -283,13 +283,22 @@ do
     _G.BONSAI_LAST_TEMPLATE = nil
     apply('apply_template\tlibrary/pump_stack.csv\t4\t5\t1\t1\t1\tdig\tdig')
     local t = _G.BONSAI_LAST_TEMPLATE
-    if not t then
+    if t and (t.new or 0) == 0 then
+        -- It found a site and ran quickfort, and nothing changed. On this fort that is
+        -- correct and even desirable: a template re-stamped over its own designations is
+        -- idempotent. Distinguishing this from a refusal is why the verb records the
+        -- attempt rather than only the success.
+        skipped('apply_template stamps a design',
+            string.format('already stamped at %d,%d,%d - re-applying changed nothing',
+                t.x, t.y, t.z))
+    elseif not t then
         skipped('apply_template stamps a design',
             dig_room_for(4, 5) and 'REFUSED a site that exists - look at this'
                 or 'nowhere on this fort a 4x5 dig fits, so refusing is correct')
     else
-        ok('apply_template stamps a design', stamped() > 0,
-            string.format('%s at %d,%d,%d', t.name, t.x, t.y, t.z))
+        ok('apply_template stamps a design', (t.new or 0) > 0,
+            string.format('%s at %d,%d,%d put %d new designations on the map',
+                t.name, t.x, t.y, t.z, t.new or 0))
         -- Success has to be counted off the MAP. quickfort prints its own statistics and
         -- that line is what it intended, not what happened.
         local inside = 0
@@ -413,6 +422,20 @@ else
     ok('designate_dig marks tiles', marked_after > marked_before,
         string.format('%d -> %d designated', marked_before, marked_after))
 end
+-- The verb must keep LOOKING somewhere new even when it found nothing. Its ring counter
+-- used to advance only when it placed something, which was invisible while mark() counted
+-- its own no-ops; once the idempotence guard landed, a saturated call would freeze the
+-- ring and re-walk the same four directions for the rest of the episode. Nothing about
+-- the placed count can catch that, so assert the ring itself.
+do
+    local ring_before = (_G.BONSAI_PLACE or {}).digring or 0
+    apply('designate_dig\t1\t1\t1')
+    local ring_after = (_G.BONSAI_PLACE or {}).digring or 0
+    ok('designate_dig keeps turning its ring even when it places nothing',
+        ring_after > ring_before,
+        string.format('digring %d -> %d', ring_before, ring_after))
+end
+
 ok('designate_dig carves a chamber, not a corridor', widest >= 3,
     'widest run of designated tiles = ' .. widest)
 
