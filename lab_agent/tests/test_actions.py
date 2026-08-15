@@ -242,3 +242,31 @@ def test_the_schema_stays_small_enough_to_ship_every_round():
     food chain went live; it is a budget to defend, not a formality."""
     import json
     assert len(json.dumps(available_actions())) < 6000
+
+
+def test_every_live_verb_has_a_toolbook_entry():
+    """Notes drift silently: a verb ships, the doc does not mention it, and the next
+    person re-derives what was already measured. The toolbook is the exhaustive record,
+    so a live verb without a section in it is a gap, not a style problem."""
+    from pathlib import Path
+
+    book = (Path(__file__).resolve().parents[2] / "tools" / "df_docs"
+            / "toolbook.md").read_text(encoding="utf-8")
+    headings = {line[3:].strip() for line in book.splitlines() if line.startswith("## ")}
+    missing = sorted(v["verb"] for v in available_actions() if v["verb"] not in headings)
+    assert missing == [], f"live verbs with no toolbook section: {missing}"
+
+
+def test_the_toolbook_records_a_refusal_for_every_verb_that_has_one():
+    """Every verb that can refuse must say what it refuses and why — that half of the
+    documentation is what stops the next silent-substitution bug being reintroduced."""
+    from pathlib import Path
+
+    book = (Path(__file__).resolve().parents[2] / "tools" / "df_docs"
+            / "toolbook.md").read_text(encoding="utf-8")
+    sections = book.split("\n## ")
+    # advance takes no arguments and has nothing to refuse
+    checked = [s for s in sections[1:] if not s.startswith("advance")]
+    silent = [s.splitlines()[0] for s in checked
+              if "Refuses" not in s and "refuse" not in s.lower()]
+    assert silent == [], f"toolbook sections with no refusal note: {silent}"

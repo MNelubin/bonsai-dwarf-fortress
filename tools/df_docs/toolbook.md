@@ -154,6 +154,10 @@ chamber size against the dig budget.
 
 Place a 2×2 stockpile on a ring around the wagon.
 
+**Refuses:** nothing at the verb level — the count is clamped to 1..8 at the gate and the
+verb places what it can. The one thing it will not do is claim a placement that did not
+happen: the count only rises when `constructBuilding` returns a building.
+
 **Measured:** 0 → 1 buildings of type Stockpile.
 
 **It walks the ring until a placement takes**, the same way `build_workshop` does. A
