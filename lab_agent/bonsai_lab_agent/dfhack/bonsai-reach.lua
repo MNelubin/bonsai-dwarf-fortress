@@ -20,6 +20,7 @@
 --   bonsai-reach                 report the fort's connectivity and the standing sites
 --   bonsai-reach tile X Y Z      one tile, both readings
 --   bonsai-reach items           every claimable material and whether it can be fetched
+--   bonsai-reach why [filter]    what DF said when a job was cancelled, in its own words
 
 local NEIGHBOURS = {
     { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 },
@@ -147,6 +148,29 @@ function designations(ox, oy, oz, radius, depth)
     return total, actionable
 end
 
+-- Why DF refused. `world.status.announcements` carries a plain-language cancellation for
+-- every job a dwarf picked up and could not finish — "cancels Brew drink from plant:
+-- Needs unrotten plant", "cancels Carve up/down staircase: Inappropriate dig square".
+--
+-- This is the other half of availability and it was sitting there unread the whole time.
+-- Reachability answers "can we get to it"; this answers "we tried, and here is what was
+-- missing", in the game's own words. Three shapes of brew job were called malformed on
+-- the strength of a silent cancellation before anyone thought to look here.
+function cancellations(limit, filter)
+    local out = {}
+    local anns = df.global.world.status.announcements
+    local n = #anns
+    for i = math.max(0, n - (limit or 40)), n - 1 do
+        local ok, text = pcall(function() return tostring(anns[i].text) end)
+        if ok and text:match('cancels') then
+            if not filter or text:lower():match(filter:lower()) then
+                out[#out + 1] = text
+            end
+        end
+    end
+    return out
+end
+
 -- ---------------------------------------------------------------- command line
 -- reqscript hands the caller this script's environment, so everything above
 -- is declared global on purpose: a `local M = {}` table is invisible to it, and
@@ -161,6 +185,13 @@ if args[1] == 'tile' then
     local standable, g = tile(x, y, z, groups)
     print(string.format('%d,%d,%d group=%d stand_on=%s reach_from_beside=%s',
         x, y, z, g, tostring(standable), tostring(adjacent(x, y, z, groups))))
+    return
+end
+
+if args[1] == 'why' then
+    local said = cancellations(60, args[2])
+    if #said == 0 then print('no cancellations on record') end
+    for _, line in ipairs(said) do print('  ' .. line) end
     return
 end
 
@@ -200,3 +231,19 @@ for _, b in ipairs(df.global.world.buildings.all) do
     end
 end
 print(string.format('workshops: %d, reachable %d', shops, reachable_shops))
+
+local said = cancellations(40)
+if #said > 0 then
+    local tally = {}
+    for _, line in ipairs(said) do
+        local reason = line:match('cancels [^:]+:%s*(.+)$') or line
+        tally[reason] = (tally[reason] or 0) + 1
+    end
+    local keys = {}
+    for k in pairs(tally) do keys[#keys + 1] = k end
+    table.sort(keys, function(a, b) return tally[a] > tally[b] end)
+    print("recent job cancellations, in DF's own words:")
+    for i = 1, math.min(#keys, 6) do
+        print(string.format('  %3d  %s', tally[keys[i]], keys[i]))
+    end
+end

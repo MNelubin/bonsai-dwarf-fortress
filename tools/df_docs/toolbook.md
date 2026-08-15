@@ -68,8 +68,24 @@ head can be stood on, some designated tile is workable now, and a claimable reag
 reachable.
 
 **What it found immediately on the test fort:** 186 designations of which only 32 were
-workable, and **14 of 15 barrels belong to another civilisation** — which is very likely
-part of why the brewing reaction kept being cancelled, since it needs an empty barrel.
+workable, and **14 of 15 barrels belong to another civilisation** — which was indeed part
+of why the brewing reaction kept being cancelled, since it needs an empty container.
+
+### The other half: DF says why, in plain language
+
+`world.status.announcements` carries a cancellation line for every job a dwarf picked up
+and could not finish. It had been sitting there unread the whole time:
+
+    cancels Brew drink from plant: Needs unrotten plant.
+    cancels Carve up/down staircase: Inappropriate dig square.
+    cancels Process plants (barrel): Needs unrotten processable (to barrel) plant.
+    cancels Hunt for small creature: Interrupted by a tyrannosaurus.
+
+Reachability answers *can we get to it*; this answers *we tried, and here is what was
+missing*. `reach.cancellations(limit, filter)` returns them, `bonsai-reach why [filter]`
+prints them, and both the default report and `bonsai-toolcheck` summarise the recent
+reasons. Three shapes of brew job were called malformed on the strength of a silent
+cancellation before anyone thought to read this.
 
 ---
 
@@ -493,30 +509,33 @@ so the staple crop does brew.
 because furniture jobs work *either* way: a pinned item and a specification both produce a
 bed, which made it look as though DF was doing the work.
 
-**4. What has been tried and still gets cancelled.** Three shapes, each with 98–102 free
-plants and 15 barrels standing in the fort:
+**4. The job shape is RIGHT; the reagents were not.** Three shapes were tried and the
+first two were genuinely wrong, but the third was not, and reading DF's own cancellation
+line is what separated them:
 
-| attempt | result |
+| attempt | what DF said |
 |---|---|
-| `ProcessPlantsBarrel` at a Still, bare | cancelled |
-| `ProcessPlantsBarrel` at a Still, with a derived spec — one `unrotten`+`processable_to_barrel` PLANT and one `empty` BARREL | cancelled |
-| `CustomReaction` with `reaction_name = BREW_DRINK_FROM_PLANT`, job_items copied verbatim from the reaction's own reagents (2 of 2) | cancelled |
+| `ProcessPlantsBarrel` at a Still, bare | cancelled — no job_items at all |
+| `ProcessPlantsBarrel` at a Still, with a derived spec | cancelled — `Needs unrotten processable (to barrel) plant` |
+| `CustomReaction` + `reaction_name = BREW_DRINK_FROM_PLANT`, reagents copied from the reaction | **survives**, a dwarf takes it, then `cancels Brew drink from plant: Needs unrotten plant` |
 
-So a `CustomReaction` job needs more than a name and the right reagents. The leads not yet
-followed, in the order worth trying:
+So the third form is a real, valid brewing job — DF names it "Brew drink from plant", a
+dwarf picks it up, and the specs read back correctly:
 
-* the job may need its own index into the reaction list, not only `reaction_name`;
-* the Still may need the reaction permitted in its `profile`, the way a workshop's
-  `max_general_orders` gates manager orders;
-* the fort entity knows 36 reactions (`entity.resources.reaction_idx`) — whether index 135
-  is among them has not been checked, and a reaction the civilisation does not know would
-  be refused;
-* the shipped `workorder` script creates `CustomReaction` orders on the hand-played fort
-  that DO run, so its code path is a working example to read rather than reinvent.
+    need type=PLANT sub=-1 mat=-1:-1 qty=1 flags=[unrotten]
+    need type=NONE  sub=-1 mat=-1:-1 qty=1 flags=[empty,food_storage]
 
-**Why it stays out of the tool list meanwhile.** A wrong reagent is not a soft failure:
-DF cancels the job thousands of ticks later with the order's count already spent, which is
-exactly the silent-success shape every other verb here has been fixed to avoid. Shipping a
-brew verb that produces cancelled jobs would be worse than not having one.
+Two things had to be true before it got that far, and both were invisible until
+`bonsai-reach` was written: there must be an **empty container the fort owns** (14 of the
+fort's 15 barrels belong to another civilisation), and there must be a plant DF accepts.
+
+**What is still missing.** The plants used in the test were synthesised with
+`createItem(PLANT, PLANT_MAT:MUSHROOM_HELMET_PLUMP:STRUCTURAL)`, and DF refuses them as
+not an "unrotten plant" — so the remaining gap is the reagent, not the job. The next step
+is to grow a real one: the farm is planted, and a harvested plump helmet should satisfy it
+where a hand-made item does not.
+
+**Why it stays out of the tool list meanwhile.** A verb that produces jobs DF cancels is
+exactly the silent-success shape every other verb here has been fixed to avoid.
 
 `bonsai-brewprobe` builds the current best attempt and reports what DF made of it.

@@ -264,9 +264,10 @@ def test_the_toolbook_records_a_refusal_for_every_verb_that_has_one():
 
     book = (Path(__file__).resolve().parents[2] / "tools" / "df_docs"
             / "toolbook.md").read_text(encoding="utf-8")
-    sections = book.split("\n## ")
-    # advance takes no arguments and has nothing to refuse
-    checked = [s for s in sections[1:] if not s.startswith("advance")]
-    silent = [s.splitlines()[0] for s in checked
-              if "Refuses" not in s and "refuse" not in s.lower()]
+    # Only verb sections. The file also documents the reachability module and the state
+    # of brewing, and neither is something an agent can dispatch. `advance` takes no
+    # arguments and so has nothing to refuse.
+    verbs = {v["verb"] for v in available_actions()} - {"advance"}
+    sections = {s.splitlines()[0]: s for s in book.split("\n## ")[1:]}
+    silent = sorted(v for v in verbs if "refuse" not in sections.get(v, "").lower())
     assert silent == [], f"toolbook sections with no refusal note: {silent}"

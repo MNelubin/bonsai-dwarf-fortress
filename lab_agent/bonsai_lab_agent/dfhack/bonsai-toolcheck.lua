@@ -305,6 +305,26 @@ else
     end
     ok('a claimable reagent is reachable', material ~= nil,
         material and ('log ' .. material.id) or 'no reachable log')
+
+    -- Not an assertion: DF's own words about what it could not finish. A cancellation is
+    -- the fort telling you why, and it went unread for a long time — three shapes of brew
+    -- job were called malformed on the strength of a silent cancellation, when the game
+    -- had been saying `Needs unrotten plant` all along.
+    local said = reach.cancellations(40)
+    if #said > 0 then
+        local tally = {}
+        for _, line in ipairs(said) do
+            local why = line:match('cancels [^:]+:%s*(.+)$') or line
+            tally[why] = (tally[why] or 0) + 1
+        end
+        local keys = {}
+        for k in pairs(tally) do keys[#keys + 1] = k end
+        table.sort(keys, function(a, b) return tally[a] > tally[b] end)
+        print('--    DF cancelled work for these reasons recently:')
+        for i = 1, math.min(#keys, 5) do
+            print(string.format('--    %3d  %s', tally[keys[i]], keys[i]))
+        end
+    end
 end
 
 -- ================================================================ orders, in brief
