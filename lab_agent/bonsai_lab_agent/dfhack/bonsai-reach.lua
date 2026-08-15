@@ -127,6 +127,40 @@ function site(x0, y0, z, width, height, groups)
     return true
 end
 
+-- The same rectangle question for something you mean to DIG rather than build on.
+--
+-- `site` demands a free floor a citizen can stand on, which is right for a workshop, a
+-- stockpile or a zone and exactly wrong for a `#dig` blueprint: a crypt is supposed to go
+-- into solid rock. Asking the wrong one of these two made `apply_template` refuse every
+-- dig design on a fort with plenty of stone — the same wall-is-not-walkable confusion,
+-- one layer up, that cost a day when it was about single tiles.
+--
+-- So: every tile must be on the map and not already designated, nothing may be built
+-- there, and at least one tile must be one a miner can reach from beside — otherwise the
+-- designation is an orphan that generates no jobs.
+function dig_site(x0, y0, z, width, height, groups)
+    groups = groups or fort_groups()
+    local reachable = false
+    for x = x0, x0 + (width or 1) - 1 do
+        for y = y0, y0 + (height or 1) - 1 do
+            local ok, tt = pcall(function() return dfhack.maps.getTileType(x, y, z) end)
+            if not (ok and tt) then return false, x, y, 'off map' end
+            local ok2, des = pcall(function() return dfhack.maps.getTileFlags(x, y, z) end)
+            if ok2 and des and des.dig ~= df.tile_dig_designation.No then
+                return false, x, y, 'already designated'
+            end
+            if dfhack.buildings.findAtTile(xyz2pos(x, y, z)) then
+                return false, x, y, 'occupied'
+            end
+            if not reachable and (tile(x, y, z, groups) or adjacent(x, y, z, groups)) then
+                reachable = true
+            end
+        end
+    end
+    if not reachable then return false, x0, y0, 'nothing next to it can be reached' end
+    return true
+end
+
 -- How much of a set of designations the fort can currently act on. A batch that is all
 -- pending is not necessarily wrong — the chamber below a shaft is unreachable until the
 -- staircase above it is cut — but a batch that STAYS all pending is an orphan.

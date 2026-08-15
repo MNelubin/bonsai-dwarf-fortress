@@ -137,14 +137,19 @@ def test_an_uninterpretable_boolean_is_refused():
 
 # ---------------------------------------------------------------- planned verbs
 def test_a_planned_verb_is_refused_with_its_tranche():
-    d = judge({"verb": "apply_template"})
-    assert not d.ok and "tranche 4" in d.reason
+    """Named off the catalog rather than hardcoded: the example used to be
+    `apply_template`, which has since gone live, and a test that names a specific verb
+    quietly stops testing anything the day that verb ships."""
+    planned = next(v for v in CATALOG if v.status == "planned")
+    d = judge({"verb": planned.name})
+    assert not d.ok and f"tranche {planned.tranche}" in d.reason
 
 
 def test_planned_verbs_stay_out_of_the_advertised_actions():
+    planned = next(v for v in CATALOG if v.status == "planned")
     live = {a["verb"] for a in available_actions()}
-    assert "apply_template" not in live
-    assert "apply_template" in {a["verb"] for a in available_actions(True)}
+    assert planned.name not in live
+    assert planned.name in {a["verb"] for a in available_actions(True)}
 
 
 def test_the_roadmap_is_ordered_by_tranche():
@@ -239,13 +244,18 @@ def test_advertised_actions_carry_argument_schemas():
 def test_the_schema_stays_small_enough_to_ship_every_round():
     """It rides in every controller prompt, so it is a running cost, not a one-off.
 
-    The ceiling has moved as the guide's verbs landed, and each move was paid for rather
-    than waved through: at 22 verbs the last increase was funded by dropping `category`
-    (the model never acts on it) and by emitting `required` only when false. 8.2 KB for
-    the whole player surface.
+    The ceiling has moved as the guide's verbs landed, and each move was accounted for
+    rather than waved through: at 22 verbs the last increase was funded by dropping
+    `category` (the model never acts on it) and by emitting `required` only when false.
+
+    This move to 9000 is NOT funded — it is a debt. `apply_template` went live carrying an
+    11-name enum, and the two order verbs each ship a full copy of ORDERABLE_JOBS. The
+    obvious repayment is a shared vocabulary block emitted once with args referring to it,
+    which would return roughly 400 bytes; cutting the enums instead would cost the gate
+    its ability to refuse an invented name, which is worth more than the bytes.
     """
     import json
-    assert len(json.dumps(available_actions())) < 8500
+    assert len(json.dumps(available_actions())) < 9000
 
 
 def test_every_live_verb_has_a_toolbook_entry():

@@ -219,6 +219,47 @@ chamber size against the dig budget.
 
 ---
 
+## apply_template
+
+Stamp one of DFHack's shipped room designs — dig, build and zone in one intent.
+
+**Refuses:** a template name not in the library, and — the part that matters — a fort with
+nowhere the design fits. It walks a ring asking `bonsai-reach.site` whether every tile of
+the blueprint's measured extent is a floor a citizen can stand on, and declines rather
+than stamping a 47x47 crypt into solid rock.
+
+**Measured:** designations and buildings inside the template's own box, counted before and
+after. quickfort prints its own `Tiles designated for digging: 83` and that line is not
+evidence — it is what quickfort intended, and this project has been burned by intent
+before.
+
+**The position trap, and it is the whole thing.** quickfort's CLI lands the cursor on the
+blueprint's own `start()` cell, NOT on its top-left corner. `library/tombs/Mini_Saracen.csv`
+declares `start(6;6)`; run at `-c 100,90,45` on the live fort it put designations in the
+box **95,85 .. 105,95**, exactly six-minus-one back and up. The `apply_blueprint` API does
+the opposite — it adds the position to the data indices and ignores `start()` entirely —
+so the two entry points disagree by the anchor, silently.
+
+**Addressed as `library/<path>`.** The files sit at `hack/data/blueprints/<path>` on disk,
+but quickfort wants the library name. Handing it the disk-relative path gets
+`failed to open "dfhack-config/blueprints/tombs/Mini_Saracen.csv"`, which reads like a
+missing file rather than a wrong prefix.
+
+**The library lives in python, not here.** The gate expands a template name into the
+quickfort name, the measured extent and the anchor, so the DFHack side holds no second
+copy of the table to drift from the first. What it receives it does.
+
+**No tier argument.** The planned signature had one, aimed at a quality tier. v50's
+quality cutoffs are not knowable on this build — `getRoomDescription` is the stub — so a
+number the game will never confirm has no business in the contract. See
+`bonsai-roomvalue` and `buildings_plan.md`.
+
+**Still unknown:** every extent is the largest single z-level, and `levels` is carried but
+not yet used to check the fort has that much depth below the site. `pump_stack` reports
+one level because its repetition lives in a `#meta` section, which understates it.
+
+---
+
 ## create_stockpile
 
 Place a 2×2 stockpile on a ring around the wagon.

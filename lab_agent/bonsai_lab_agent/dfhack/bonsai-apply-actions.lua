@@ -24,7 +24,7 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
             configure_stockpile = 0, chop_trees = 0, smooth = 0,
             build_construction = 0, set_standing_order = 0,
-            set_dig_priority = 0 }
+            set_dig_priority = 0, apply_template = 0 }
 
 -- Work orders live in _G.BONSAI_ORDERS (declared with the order code below) and survive
 -- between dispatches within one DF process. They are re-checked on every dispatch, which
@@ -723,6 +723,42 @@ local function site(n, radius)
            u1.pos.z
 end
 
+-- The ring runs out, and when it does every placing verb stops working forever.
+--
+-- Measured on the test fort after five battery runs: `build_workshop`, `create_stockpile`
+-- and `create_zone` all placed nothing while an independent scan found free 2x2 and 3x3
+-- sites a few tiles away. site() walks eight compass points and widens by three every
+-- eighth step, so it samples an annulus; once those samples are occupied it keeps
+-- proposing the same taken spots and the verb reports zero for the rest of the episode.
+--
+-- So: try the ring first, because it keeps the fort's layout tidy and spread out, then
+-- fall back to a plain outward scan and take the first place the design actually fits.
+-- A refusal after this one means the fort really has no room.
+local function find_site(bw, bh, radius, cursor, tries, for_digging)
+    local function fits(x, y, z)
+        if not reach then return true end
+        if for_digging then return (reach.dig_site(x, y, z, bw, bh, REACH_GROUPS)) end
+        return (reach.site(x, y, z, bw, bh, REACH_GROUPS))
+    end
+    for i = 0, (tries or 48) - 1 do
+        local x, y, z = site((cursor or 0) + i, radius or 6)
+        if x and fits(x, y, z) then return x, y, z end
+    end
+    if not u1 then return nil end
+    for r = 2, 30 do
+        for dx = -r, r do
+            for dy = -r, r do
+                -- only the ring's edge, so the scan grows outward instead of re-testing
+                if math.abs(dx) == r or math.abs(dy) == r then
+                    local x, y, z = u1.pos.x + dx, u1.pos.y + dy, u1.pos.z
+                    if fits(x, y, z) then return x, y, z end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- ---------------------------------------------------------------- the food chain
 -- A fort that cannot farm is on a countdown. The measured year under the earlier verb
 -- set ended drink 12 -> 0 with nothing planted and two of seven dwarves dead, so this is
@@ -1013,6 +1049,88 @@ for line in f:lines() do
             end
             c.designate_dig = c.designate_dig + placed
         end)
+    elseif verb == "apply_template" then
+        -- Stamp one of DFHack's shipped blueprints. The owner asked for exactly this and
+        -- was explicit that it must be the game's own template system rather than a
+        -- homegrown format:
+        --     использование именно шаблонов внутри игры внутри двхака
+        --
+        -- The catalog owns the library, so this receives the quickfort NAME and the
+        -- measured extent rather than looking anything up. Arguments:
+        --   a[2] blueprint name as quickfort addresses it (library/tombs/Mini_Saracen.csv)
+        --   a[3] width  a[4] height  a[5] z-levels
+        --   a[6] start x  a[7] start y — the blueprint's own anchor, 1-indexed
+        --   a[8] which blueprint INSIDE the file, or blank for the first one
+        --
+        -- That last one is a trap dressed as a default. A .csv holds several blueprints
+        -- and `quickfort run <file>` runs the FIRST. library/pump_stack.csv opens with a
+        -- #notes help section, so running the file printed a walkthrough and stamped
+        -- nothing; library/tombs/Mini_Saracen.csv worked only because its first section
+        -- happens to be #dig. Anything else must be named as -n /<label>.
+        pcall(function()
+            local name = a[2]
+            local bw, bh = tonumber(a[3]), tonumber(a[4])
+            local sx, sy = tonumber(a[6]) or 1, tonumber(a[7]) or 1
+            if not (name and name ~= '' and bw and bh) then return end
+
+            -- Find somewhere it actually fits. reach.site checks every tile is a floor a
+            -- citizen can stand on and nothing is already there, which is the difference
+            -- between stamping a room and stamping it into a wall.
+            -- its own placement cursor: sharing the stockpile one made every call
+            -- retry the same 48 spots and compete with piles for them
+            -- WHICH fit test depends on what the blueprint does, and getting this
+            -- wrong made the verb refuse every dig design on a fort full of stone: a
+            -- workshop needs a free floor, a crypt needs solid rock a miner can reach.
+            -- Same wall-is-not-walkable distinction bonsai-reach was written around.
+            P.tmpl = (P.tmpl or 0)
+            local digs = (a[9] or 'dig') == 'dig'
+            local x0, y0, z0 = find_site(bw, bh, 6, P.tmpl, 48, digs)
+            if not x0 then return end            -- refuse rather than stamp nowhere
+            P.tmpl = P.tmpl + 1
+
+            -- What is there before, inside the box the blueprint will cover.
+            local function census()
+                local des, bld = 0, 0
+                for x = x0, x0 + bw - 1 do
+                    for y = y0, y0 + bh - 1 do
+                        local ok, d = pcall(function()
+                            return dfhack.maps.getTileFlags(x, y, z0)
+                        end)
+                        if ok and d and d.dig ~= df.tile_dig_designation.No then
+                            des = des + 1
+                        end
+                        if dfhack.buildings.findAtTile(xyz2pos(x, y, z0)) then
+                            bld = bld + 1
+                        end
+                    end
+                end
+                return des + bld
+            end
+            local before = census()
+
+            -- THE POSITION TRAP: quickfort's CLI lands the cursor on the blueprint's own
+            -- start() cell, not on its top-left. start(6;6) run at 100,90 puts the corner
+            -- at 95,85 — measured live. The apply_blueprint API does the opposite and
+            -- ignores start() entirely, so the two entry points disagree by the anchor.
+            local cx, cy = x0 + sx - 1, y0 + sy - 1
+            local label = a[8]
+            pcall(function()
+                local cursor = string.format('%d,%d,%d', cx, cy, z0)
+                if label and label ~= '' then
+                    dfhack.run_command('quickfort', 'run', '-c', cursor,
+                        name, '-n', '/' .. label)
+                else
+                    dfhack.run_command('quickfort', 'run', '-c', cursor, name)
+                end
+            end)
+
+            -- quickfort prints its own statistics, which is not evidence: count the map.
+            if census() > before then
+                c.apply_template = c.apply_template + 1
+                _G.BONSAI_LAST_TEMPLATE = { name = name, x = x0, y = y0, z = z0,
+                                            w = bw, h = bh }
+            end
+        end)
     elseif verb == "create_stockpile" then
         pcall(function()
             local n = tonumber(a[2]) or 1
@@ -1035,9 +1153,9 @@ for line in f:lines() do
                 -- stockpiles, `create_stockpile 1` reported 3 -> 3.
                 local placed = false
                 for _ = 1, 48 do
-                    local x, y, z = site(P.stock, 4)
+                    local x, y, z = find_site(2, 2, 4, P.stock, 8)
                     P.stock = P.stock + 1
-                    if x and (not reach or reach.site(x, y, z, 2, 2, REACH_GROUPS)) then
+                    if x then
                         pcall(function()
                             local b = dfhack.buildings.constructBuilding{
                                 type = df.building_type.Stockpile, abstract = true,
@@ -1084,12 +1202,14 @@ for line in f:lines() do
             -- no longer enough either. site() widens the ring every eight steps, so more
             -- attempts genuinely search outward rather than retrying the same ground.
             for _ = 1, 48 do
-                local x, y, z = site(P.shop, 8)
-                P.shop = P.shop + 1
                 -- Skip a spot nobody can reach before asking DF to build there: a
                 -- workshop on unreachable ground takes its reagent, never gets built,
-                -- and reads as a successful placement.
-                if x and (not reach or reach.site(x, y, z, 3, 3, REACH_GROUPS)) then
+                -- and reads as a successful placement. find_site falls back to an
+                -- outward scan once the ring is used up, which is what stopped this verb
+                -- dead on a fort that still had room.
+                local x, y, z = find_site(3, 3, 8, P.shop, 8)
+                P.shop = P.shop + 1
+                if x then
                     local b = dfhack.buildings.constructBuilding{
                         type = df.building_type.Workshop, subtype = sub,
                         pos = { x = x, y = y, z = z }, items = { item } }
@@ -1182,9 +1302,9 @@ for line in f:lines() do
             local height = math.max(1, math.min(tonumber(a[4]) or width, 20))
             local x, y, z
             for _ = 1, 16 do
-                local cx, cy, cz = site(P.zone or 0, 5)
+                local cx, cy, cz = find_site(width, height, 5, P.zone or 0, 8)
                 P.zone = (P.zone or 0) + 1
-                if cx and (not reach or reach.site(cx, cy, cz, width, height, REACH_GROUPS)) then
+                if cx then
                     x, y, z = cx, cy, cz
                     break
                 end

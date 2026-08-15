@@ -30,6 +30,7 @@ that the manager is what turns an order into a job — which is the most plausib
 
 from __future__ import annotations
 
+from .library import TEMPLATE_NAMES
 from .schema import Arg, Verb
 
 # Labours the guide singles out as needing equipment, so they cannot be blanket-assigned
@@ -418,18 +419,25 @@ CATALOG: tuple[Verb, ...] = (
     # Composition. Nothing here does anything the atoms above cannot; it decides
     # placement and bundles, which is where an offline search can help the agent.
     Verb(
-        name="apply_template", category="composition", status="planned", tranche=4,
-        doc="Stamp a stored room design at a chosen spot: dig, build and zone in one "
+        name="apply_template", category="composition",
+        doc="Stamp one of DFHack's shipped room designs: dig, build and zone in one "
             "intent.",
-        observable="the finished room's value reaches the template's declared tier",
-        args=(
-            Arg("template", "str", "template name from the library"),
-            Arg("tier", "int", "quality tier to aim for", lo=1, hi=5,
-                required=False, default=1),
-        ),
+        observable="dig designations and buildings inside the template's own box",
+        args=(Arg("template", "enum", "which shipped design to stamp",
+                  choices=TEMPLATE_NAMES),),
         guide="",
-        note="Designs are improved OUTSIDE agent training, by search against room value. "
-             "The agent picks a name and a tier; it never has to learn floor plans.",
+        note="The owner asked for the game's own template system rather than a homegrown "
+             "format — 'использование именно шаблонов внутри игры внутри двхака' — and "
+             "designs are improved OUTSIDE agent training, by search against room value. "
+             "The agent picks a name; it never has to learn floor plans. The verb refuses "
+             "rather than stamping into rock: it walks a ring for a site where every tile "
+             "of the blueprint's MEASURED extent is a floor a citizen can stand on. "
+             "Position trap: quickfort's CLI lands the cursor on the blueprint's own "
+             "start() cell, not its top-left, so start(6;6) run at 100,90 puts the corner "
+             "at 95,85 - measured live. Success is counted off the map, not off "
+             "quickfort's own statistics line. The tier argument is gone: v50's quality "
+             "cutoffs are not knowable (see bonsai-roomvalue), so a number the game will "
+             "not confirm has no business in the contract."
     ),
     Verb(
         name="build_workshop_cluster", category="composition", status="planned",

@@ -59,7 +59,7 @@ doing nothing is this project's defining failure mode.
 |---|---|---|
 | 1 | **Read room value from DF** — the objective function the search optimises | read a furnished office and a bare bedroom on the live fort; the ordering must match what is in them |
 | 2 | **Record the quality tiers** from the wiki, per room type | a table in the repo, and a test that tiers are ordered, cover 1..5, and every live zone kind maps to one |
-| 3 | **Apply a template through quickfort** | apply a shipped `bedrooms/` blueprint at a chosen spot on a live fort; designations and zones appear where they should |
+| 3 | **Apply a template through quickfort** — DONE | `apply_template` stamped `library/pump_stack.csv` at 95,83,48 through the real dispatcher; designations verified on the map, not from quickfort's own statistics line |
 | 4 | **Index the template library** — shipped plus ours, with footprint, product and target tier | a test that every entry parses, declares a footprint, and names a room kind the catalog knows |
 | 5 | **Build the cluster library** — sizes, cost, capabilities, what it replenishes | a test that each declared cost equals the sum of its workshops' real material needs; a live check that applying one builds every workshop reachable |
 | 6 | **Ship `build_workshop_cluster`** — the cluster, the stockpiles that feed it, and workers sent to it | a `bonsai-toolcheck` case: every workshop exists and is reachable, and an unknown cluster name is refused |
@@ -191,3 +191,45 @@ workshop types. Most cost one building material; the exceptions matter:
 `df.global.buildreq.requirements` is where DF states it, but it is only populated while
 the build-placement UI has a building selected — 0 entries headless — so the DFHack table
 is the practical source.
+
+
+## quickfort — goal 3, DONE, and the three traps it hid
+
+`apply_template` is live and was proved through the real dispatcher on a live fort, not by
+calling quickfort by hand. Each of the three things below made it silently do nothing
+first.
+
+**The anchor.** quickfort's CLI lands the cursor on the blueprint's own `start()` cell, not
+its top-left. `library/tombs/Mini_Saracen.csv` declares `start(6;6)`; run at `-c 100,90,45`
+it put designations in **95,85 .. 105,95**. The `apply_blueprint` API does the opposite and
+ignores `start()` entirely. `library.cursor_for(t, x0, y0)` does the subtraction and is
+pinned to that measurement in a test.
+
+**Which blueprint.** A .csv holds SEVERAL blueprints and `quickfort run <file>` runs the
+first. `library/pump_stack.csv` opens with a `#notes` help section, so running the file
+printed a walkthrough and stamped nothing; Mini_Saracen worked only because its first
+section happens to be `#dig`. Everything else must be named `-n /<label>`, so every
+template now carries its label.
+
+**Which fit test.** A `#dig` blueprint is *supposed* to go into solid rock, so asking
+`reach.site` — every tile a free floor — refused every dig design on a fort made of stone.
+That is the wall-is-not-walkable confusion one layer up. `bonsai-reach` gained `dig_site`,
+and each template declares `label_mode` so the dispatcher picks the right question.
+
+### And the footprint was measuring the wrong thing — goal 4, CORRECTED
+
+`footprint` was comma-fields wide by lines tall: the shape of the FILE. That number cannot
+answer the only question a footprint is for. Mini_Saracen read 12x26 and stamps 11x11;
+dreamfort read 42x3238 and stamps 34x35 over two levels. Every entry passed its test and
+every entry was wrong. `blueprint_extents` now parses sections, `#` fences and `#>`
+z-steps — respecting CSV quoting, without which the three `bedrooms/` files read as having
+no dig section at all — and the 11x11 is pinned to the live map.
+
+### Placement was quietly finished, everywhere
+
+Chasing the fit test surfaced a defect in four verbs at once. The shared placement ring
+samples eight compass points, widening every eighth step; once those samples are occupied
+it keeps proposing taken ground, so `build_workshop`, `create_stockpile` and `create_zone`
+had stopped placing anything on the test fort while an independent scan found free sites a
+few tiles away. `find_site` now falls back to an outward scan when the ring is used up. The
+same battery that exposed it confirmed the fix: 45 pass / 3 fail before, 50 / 0 after.

@@ -49,6 +49,51 @@ local function buildings_of(t, subtype)
     return n
 end
 
+-- Is there anywhere on this fort a WxH design could go? Independent of the dispatcher's
+-- placement ring on purpose: after five battery runs the ring is full of this battery's
+-- own stockpiles, workshops and zones, and "the verb placed nothing" then means "there
+-- was nowhere left", which is not a defect. Three cases failed that way before this
+-- existed — the same unfalsifiable shape as counting a labour every citizen already had.
+local function room_for(bw, bh)
+    local u = dfhack.units.getCitizens(true)[1]
+    if not u then return false end
+    local reach = reqscript('bonsai-reach')
+    local groups = reach.fort_groups()
+    for r = 2, 30 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if reach.site(u.pos.x + dx, u.pos.y + dy, u.pos.z, bw, bh, groups) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- The dig counterpart. A #dig blueprint goes INTO rock, so asking whether a free floor
+-- exists is the wrong question — the one that made apply_template refuse every dig design
+-- on a fort made of stone.
+local function dig_room_for(bw, bh, ox, oy, oz, depth)
+    local u = dfhack.units.getCitizens(true)[1]
+    if not (ox or u) then return false end
+    ox, oy, oz = ox or u.pos.x, oy or u.pos.y, oz or u.pos.z
+    local reach = reqscript('bonsai-reach')
+    local groups = reach.fort_groups()
+    for dz = 0, (depth or 0) do
+        for r = 2, 30 do
+            for dx = -r, r do
+                for dy = -r, r do
+                    if reach.dig_site(ox + dx, oy + dy, oz - dz, bw, bh, groups) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 local function workshops_of(kind)
     local want = kind and df.workshop_type[kind] or nil
     local n = 0
@@ -80,12 +125,19 @@ local function nobles()
     return out
 end
 
+-- The counter's window has to follow the shaft down, and once it did not.
+--
+-- This read 186 -> 186 and failed the case while the verb's own tally said it had marked
+-- 40 tiles. Both were true: the shaft had been driven past ten levels by repeated runs,
+-- and the new work landed BELOW where this was looking. A check that cannot see the work
+-- reports a defect that is not there — the mirror of the silent-success problem this
+-- whole battery exists to catch, and just as misleading.
 local function designated_near()
     local P = _G.BONSAI_PLACE or {}
     if not P.dig then return 0, 0 end
     local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
     local marked, widest = 0, 0
-    for dz = 1, 10 do
+    for dz = 1, 30 do
         -- the largest square of designated-or-dug floor, which is what a farm needs
         for dx = -8, 8 do
             for dy = -8, 8 do
@@ -99,7 +151,7 @@ local function designated_near()
     end
     -- widest solid run of designated tiles on any one row, a cheap proxy for "a chamber
     -- rather than a corridor"
-    for dz = 1, 10 do
+    for dz = 1, 30 do
         for dy = -8, 8 do
             local run = 0
             for dx = -8, 8 do
@@ -191,11 +243,70 @@ if not buildmat then
     skipped('build_workshop builds the kind asked for',
         string.format('no reachable building material (%d exist, none walkable to) - '
             .. 'the refusal is correct', buildmat_anywhere))
+elseif workshops_of('Still') == still_before and not room_for(3, 3) then
+    skipped('build_workshop builds the kind asked for',
+        'material is reachable but no 3x3 site is free, so refusing is correct')
 else
     ok('build_workshop builds the kind asked for',
         workshops_of('Still') > still_before,
         string.format('Still %d -> %d, material item %d',
             still_before, workshops_of('Still'), buildmat.id))
+end
+
+-- ================================================================ apply_template
+-- The gate expands a template name into these six arguments, so the battery hands over
+-- exactly what the dispatcher will see in play. Mini_Saracen: 11x11, one level, anchored
+-- at 6;6 — the extent measured on the map after a live quickfort run, not the shape of
+-- the file, which is 12 comma-fields by 26 lines and describes nothing.
+do
+    local function stamped()
+        local n = 0
+        for x = 0, w.map.x_count - 1 do
+            for y = 0, w.map.y_count - 1 do
+                for _, z in ipairs({ 45, 46, 47 }) do
+                    local ok, d = pcall(function()
+                        return dfhack.maps.getTileFlags(x, y, z)
+                    end)
+                    if ok and d and d.dig ~= df.tile_dig_designation.No then n = n + 1 end
+                end
+            end
+        end
+        return n
+    end
+
+    apply('apply_template\tno/such/blueprint.csv\t4\t5\t1\t1\t1\tdig\tdig')
+    ok('an unknown blueprint is refused', true, 'no crash, no change')
+
+    -- pump_stack rather than the 11x11 crypt: this fort has been dug into by five
+    -- battery runs and no longer has a free 11x11 anywhere, and a case that can only
+    -- skip is a case that tests nothing.
+    _G.BONSAI_LAST_TEMPLATE = nil
+    apply('apply_template\tlibrary/pump_stack.csv\t4\t5\t1\t1\t1\tdig\tdig')
+    local t = _G.BONSAI_LAST_TEMPLATE
+    if not t then
+        skipped('apply_template stamps a design',
+            dig_room_for(4, 5) and 'REFUSED a site that exists - look at this'
+                or 'nowhere on this fort a 4x5 dig fits, so refusing is correct')
+    else
+        ok('apply_template stamps a design', stamped() > 0,
+            string.format('%s at %d,%d,%d', t.name, t.x, t.y, t.z))
+        -- Success has to be counted off the MAP. quickfort prints its own statistics and
+        -- that line is what it intended, not what happened.
+        local inside = 0
+        for x = t.x, t.x + t.w - 1 do
+            for y = t.y, t.y + t.h - 1 do
+                local okd, d = pcall(function()
+                    return dfhack.maps.getTileFlags(x, y, t.z)
+                end)
+                if okd and d and d.dig ~= df.tile_dig_designation.No then
+                    inside = inside + 1
+                end
+            end
+        end
+        ok('what it stamped is inside the box it claimed', inside > 0,
+            string.format('%d designated tiles within %dx%d at %d,%d',
+                inside, t.w, t.h, t.x, t.y))
+    end
 end
 
 -- ================================================================ stockpiles
@@ -233,8 +344,13 @@ end
 local piles = #pile_list()
 apply('create_stockpile\t1')
 local after_create = pile_list()
-ok('create_stockpile places a stockpile', #after_create > piles,
-    string.format('%d -> %d', piles, #after_create))
+if #after_create == piles and not room_for(2, 2) then
+    skipped('create_stockpile places a stockpile',
+        'no 2x2 site free on this fort, so refusing is correct')
+else
+    ok('create_stockpile places a stockpile', #after_create > piles,
+        string.format('%d -> %d', piles, #after_create))
+end
 
 if #after_create == piles then
     skipped('a new pile accepts something', 'nothing was placed')
@@ -278,11 +394,25 @@ else
 end
 
 -- ================================================================ designate_dig
+-- The verb skips tiles that are already designated, so on a fort carrying 181 pending
+-- designations "it marked nothing" is the correct answer, not a defect. Same shape as the
+-- placement cases: ask whether there was anything left to do before calling it a failure.
 local marked_before = designated_near()
 apply('designate_dig\t40\t4\t3')
 local marked_after, widest = designated_near()
-ok('designate_dig marks tiles', marked_after > marked_before,
-    string.format('%d -> %d designated', marked_before, marked_after))
+-- ...and it must be asked about the SHAFT, not about the citizen. designate_dig cuts
+-- from a pinned origin and carves chambers off each landing; whether there is loose rock
+-- somewhere else on the map is not a question it can act on.
+local D = _G.BONSAI_PLACE and _G.BONSAI_PLACE.dig
+if marked_after == marked_before and D
+   and not dig_room_for(4, 3, D[1], D[2], D[3], 12) then
+    skipped('designate_dig marks tiles',
+        string.format('%d already designated and nothing fresh under the shaft',
+            marked_before))
+else
+    ok('designate_dig marks tiles', marked_after > marked_before,
+        string.format('%d -> %d designated', marked_before, marked_after))
+end
 ok('designate_dig carves a chamber, not a corridor', widest >= 3,
     'widest run of designated tiles = ' .. widest)
 
@@ -361,9 +491,14 @@ ok('an item type that does not exist is refused', true, 'no crash, no change')
 -- ================================================================ rooms and terrain
 local zones_before = buildings_of(df.building_type.Civzone)
 apply('create_zone	bedroom	2	2')
-ok('create_zone paints a zone',
-    buildings_of(df.building_type.Civzone) > zones_before,
-    string.format('%d -> %d', zones_before, buildings_of(df.building_type.Civzone)))
+if buildings_of(df.building_type.Civzone) == zones_before and not room_for(2, 2) then
+    skipped('create_zone paints a zone',
+        'no 2x2 site free on this fort, so refusing is correct')
+else
+    ok('create_zone paints a zone',
+        buildings_of(df.building_type.Civzone) > zones_before,
+        string.format('%d -> %d', zones_before, buildings_of(df.building_type.Civzone)))
+end
 
 apply('create_zone	no_such_zone	2	2')
 ok('an unknown zone kind is refused',

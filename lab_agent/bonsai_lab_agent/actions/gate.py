@@ -26,6 +26,7 @@ it is a model that is supposed to learn the game.
 
 from __future__ import annotations
 
+from .library import TEMPLATES_BY_NAME, start_offset
 from .catalog import BY_NAME, CATALOG, LIVE
 from .schema import Decision, Verb
 
@@ -161,7 +162,21 @@ def judge(intent) -> Decision:
                 return Decision(False, verb=name, reason=f"{a.name!r} was empty")
             out.append(s)
 
+    if name == "apply_template":
+        # The library is python's. Expanding here means the DFHack side never holds a
+        # second copy of the template table that could drift from this one — it receives
+        # a quickfort name, a measured extent and the blueprint's own anchor, and does
+        # what it is told.
+        out = _expand_template(str(out[0]))
+
     return Decision(True, verb=name, args=out, repairs=notes)
+
+
+def _expand_template(name: str) -> list:
+    t = TEMPLATES_BY_NAME[name]
+    w, h = t.footprint
+    sx, sy = start_offset(t)
+    return [t.qf_name, w, h, t.levels, sx, sy, t.label, t.label_mode]
 
 
 def sanitize(raw_actions) -> tuple[list[dict], list[str]]:

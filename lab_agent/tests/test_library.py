@@ -12,10 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from bonsai_lab_agent.actions.library import (CLUSTER_NAMES, CLUSTERS, STOCKPILE_KEYS,
-                                              TEMPLATES, TEMPLATES_BY_NAME,
-                                              WORKSHOP_KEYS, Cluster, LibraryError,
-                                              Template, cluster)
+from bonsai_lab_agent.actions.library import (CLUSTER_NAMES, CLUSTERS, GROUND_MODES,
+                                              STOCKPILE_KEYS, TEMPLATES,
+                                              TEMPLATES_BY_NAME, WORKSHOP_KEYS, Cluster,
+                                              LibraryError, Template, blueprint_extents,
+                                              cluster, template_extent)
 
 
 # ---------------------------------------------------------------- templates
@@ -128,12 +129,45 @@ def test_shipped_templates_exist_on_disk():
 @pytest.mark.skipif(not BLUEPRINTS.is_dir(),
                     reason="DFHack's blueprint library is on the lab host, not here")
 def test_declared_footprints_match_the_files():
-    """The extent is read off the file, so it must keep matching it."""
+    """The extent is read off the file, so it must keep matching it.
+
+    This used to compare against comma-fields x lines, which is the shape of the FILE and
+    not of the hole it digs. Every entry passed and every entry was wrong.
+    """
     for t in TEMPLATES:
         text = (BLUEPRINTS / t.path).read_text(encoding="utf-8", errors="replace")
-        rows = text.splitlines()
-        width = max((len(r.split(",")) for r in rows), default=0)
-        assert (width, len(rows)) == t.footprint, t.name
+        (w, h, levels), modes = template_extent(text)
+        assert (w, h) == t.footprint, t.name
+        assert levels == t.levels, t.name
+        assert modes == t.modes, t.name
+
+
+def test_the_parser_agrees_with_what_the_game_actually_stamped():
+    """One value pinned to the map, not to the parser.
+
+    `quickfort run -c 100,90,45 library/tombs/Mini_Saracen.csv` on the live fort put
+    designations in the box 95,85..105,95 — 11x11, and at the corner `start(6;6)` predicts
+    for that cursor. The file is 26 lines of up to 12 comma-fields wide, so a parser that
+    counts the file agrees with nothing. Without this case, the parser and the library
+    could drift together and stay consistent.
+    """
+    entry = TEMPLATES_BY_NAME["tombs24"]
+    assert entry.footprint == (11, 11)
+    assert entry.levels == 1
+    assert entry.start == "6;6"
+
+
+def test_quickfort_is_addressed_by_its_library_name():
+    """Handing quickfort the disk-relative path gets `failed to open
+    "dfhack-config/blueprints/<path>"` — a refusal that reads like a missing file."""
+    assert TEMPLATES_BY_NAME["tombs24"].qf_name == "library/tombs/Mini_Saracen.csv"
+
+
+def test_no_template_claims_a_text_only_section_as_ground():
+    """dreamfort's notes section is 60 rows of walkthrough prose. Counting it as extent
+    would tell the fort to dig a 60-tile-tall hole for a help file."""
+    for t in TEMPLATES:
+        assert set(t.modes) <= GROUND_MODES, t.name
 
 
 @pytest.mark.skipif(not BLUEPRINTS.is_dir(),
