@@ -77,3 +77,81 @@ then 6 (the verb), then 7 (the search, which needs 1, 2 and 4 in place).
 
 The agent learning layouts. The whole point of the tier argument is that it does not have
 to: the search runs offline against room value, and the agent asks for "bedroom, tier 3".
+
+---
+
+## Discovery, done and verified
+
+Four investigations, each adversarially re-checked by a second pass. What they settled:
+
+### Room value — goal 1, DONE
+
+**`getRoomValue` does not exist in v50.** Grepping all 153 df-structures files returns
+nothing, and DFHack's own `Buildings::getRoomDescription` has its entire body commented
+out with `TODO: understand how this changes for v50`. A civzone carries no value at all:
+`getPersonalValue(owner)`, `getPersonalValue(nil)` and `getArchValue()` are 0 on every one.
+
+DF only produces the number in its UI layer, per **unit**, in
+`view_sheets.curroom[df.demand_room.<kind>]`, recomputed each render frame while a unit
+sheet is open — so it needs an owner and a live sheet, and is useless as a scorer.
+
+It is exactly reproducible offline:
+
+    value = (extent cells that are set) + Σ getPersonalValue(nil) over contained_buildings
+
+Validated against DF's own `curroom` on three independent rooms — a 5×5 office with a
+throne and two beds (59), a 3×3 bedroom with one superior bed (32), a bare 2×2 bedroom (4)
+— exact on all three. `contained_buildings` is maintained by DF, so no spatial matching is
+needed. Furniture value equals `dfhack.items.getValue` of the item it is made of, measured
+on four pieces (ordinary 10, well-crafted 14, superior 23).
+
+**Bound on this number:** the per-tile term is confirmed only for ROUGH floor. All three
+measured rooms were unsmoothed and the fort had zero engravings. DF's UI says grates,
+windows, statues and displayed items raise value; none of that is measured, so a smoothed
+or decorated room will score low here.
+
+Shipped as `bonsai-roomvalue`. Verified live on a fresh 3×3 bedroom: `value=9 (9 tiles +
+0 furniture) tier=1 Meager Quarters`.
+
+### Quality tiers — goal 2, DONE
+
+Thresholds are **identical across bedroom, dining room, office and tomb**; only the names
+differ. Confirmed on five independent wiki pages.
+
+    0 · 100 · 250 · 500 · 1000 · 1500 · 2500 · 10000
+
+The v50 page is **`Zone § Quality and value`** — main-namespace `Room` is tagged obsolete
+because as of v50.01 rooms are activity zones. The wiki was unreachable directly and every
+figure came from web.archive.org snapshots, which is recorded rather than glossed.
+
+### quickfort — goal 3, the mechanism is known
+
+* `quickfort run -c x,y,z <blueprint>`; `--cursor` is **mandatory** headless, because
+  `do_command` starts with `guidm.getCursorPos()` which is nil for us. Without it quickfort
+  says so and stops.
+* `-d/--dry-run` exists and works.
+* Position semantics differ between the two entry points, and this is the trap: on the CLI
+  the cursor lands on the blueprint's `start()` cell, so `start(12;12)` with `-c 100,100,48`
+  puts the top-left corner at 89,89. The `apply_blueprint` API instead simply ADDS pos to
+  the data indices and ignores `start()` entirely.
+* Valid modes are `dig build place zone burrow meta notes ignore aliases`. **`#query` and
+  `#config` are dead** — silently downgraded to `ignore`, so an old blueprint applies its
+  other sections and drops those without an error.
+
+### Workshop build cost — goal 5's numbers
+
+`dfhack.buildings.getFiltersByType(argtable, type, subtype, custom)` returns the real
+requirement, transcribed in DFHack from DF's own hardcoded table. Measured for all 25
+workshop types. Most cost one building material; the exceptions matter:
+
+| workshop | cost |
+|---|---|
+| most (Carpenters, Masons, Craftsdwarfs, Still, Loom, Tanners …) | 1 building material |
+| Siege | 3 building materials |
+| MetalsmithsForge | an ANVIL + 1 fire-safe material |
+| MagmaForge | an ANVIL + 1 magma-safe material |
+| Quern | a QUERN item |
+
+`df.global.buildreq.requirements` is where DF states it, but it is only populated while
+the build-placement UI has a building selected — 0 entries headless — so the DFHack table
+is the practical source.
