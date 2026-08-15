@@ -30,7 +30,12 @@ def test_every_template_declares_a_real_footprint():
 
 
 def test_template_names_are_unique():
-    assert len(TEMPLATES_BY_NAME) == len(TEMPLATES)
+    """Across shipped AND generated: a searched design that collides with a DFHack
+    blueprint name would silently shadow it in the lookup."""
+    from bonsai_lab_agent.actions.library import ALL_TEMPLATES
+    assert len(TEMPLATES_BY_NAME) == len(ALL_TEMPLATES)
+    names = [t.name for t in ALL_TEMPLATES]
+    assert len(names) == len(set(names))
 
 
 def test_every_template_says_what_it_makes():

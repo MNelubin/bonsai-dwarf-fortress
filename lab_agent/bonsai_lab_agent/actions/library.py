@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
+from pathlib import Path
 from dataclasses import dataclass, field
 
 
@@ -617,8 +619,51 @@ CLUSTERS: tuple[Cluster, ...] = (
     ),
 )
 
-TEMPLATES_BY_NAME = {t.name: t for t in TEMPLATES}
-TEMPLATE_NAMES = tuple(t.name for t in TEMPLATES)
+# ---------------------------------------------------------------- generated templates
+# Designs the offline search found, read from the archive it writes.
+#
+# The archive is JSON rather than python source on purpose. It is DATA the search produces,
+# and appending a generated entry to a hand-written tuple is a merge conflict waiting to
+# happen and a thing somebody eventually edits by hand. Reading it here rather than
+# importing the design package also keeps `actions` independent of `design`: the agent's
+# action surface must not depend on the search that fills it.
+#
+# Without this the loop was OPEN. The search ran, beat its seed, emitted a blueprint the
+# game accepted — and nothing could ask for the result, because `apply_template` only knew
+# DFHack's eleven shipped files.
+ARCHIVE = Path(__file__).resolve().parents[1] / "design" / "archive.json"
+
+
+def _generated() -> tuple[Template, ...]:
+    if not ARCHIVE.is_file():
+        return ()
+    try:
+        rows = json.loads(ARCHIVE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    out = []
+    for r in rows:
+        out.append(Template(
+            name=r["name"],
+            path=f"bonsai/{r['name']}.csv",
+            modes=("build", "dig", "zone"),
+            footprint=(r["w"], r["h"]),
+            makes=f"a {r['kind']} good enough for a {r['position']} "
+                  f"(value {r['value']} against a demand of {r['demand']})",
+            levels=1,
+            label="dig",
+            label_mode="dig",
+            start="1;1",
+            shipped=False,
+        ))
+    return tuple(out)
+
+
+GENERATED: tuple[Template, ...] = _generated()
+ALL_TEMPLATES: tuple[Template, ...] = TEMPLATES + GENERATED
+
+TEMPLATES_BY_NAME = {t.name: t for t in ALL_TEMPLATES}
+TEMPLATE_NAMES = tuple(t.name for t in ALL_TEMPLATES)
 CLUSTER_NAMES = tuple(dict.fromkeys(c.name for c in CLUSTERS))
 
 

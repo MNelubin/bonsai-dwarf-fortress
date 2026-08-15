@@ -320,3 +320,84 @@ def test_the_move_set_is_declared_not_magic():
     names = [n for n, _ in MOVES]
     assert len(names) == len(set(names))
     assert all(wt > 0 for _, wt in MOVES)
+
+
+# ---------------------------------------------------------------- the archive
+def test_a_promoted_design_becomes_something_the_agent_can_ask_for():
+    """The loop was OPEN. The search ran, beat its seed and emitted a blueprint the game
+    accepted — and nothing could ask for the result, because `apply_template` only knew
+    DFHack's eleven shipped files. The docstring claimed "winners become entries in
+    library.TEMPLATES"; that was an intention, not code.
+
+    Verified live afterwards: `apply_template bonsai/bedroom_baron.csv` stamped 43 new
+    designations at 121,88,48 — exactly the 43 dug cells the offline model predicted.
+    """
+    from bonsai_lab_agent.actions.library import (GENERATED, TEMPLATES_BY_NAME,
+                                                  TEMPLATE_NAMES)
+    from bonsai_lab_agent.design.archive import load
+
+    archived = load()
+    if not archived:
+        pytest.skip("the archive is empty; run design.archive.promote first")
+
+    for e in archived:
+        assert e.name in TEMPLATE_NAMES, e.name
+        t = TEMPLATES_BY_NAME[e.name]
+        assert t.shipped is False
+        assert t.footprint == (e.w, e.h)
+        # ours are addressed by their plain path; `library/` is DFHack's own prefix
+        assert t.qf_name == f"bonsai/{e.name}.csv"
+        assert not t.qf_name.startswith("library/")
+    assert len(GENERATED) == len(archived)
+
+
+def test_the_gate_resolves_a_searched_design_like_any_other():
+    from bonsai_lab_agent.actions.gate import judge
+    from bonsai_lab_agent.design.archive import load
+
+    archived = load()
+    if not archived:
+        pytest.skip("the archive is empty")
+    name = archived[0].name
+    d = judge({"verb": "apply_template", "args": {"template": name}})
+    assert d.ok
+    assert d.args[0] == f"bonsai/{name}.csv"
+    assert d.args[6] == "dig" and d.args[7] == "dig"
+
+
+def test_every_archived_design_meets_the_demand_it_was_made_for():
+    """An archived design that does not satisfy its own requirement is worse than none: the
+    agent would ask for a baron's bedroom and get a room the baron rejects."""
+    from bonsai_lab_agent.design.archive import load
+    for e in load():
+        assert e.value >= e.demand, (e.name, e.value, e.demand)
+        assert e.score > e.seed_score, e.name
+
+
+def test_promoting_a_worse_design_does_not_churn_the_archive(tmp_path):
+    """A rerun that ties must not rewrite the file. An archive that changes on every run
+    is not a record of anything."""
+    from bonsai_lab_agent.design.archive import Entry, load, promote, save
+
+    path = str(tmp_path / "archive.json")
+    req = Requirement(kind="Office", position="manager", max_w=7, max_h=7)
+    first, changed = promote(req, seeds=(1,), max_evals=400, path=path)
+    assert changed
+    again, changed2 = promote(req, seeds=(1,), max_evals=400, path=path)
+    assert not changed2
+    assert again.csv_sha256 == first.csv_sha256
+    assert len(load(path)) == 1
+
+
+def test_the_archive_round_trips(tmp_path):
+    from bonsai_lab_agent.design.archive import entry_from, load, save
+    from bonsai_lab_agent.design.search import anneal
+    path = str(tmp_path / "a.json")
+    req = Requirement(kind="Bedroom", position="baron")
+    r = anneal(req, seed=5, max_evals=800)
+    e = entry_from(req, r, 5)
+    save([e], path)
+    back = load(path)[0]
+    assert back == e
+    assert to_quickfort(back.to_design(), name=back.name) == to_quickfort(r.best,
+                                                                          name=e.name)
