@@ -990,6 +990,16 @@ for line in f:lines() do
                     -- only solid rock is diggable; flagging air or an existing floor
                     -- silently achieves nothing
                     if kind == DIG.Default and sh ~= df.tiletype_shape.WALL then return end
+                    -- A tile that ALREADY carries exactly this designation is not work.
+                    -- Without this the verb re-wrote the same tiles every call and counted
+                    -- each rewrite: on a fort whose shaft region was fully designated it
+                    -- reported `designate_dig=40` while the map went 186 -> 186. That is
+                    -- this project's defining failure wearing the count as a disguise —
+                    -- the number measured intent, not effect. DF clears `des.dig` back to
+                    -- No once it has turned the designation into a job, so a tile still
+                    -- holding `kind` is one still pending, and re-writing it achieves
+                    -- nothing at all.
+                    if des.dig == kind then return end
                     des.dig = kind
                     -- Setting the tile flag is NOT enough. DF only rescans blocks that
                     -- are flagged as carrying new designations, so writing designations
