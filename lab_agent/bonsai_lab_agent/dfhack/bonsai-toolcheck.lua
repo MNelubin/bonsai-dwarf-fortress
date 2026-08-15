@@ -263,6 +263,50 @@ ok('set_kitchen_flag forbids cooking seeds', seeds_excluded > 0,
 apply('set_kitchen_flag\tNO_SUCH_ITEM\tfalse')
 ok('an item type that does not exist is refused', true, 'no crash, no change')
 
+-- ================================================================ reachability
+-- Almost every silent failure here has been a reachability failure wearing a different
+-- hat, so the placement verbs are checked against it rather than merely against a count.
+local reach
+pcall(function() reach = reqscript('bonsai-reach') end)
+if not reach then
+    skipped('reachability', 'bonsai-reach did not load')
+else
+    local groups, ngroups = reach.fort_groups()
+    ok('the fort is connected', ngroups >= 1, ngroups .. ' walkable group(s)')
+
+    local unreachable = {}
+    for _, b in ipairs(w.buildings.all) do
+        if df.building_workshopst:is_instance(b) or b:getType() == df.building_type.Stockpile
+            or b:getType() == df.building_type.FarmPlot then
+            if not reach.building(b, groups) then
+                unreachable[#unreachable + 1] = tostring(df.building_type[b:getType()])
+            end
+        end
+    end
+    ok('everything we placed can be walked to', #unreachable == 0,
+        #unreachable > 0 and ('stranded: ' .. table.concat(unreachable, ',')) or 'all reachable')
+
+    -- a wall is not walkable, so the tile a dig targets reads unreachable and its
+    -- NEIGHBOUR is the meaningful test — getting these two the wrong way round produced
+    -- a confident "digging has stopped" while the shaft was being cut
+    local P = _G.BONSAI_PLACE
+    if P and P.dig then
+        ok('the shaft head can be stood on',
+            reach.tile(P.dig[1], P.dig[2], P.dig[3], groups),
+            string.format('%d,%d,%d', P.dig[1], P.dig[2], P.dig[3]))
+        local total, actionable = reach.designations(P.dig[1], P.dig[2], P.dig[3], 8, 10)
+        ok('some designated tile can be worked right now', total == 0 or actionable > 0,
+            string.format('%d designated, %d workable', total, actionable))
+    end
+
+    local material = nil
+    for _, i in ipairs(w.items.all) do
+        if i:getType() == df.item_type.WOOD and reach.item(i, groups) then material = i end
+    end
+    ok('a claimable reagent is reachable', material ~= nil,
+        material and ('log ' .. material.id) or 'no reachable log')
+end
+
 -- ================================================================ orders, in brief
 local orders_before = #w.manager_orders.all
 apply('add_workorder\tConstructBed\t2\twood')

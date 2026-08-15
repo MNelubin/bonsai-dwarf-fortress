@@ -10,6 +10,13 @@ if not f then print("APPLY no-actions"); return end
 local w = df.global.world
 local cits = dfhack.units.getCitizens(true)
 local u1 = cits[1]
+
+-- Can the fort actually get to it? Every verb below that places something, claims
+-- something or digs something asks this first. Loaded defensively because a missing
+-- module must not take the whole dispatch down with it.
+local reach
+pcall(function() reach = reqscript('bonsai-reach') end)
+local REACH_GROUPS = reach and reach.fort_groups() or nil
 local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
             build_workshop = 0, advance = 0, assign_noble = 0,
             add_workorder_conditional = 0, build_farm_plot = 0, set_crop = 0,
@@ -114,19 +121,31 @@ local function free_material(...)
     if #wants == 0 then wants = { df.item_type.WOOD, df.item_type.BOULDER } end
     for _, want in ipairs(wants) do
         for _, it in ipairs(w.items.all) do
-            if it:getType() == want
-               and not (it.flags.in_job or it.flags.forbid or it.flags.dump
-                        or it.flags.construction or it.flags.removed) then
-                -- A workshop is MADE of its log, and handing that same log to a job
-                -- destroys the workshop — observed live, shops went 1 to 0 the moment a
-                -- bed job claimed a reagent. But `in_building` alone is far too broad:
-                -- at embark every supply sits inside the WAGON, which is also a
-                -- building, so excluding it left the fort unable to build anything.
-                -- Ask who holds the item instead.
-                local holder = nil
-                pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
-                if not holder or holder:getType() == df.building_type.Wagon then
-                    return it
+            if it:getType() == want then
+                -- One question instead of six flags. bonsai-reach checks claimability
+                -- AND that somebody can walk to it, which the flag list never did: on
+                -- this fort 14 of 15 barrels and 30 of 144 seed stacks belong to another
+                -- civilisation and are as unavailable as if they were behind a wall.
+                local usable = false
+                if reach then
+                    usable = reach.item(it, REACH_GROUPS)
+                else
+                    usable = not (it.flags.in_job or it.flags.forbid or it.flags.dump
+                                  or it.flags.construction or it.flags.removed
+                                  or it.flags.foreign)
+                end
+                if usable then
+                    -- A workshop is MADE of its log, and handing that same log to a job
+                    -- destroys the workshop — observed live, shops went 1 to 0 the moment
+                    -- a bed job claimed a reagent. But `in_building` alone is far too
+                    -- broad: at embark every supply sits inside the WAGON, which is also
+                    -- a building, so excluding it left the fort unable to build anything.
+                    -- Ask who holds the item instead.
+                    local holder = nil
+                    pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
+                    if not holder or holder:getType() == df.building_type.Wagon then
+                        return it
+                    end
                 end
             end
         end
@@ -612,6 +631,9 @@ local function plantable(x, y, z, want_indoors)
         return false
     end
     if dfhack.buildings.findAtTile(xyz2pos(x, y, z)) then return false end
+    -- Soil a farmer cannot walk to is not farmland. Sealed pockets of soil exist all
+    -- over an embark, and a plot on one reads as built and sown and grows nothing.
+    if reach and not reach.tile(x, y, z, REACH_GROUPS) then return false end
     if want_indoors then
         local des = dfhack.maps.getTileFlags(x, y, z)
         if not des or des.outside then return false end
@@ -814,7 +836,7 @@ for line in f:lines() do
                 for _ = 1, 12 do
                     local x, y, z = site(P.stock, 4)
                     P.stock = P.stock + 1
-                    if x then
+                    if x and (not reach or reach.site(x, y, z, 2, 2, REACH_GROUPS)) then
                         pcall(function()
                             local b = dfhack.buildings.constructBuilding{
                                 type = df.building_type.Stockpile, abstract = true,
@@ -861,7 +883,10 @@ for line in f:lines() do
             for _ = 1, 12 do
                 local x, y, z = site(P.shop, 8)
                 P.shop = P.shop + 1
-                if x then
+                -- Skip a spot nobody can reach before asking DF to build there: a
+                -- workshop on unreachable ground takes its reagent, never gets built,
+                -- and reads as a successful placement.
+                if x and (not reach or reach.site(x, y, z, 3, 3, REACH_GROUPS)) then
                     local b = dfhack.buildings.constructBuilding{
                         type = df.building_type.Workshop, subtype = sub,
                         pos = { x = x, y = y, z = z }, items = { item } }

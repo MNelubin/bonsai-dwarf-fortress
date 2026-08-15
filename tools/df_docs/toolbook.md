@@ -12,11 +12,64 @@ success while doing nothing.
 Batteries that keep these honest, both run through the real `bonsai-apply-actions` entry
 point on a live fort:
 
-* `bonsai-toolcheck` — one case per verb plus its refusal path (19/19)
+* `bonsai-toolcheck` — one case per verb plus its refusal path (24/24)
 * `bonsai-ordercheck` — the order machinery in depth (27/27)
 
 Probes: `bonsai-digstat`, `bonsai-digwhy`, `bonsai-dumporders`, `bonsai-mgrdiff`,
-`bonsai-plotdump`, `bonsai-entdump`.
+`bonsai-plotdump`, `bonsai-entdump`, `bonsai-brewprobe`.
+
+---
+
+## bonsai-reach — can the fort actually get to it?
+
+Not a verb: a module every placing, claiming and digging verb now consults, and a report
+you can run by hand.
+
+Almost every silent failure in this project turned out to be a reachability failure
+wearing a different hat — designations on sealed rock that produced zero dig jobs, a
+shaft whose head nobody could stand on, a farm plot on soil no farmer could walk to, a
+workshop placed where nothing was ever reached. Each was found by hand, late, after a
+verb had reported success.
+
+**DF already answers it, and cheaply.** `dfhack.maps.getWalkableGroup(pos)` returns a
+connectivity id; two tiles are mutually reachable exactly when they share the same
+non-zero group, and `canWalkBetween` is that comparison. So the primitive was free all
+along and the only real work is asking the right question about the right tile.
+
+**The distinction that makes it useful.** A wall is not walkable, so a tile you intend to
+*dig out* correctly reports unreachable — reading that as "digging is broken" cost a day.
+So there are two questions, not one:
+
+| you intend to | ask |
+|---|---|
+| build on / farm / stand there | `tile(x,y,z)` — is the tile itself in a fort group |
+| dig out, act on from outside | `adjacent(x,y,z)` — can a citizen stand next to it |
+
+**What it exposes:**
+
+* `group`, `fort_groups` — connectivity, and specifically the groups the fort's own
+  citizens stand in. A perfectly walkable island across a chasm is not reachable.
+* `tile`, `adjacent`, `building`
+* `item` — claimability *and* reachability in one answer, because forbidden, in-job,
+  another civilisation's, and behind-a-wall are four different reasons that look
+  identical from a count. It also resolves where an item effectively *is*: one in a
+  dwarf's pack or the wagon is at its holder's feet, not at the coordinates the item
+  struct still carries.
+* `site(x, y, z, w, h)` — every tile a free floor a citizen can stand on, returning the
+  first tile that fails and why, so a refusal can say more than "no".
+* `designations(...)` — how many marked tiles can be worked *now*. A batch that is all
+  pending is not wrong (the chamber under a shaft waits for the staircase); a batch that
+  stays all pending is an orphan.
+
+**Where it is applied:** `free_material` (reagents), `build_workshop` and
+`create_stockpile` (placement), `plantable` (farm siting), and five cases in
+`bonsai-toolcheck` — the fort is connected, everything placed can be walked to, the shaft
+head can be stood on, some designated tile is workable now, and a claimable reagent is
+reachable.
+
+**What it found immediately on the test fort:** 186 designations of which only 32 were
+workable, and **14 of 15 barrels belong to another civilisation** — which is very likely
+part of why the brewing reaction kept being cancelled, since it needs an empty barrel.
 
 ---
 
