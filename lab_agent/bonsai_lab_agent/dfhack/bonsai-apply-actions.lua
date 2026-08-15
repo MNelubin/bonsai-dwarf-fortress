@@ -551,6 +551,82 @@ local ZONE_KINDS = {
     tomb         = 'Tomb',
 }
 
+-- ---------------------------------------------------------------- stockpiles
+-- What a pile accepts is NOT the `settings.flags` bits. Measured live on a fort with a
+-- claimable bar lying two tiles from a pile whose every flag was on: zero hauling jobs
+-- over 2000 ticks. DF matches items against the PER-CATEGORY material vectors, and a
+-- freshly constructed pile has them at length 0 — it accepts nothing, no matter what the
+-- flags say. Three piles built by this verb had been sitting inert on the test fort,
+-- which is why its wagon was still fully loaded three game days after embark.
+--
+-- DFHack already solves this and its own quickfort uses the solution: the .dfstock
+-- presets in hack/data/stockpiles, applied through plugins.stockpiles.import_settings.
+-- Importing `library/cat_stone` sets flags.stone AND fills stone.mats — verified live,
+-- 0 -> 343 materials, with an un-imported category left at 0 as the control. Filling
+-- those vectors ourselves would mean guessing their sizes out of the raws, which is the
+-- same remembering that has produced invented DF names three times here.
+--
+-- The preset is spelled `sheets` while the settings flag is spelled `sheet`. They are
+-- not interchangeable, and the alias table below is the only place that difference lives.
+local PILE_CATEGORIES = {
+    'ammo', 'animals', 'armor', 'bars_blocks', 'cloth', 'coins', 'corpses',
+    'finished_goods', 'food', 'furniture', 'gems', 'leather', 'refuse', 'sheets',
+    'stone', 'weapons', 'wood',
+}
+
+local PILE_ALIAS = {
+    drink = 'food', sheet = 'sheets', bars = 'bars_blocks', blocks = 'bars_blocks',
+    goods = 'finished_goods', ore = 'stone', misc = 'finished_goods',
+}
+
+local function pile_category(name)
+    if not name or name == '' then return nil end
+    local want = PILE_ALIAS[name] or name
+    for _, c in ipairs(PILE_CATEGORIES) do
+        if c == want then return c end
+    end
+    return nil                                  -- refuse rather than substitute
+end
+
+-- Apply DFHack's shipped preset for each category. The modes are DFHack's own and they
+-- do NOT do what their names suggest — measured on a pile accepting all 17 categories:
+--
+--   'enable'   adds the category (0 -> 343 stone materials)
+--   'disable'  DID NOTHING: 17 categories on before, 17 after, stone.mats still 343
+--   'set'      replaces wholesale: 17 categories -> 1, stone.mats 343 -> 0
+--
+-- So narrowing a pile is 'set' with the one category wanted. The first draft narrowed by
+-- disabling all seventeen and then enabling one, which reported success and left the pile
+-- exactly as it was.
+local function pile_apply(pile, cats, mode)
+    local sp
+    if not pcall(function() sp = require('plugins.stockpiles') end) or not sp then
+        return false
+    end
+    local any = false
+    for _, cat in ipairs(cats) do
+        local ok = pcall(function()
+            sp.import_settings('library/cat_' .. cat,
+                { id = pile.id, mode = mode or 'enable' })
+        end)
+        any = any or ok
+    end
+    return any
+end
+
+-- Does this pile accept anything at all? The question every stockpile case should have
+-- been asking: counting piles proved they existed, never that they worked.
+local function pile_accepts(pile)
+    local n = 0
+    pcall(function()
+        for k, v in pairs(pile.settings.flags) do
+            if type(v) == 'boolean' and v then n = n + 1 end
+            local _ = k
+        end
+    end)
+    return n
+end
+
 -- A civzone needs three things that are each optional to DFHack and each fatal to omit:
 -- abstract = true, or constructBuilding simply fails; extents cast through
 -- df.reinterpret_cast, because a raw uint8_t array assigned afterwards silently does not
@@ -940,6 +1016,18 @@ for line in f:lines() do
     elseif verb == "create_stockpile" then
         pcall(function()
             local n = tonumber(a[2]) or 1
+            -- A pile is placed WITH a type in DF's own UI — you pick from a menu. Ours
+            -- placed an untyped one, which accepts nothing, so the catalog's claim that
+            -- it "accepts the default everything" was false and every pile this verb had
+            -- ever made was inert. Naming a category is the player's move; omitting it
+            -- now means everything, which is what the contract always said.
+            local want = a[3]
+            local cats = PILE_CATEGORIES
+            if want and want ~= '' and want ~= 'everything' then
+                local cat = pile_category(want)
+                if not cat then return end      -- refuse an unknown category
+                cats = { cat }
+            end
             for _ = 1, n do
                 -- Walk the ring until one placement takes, the same way build_workshop
                 -- does. A single attempt worked on an empty embark and silently placed
@@ -955,6 +1043,7 @@ for line in f:lines() do
                                 type = df.building_type.Stockpile, abstract = true,
                                 pos = { x = x, y = y, z = z }, width = 2, height = 2 }
                             if b then
+                                pile_apply(b, cats, 'enable')
                                 c.create_stockpile = c.create_stockpile + 1
                                 placed = true
                             end
@@ -1177,19 +1266,16 @@ for line in f:lines() do
     elseif verb == "configure_stockpile" then
         -- Narrow what a pile accepts. The guide's first act on a new stockpile is to
         -- remove stone and wood so bulk goods cannot crowd out food.
+        --
+        -- The old body walked `settings[<group>]` and flipped any boolean it found. Those
+        -- groups hold VECTORS, not booleans, so it flipped almost nothing, and it never
+        -- touched `settings.flags` at all — measured on three configured piles, every
+        -- flag was still false and every material vector still empty. It reported success
+        -- the whole time.
         pcall(function()
             local which = tonumber(a[2]) or 0
-            local kind = a[3]
-            local groups = {
-                food = "food", drink = "food", wood = "wood", stone = "stone",
-                furniture = "furniture", refuse = "refuse", corpses = "corpses",
-                bars_blocks = "bars_blocks", gems = "gems", finished_goods = "finished_goods",
-                leather = "leather", cloth = "cloth", ammo = "ammo", weapons = "weapons",
-                armor = "armor", animals = "animals", coins = "coins", sheet = "sheet",
-                misc = "misc", ore = "ore",
-            }
-            local field = groups[kind or ""]
-            if not field then return end
+            local cat = pile_category(a[3])
+            if not cat then return end          -- refuse an unknown category
             -- address a specific pile, so a fort with several can narrow them
             -- differently: one for food, one for wood, the way a player lays them out
             local piles = {}
@@ -1198,29 +1284,26 @@ for line in f:lines() do
             end
             local target = piles[which + 1] or piles[1]
             if not target then return end
-            -- Turn everything off, then turn on only what was asked for. A pile that
-            -- accepts the default everything is the problem being fixed here.
-            local touched = false
-            for name in pairs(groups) do
-                local ok = pcall(function()
-                    local g = target.settings[name]
-                    if type(g) == "userdata" then
-                        for k, v in pairs(g) do
-                            if type(v) == "boolean" then g[k] = false end
-                        end
-                    end
-                end)
-                touched = touched or ok
-            end
+            -- Disable every category, then enable the one asked for. Explicit rather
+            -- than leaning on DFHack's 'set' mode, whose clearing behaviour we have not
+            -- measured — and an unmeasured assumption is what this verb was made of.
+            if not pile_apply(target, { cat }, 'set') then return end
+
+            -- Barrels and bins. The guide turns them off for a stone pile so wheelbarrows
+            -- are used instead. These live on `storage`, NOT on the building and NOT in
+            -- `settings` — enumerated live rather than guessed, because the first draft
+            -- of this wrote `target.max_barrels`, which is not a field, and would have
+            -- failed inside a pcall without saying so.
+            local containers = (a[4] or 'True')
+            local allow = not (containers == 'False' or containers == 'false')
+            local tiles = (target.x2 - target.x1 + 1) * (target.y2 - target.y1 + 1)
             pcall(function()
-                local g = target.settings[field]
-                if type(g) == "userdata" then
-                    for k, v in pairs(g) do
-                        if type(v) == "boolean" then g[k] = true end
-                    end
-                end
+                target.storage.max_barrels = allow and tiles or 0
+                target.storage.max_bins = allow and tiles or 0
             end)
-            if touched then c.configure_stockpile = c.configure_stockpile + 1 end
+            if pile_accepts(target) > 0 then
+                c.configure_stockpile = c.configure_stockpile + 1
+            end
         end)
     elseif verb == "chop_trees" then
         -- Wood is the fort's first material and it runs out. Felling uses the same

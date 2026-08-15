@@ -62,6 +62,16 @@ ORDER_MATERIALS = ("any", "wood", "stone")
 ORDER_COMPARISONS = ("LessThan", "AtMost", "Exactly", "AtLeast", "GreaterThan")
 ORDER_FREQUENCIES = ("Daily", "Monthly", "Seasonally", "Yearly")
 
+# The stockpile categories DFHack ships a preset for, read off hack/data/stockpiles as
+# `cat_*.dfstock`. These names are the presets', not the settings flags' — the preset is
+# `sheets` where the flag is `sheet` — and only a preset makes a pile actually accept
+# anything, so this is the list that has to be right.
+STOCKPILE_CATEGORIES = (
+    "ammo", "animals", "armor", "bars_blocks", "cloth", "coins", "corpses",
+    "finished_goods", "food", "furniture", "gems", "leather", "refuse", "sheets",
+    "stone", "weapons", "wood",
+)
+
 CATALOG: tuple[Verb, ...] = (
     # ---------------------------------------------------------------- time
     Verb(
@@ -100,13 +110,20 @@ CATALOG: tuple[Verb, ...] = (
     Verb(
         name="create_stockpile", category="logistics",
         doc="Place a 2x2 stockpile on a ring around the wagon.",
-        observable="buildings count of type Stockpile",
+        observable="buildings count of type Stockpile, and the categories it accepts",
         args=(Arg("count", "int", "how many to place", lo=1, hi=8,
-                  required=False, default=1),),
+                  required=False, default=1),
+              Arg("accepts", "str",
+                  "one configure_stockpile category, or everything",
+                  required=False, default="everything")),
         guide="08:00",
-        note="Accepts the default everything. A player's first act is to NARROW it — "
-             "the guide removes stone and wood so bulk goods cannot crowd out "
-             "perishables (09:06). See configure_stockpile.",
+        note="Accepts everything unless a category is named, the way a player picks a "
+             "type from DF's menu when placing. This note used to say the same thing "
+             "and be FALSE: the verb placed untyped piles that accepted nothing, so "
+             "DF made no hauling job and the test fort's wagon was still fully loaded "
+             "three game days after embark. A player's next act is to NARROW it — the "
+             "guide removes stone and wood so bulk goods cannot crowd out perishables "
+             "(09:06). See configure_stockpile.",
     ),
     Verb(
         name="add_workorder", category="production",
@@ -312,20 +329,21 @@ CATALOG: tuple[Verb, ...] = (
     Verb(
         name="configure_stockpile", category="logistics", tranche=0,
         doc="Say what a stockpile accepts, and whether it uses barrels or bins.",
-        observable="the pile's accept flags and container limit",
+        observable="the pile's accept flags and its per-material lists",
         args=(
             Arg("index", "int", "which stockpile", lo=0, hi=64),
-            Arg("accepts", "str",
-                "the one category to accept: food, wood, stone, furniture, refuse, "
-                "corpses, bars_blocks, gems, finished_goods, leather, cloth, ammo, "
-                "weapons, armor, animals, coins, sheet, misc or ore"),
+            Arg("accepts", "enum", "the one category to accept",
+                choices=STOCKPILE_CATEGORIES),
             Arg("containers", "bool", "allow barrels and bins in this pile",
                 required=False, default=True),
         ),
         guide="09:06",
         note="Three separate fort-saving uses in the guide: a seeds pile with barrels "
              "OFF so dwarves can find the seeds, a refuse pile so corpses leave the "
-             "fort, and a starter pile with stone and wood excluded.",
+             "fort, and a starter pile with stone and wood excluded. What a pile takes "
+             "is NOT its accept flags — DF matches items against per-material lists, "
+             "and a pile with every flag on but empty lists produced zero hauling jobs "
+             "over 2000 ticks with a claimable bar two tiles away.",
     ),
     Verb(
         name="cancel_dwarf_job", category="labour", tranche=0,

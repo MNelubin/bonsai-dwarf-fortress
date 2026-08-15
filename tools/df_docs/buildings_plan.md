@@ -105,24 +105,60 @@ throne and two beds (59), a 3×3 bedroom with one superior bed (32), a bare 2×2
 needed. Furniture value equals `dfhack.items.getValue` of the item it is made of, measured
 on four pieces (ordinary 10, well-crafted 14, superior 23).
 
-**Bound on this number:** the per-tile term is confirmed only for ROUGH floor. All three
-measured rooms were unsmoothed and the fort had zero engravings. DF's UI says grates,
-windows, statues and displayed items raise value; none of that is measured, so a smoothed
-or decorated room will score low here.
+**Bound on this number:** the per-tile term is confirmed only for ROUGH floor, and the
+evidence base is narrower than "three rooms" sounds. All three were **outdoor patches at
+z=49**, some tiles carrying saplings or shrubs, on a fort with zero engravings — not one
+dug-out fortress room was measured. DF's UI says smoothing, engraving, grates, windows,
+statues and displayed items raise value; none of that is in the formula, so a finished
+room will score low here until the per-tile term is re-measured underground.
 
 Shipped as `bonsai-roomvalue`. Verified live on a fresh 3×3 bedroom: `value=9 (9 tiles +
-0 furniture) tier=1 Meager Quarters`.
+0 furniture)`.
 
-### Quality tiers — goal 2, DONE
+### Quality tiers — goal 2, CORRECTED
 
-Thresholds are **identical across bedroom, dining room, office and tomb**; only the names
-differ. Confirmed on five independent wiki pages.
+The first version of this section, and the table shipped with it, were **wrong**. They
+carried DFHack's `dfhack_room_quality_level` constants —
+`0 · 100 · 250 · 500 · 1000 · 1500 · 2500 · 10000`, claimed identical across all four room
+types — as though they were v50's. They are pre-v50, and the game refuses them.
 
-    0 · 100 · 250 · 500 · 1000 · 1500 · 2500 · 10000
+**The names, read out of the binary.** 29 contiguous strings, four blocks, descending,
+each ending in a rung DFHack has never had:
 
-The v50 page is **`Zone § Quality and value`** — main-namespace `Room` is tagged obsolete
-because as of v50.01 rooms are activity zones. The wiki was unreachable directly and every
-figure came from web.archive.org snapshots, which is recorded rather than glossed.
+| room | rungs | ladder, best first |
+|---|---|---|
+| Office | **7** | Royal Throne Room · Opulent Throne Room · Splendid Study · Decent Study · Modest Study · Meager Study · No Study |
+| Bedroom | **8** | Royal Bedroom · Grand Bedroom · Great Bedroom · Fine Quarters · Decent Quarters · Modest Quarters · Meager Quarters · No Quarters |
+| Dining | **8** | Royal · Grand · Great · Fine · Decent · Modest · Meager · No Dining Room |
+| Tomb | **6** | Royal Mausoleum · Grand Mausoleum · Fine Tomb · Servant's Burial Chamber · Grave · No Tomb |
+
+The differing lengths are on their own enough to refuse an eight-entry uniform table. v50
+also renames the office ladder to **Study**: `Splendid Office`, `Throne Room`,
+`Burial Chamber`, `Mausoleum` and a bare `Tomb` all return **zero** hits in the binary.
+
+**The cutoffs are NOT established, and the module says so.** `getRoomDescription` is the
+only API that would name a tier, and on this build it is the commented-out stub: called
+live against a fresh zone, with an owner and without one, it returned `""` both times.
+`bonsai-roomvalue` carries `LADDER_CUTOFFS_KNOWN = false` and the battery asserts it stays
+false until a measurement backs it.
+
+**What replaces the tier as a target.** DF states, per position, the room value that rank
+demands — read live from `entity_position.required_office/bedroom/dining/tomb`, so it is
+the game's number and not a remembered one. "A bedroom good enough for a baron" is a
+target the search can optimise against; "tier 3" never was.
+
+| demand | positions |
+|---|---|
+| 1 | captain, manager, bookkeeper (office only) |
+| 100 | lieutenant, sheriff |
+| 250 | captain of the guard, dungeon master |
+| 500 | mayor, baron, general (office) |
+| 1500 | outpost liaison, diplomat, count |
+| 2500 | duke |
+| 10000 | monarch |
+
+The battery re-reads all 15 positions from the world every run and fails if the recorded
+table has drifted. Note the wiki was unreachable throughout; nothing here came from it.
 
 ### quickfort — goal 3, the mechanism is known
 

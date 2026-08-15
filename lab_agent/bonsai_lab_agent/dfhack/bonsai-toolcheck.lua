@@ -169,18 +169,113 @@ ok('unknown workshop is refused, not defaulted',
     workshops_of('Carpenters') == carp_before,
     string.format('Carpenters %d -> %d', carp_before, workshops_of('Carpenters')))
 
+-- A workshop needs a building material to exist and to be walkable to. On a fort at
+-- frame 0 nothing has been chopped or mined yet, so there is none — and REFUSING is then
+-- the correct behaviour, not a defect. Asserting the build unconditionally made this case
+-- fail on a fresh embark while the verb was doing exactly the right thing, which is the
+-- same class of mistake as a verb that reports success while doing nothing: a check that
+-- cannot tell the two apart.
 local still_before = workshops_of('Still')
+local reach_pre = reqscript('bonsai-reach')
+local groups_pre = reach_pre.fort_groups()
+local buildmat, buildmat_anywhere = nil, 0
+for _, i in ipairs(w.items.all) do
+    local t = i:getType()
+    if t == df.item_type.WOOD or t == df.item_type.BOULDER or t == df.item_type.BLOCKS then
+        buildmat_anywhere = buildmat_anywhere + 1
+        if reach_pre.item(i, groups_pre) then buildmat = i end
+    end
+end
 apply('build_workshop\tStill')
-ok('build_workshop builds the kind asked for',
-    workshops_of('Still') > still_before,
-    string.format('Still %d -> %d', still_before, workshops_of('Still')))
+if not buildmat then
+    skipped('build_workshop builds the kind asked for',
+        string.format('no reachable building material (%d exist, none walkable to) - '
+            .. 'the refusal is correct', buildmat_anywhere))
+else
+    ok('build_workshop builds the kind asked for',
+        workshops_of('Still') > still_before,
+        string.format('Still %d -> %d, material item %d',
+            still_before, workshops_of('Still'), buildmat.id))
+end
 
--- ================================================================ create_stockpile
-local piles = buildings_of(df.building_type.Stockpile)
+-- ================================================================ stockpiles
+-- Counting piles is what this case used to do, and it is why three inert stockpiles
+-- passed it for weeks: every accept flag was false and every material vector empty, so
+-- DF generated no hauling job and the fort's wagon sat fully loaded three game days
+-- after embark. A pile that exists is not a pile that works.
+local function pile_list()
+    local out = {}
+    for _, b in ipairs(w.buildings.all) do
+        if b:getType() == df.building_type.Stockpile then out[#out + 1] = b end
+    end
+    return out
+end
+
+local function pile_flags(b)
+    local n = 0
+    pcall(function()
+        for _, v in pairs(b.settings.flags) do
+            if type(v) == 'boolean' and v then n = n + 1 end
+        end
+    end)
+    return n
+end
+
+local function pile_mats(b, cat, field)
+    local n = 0
+    pcall(function()
+        local v = b.settings[cat][field or 'mats']
+        for i = 0, #v - 1 do if v[i] then n = n + 1 end end
+    end)
+    return n
+end
+
+local piles = #pile_list()
 apply('create_stockpile\t1')
-ok('create_stockpile places a stockpile',
-    buildings_of(df.building_type.Stockpile) > piles,
-    string.format('%d -> %d', piles, buildings_of(df.building_type.Stockpile)))
+local after_create = pile_list()
+ok('create_stockpile places a stockpile', #after_create > piles,
+    string.format('%d -> %d', piles, #after_create))
+
+if #after_create == piles then
+    skipped('a new pile accepts something', 'nothing was placed')
+else
+    local fresh = after_create[#after_create]
+    ok('a new pile accepts something', pile_flags(fresh) > 0,
+        string.format('%d of 17 categories on', pile_flags(fresh)))
+    -- The flag is not the mechanism. DF matches items against the per-material vectors,
+    -- and a pile built without DFHack's preset has them at length 0 while its flags can
+    -- read true - exactly the state that produced zero hauling jobs.
+    ok('a new pile has real material lists', pile_mats(fresh, 'stone') > 0,
+        string.format('stone accepts %d materials', pile_mats(fresh, 'stone')))
+end
+
+-- configure_stockpile narrows it. The old body walked settings[<group>] flipping any
+-- boolean it found, but those groups hold vectors: it flipped almost nothing and never
+-- touched settings.flags, while reporting success every time.
+local idx = #pile_list() - 1
+local narrowed = pile_list()[idx + 1]
+if not narrowed then
+    skipped('configure_stockpile narrows a pile', 'no pile to narrow')
+else
+    apply('configure_stockpile\t' .. idx .. '\tfood')
+    ok('configure_stockpile narrows a pile to one category',
+        narrowed.settings.flags.food == true and narrowed.settings.flags.stone == false,
+        string.format('food=%s stone=%s, %d categories on',
+            tostring(narrowed.settings.flags.food),
+            tostring(narrowed.settings.flags.stone), pile_flags(narrowed)))
+    ok('the narrowed category has real material lists',
+        pile_mats(narrowed, 'food', 'meat') > 0,
+        string.format('food.meat accepts %d', pile_mats(narrowed, 'food', 'meat')))
+
+    apply('configure_stockpile\t' .. idx .. '\tno_such_category')
+    ok('an unknown stockpile category is refused',
+        narrowed.settings.flags.food == true,
+        'the pile kept the category it had')
+
+    apply('configure_stockpile\t' .. idx .. '\tfood\tFalse')
+    ok('containers can be turned off', narrowed.storage.max_barrels == 0,
+        'max_barrels = ' .. tostring(narrowed.storage.max_barrels))
+end
 
 -- ================================================================ designate_dig
 local marked_before = designated_near()
@@ -295,13 +390,27 @@ ok('place_furniture installs a made item',
 apply('place_furniture	no_such_thing	1')
 ok('an unknown furniture kind is refused', true, 'no crash, no change')
 
+-- v50 turns 86 of the 94 labour slots ON for EVERY citizen through the default work
+-- details — only MINE, CUTWOOD and FISH are specialised at embark. So "did it set
+-- STONE_CRAFT on one dwarf" cannot be answered by counting who has it: everyone already
+-- did, and the old assertion (count < citizens) failed on a fresh fort while the verb was
+-- working correctly. Turning a universal labour OFF for one dwarf is the test that can
+-- only pass if the verb targets a single unit.
 local one = dfhack.units.getCitizens(true)[1]
 apply('set_dwarf_labor	' .. one.id .. '	STONE_CRAFT	True')
+local craft_before = labor_count('STONE_CRAFT')
+apply('set_dwarf_labor	' .. one.id .. '	STONE_CRAFT	False')
+local craft_after = labor_count('STONE_CRAFT')
 ok('set_dwarf_labor touches one dwarf only',
-    one.status.labors[df.unit_labor.STONE_CRAFT] == true
-    and labor_count('STONE_CRAFT') < #dfhack.units.getCitizens(true),
-    string.format('%d of %d citizens', labor_count('STONE_CRAFT'),
+    one.status.labors[df.unit_labor.STONE_CRAFT] == false
+    and craft_after == craft_before - 1,
+    string.format('%d -> %d of %d citizens', craft_before, craft_after,
         #dfhack.units.getCitizens(true)))
+
+-- put it back: a later case should not inherit a dwarf this battery crippled
+apply('set_dwarf_labor	' .. one.id .. '	STONE_CRAFT	True')
+ok('set_dwarf_labor turns it back on',
+    one.status.labors[df.unit_labor.STONE_CRAFT] == true, 'restored')
 
 apply('set_standing_order	gather_refuse_outside	False')
 ok('set_standing_order flips a fort policy',
@@ -353,12 +462,23 @@ else
             string.format('%d designated, %d workable', total, actionable))
     end
 
-    local material = nil
+    -- A log that exists but cannot be walked to is a real reachability defect. No log at
+    -- all is a fort that has not chopped anything yet, and saying FAIL to that teaches
+    -- nothing — it just trains us to ignore a red line.
+    local material, logs = nil, 0
     for _, i in ipairs(w.items.all) do
-        if i:getType() == df.item_type.WOOD and reach.item(i, groups) then material = i end
+        if i:getType() == df.item_type.WOOD then
+            logs = logs + 1
+            if reach.item(i, groups) then material = i end
+        end
     end
-    ok('a claimable reagent is reachable', material ~= nil,
-        material and ('log ' .. material.id) or 'no reachable log')
+    if logs == 0 then
+        skipped('a claimable reagent is reachable', 'nothing has been chopped yet')
+    else
+        ok('a claimable reagent is reachable', material ~= nil,
+            material and ('log ' .. material.id)
+                or string.format('%d logs exist and NONE is walkable to', logs))
+    end
 
     -- Not an assertion: DF's own words about what it could not finish. A cancellation is
     -- the fort telling you why, and it went unread for a long time — three shapes of brew
@@ -379,6 +499,99 @@ else
             print(string.format('--    %3d  %s', tally[keys[i]], keys[i]))
         end
     end
+end
+
+-- ================================================================ room value and rank
+-- The scorer the offline design search optimises. It has already shipped wrong once —
+-- carrying DFHack's pre-v50 quality cutoffs as though they were this build's — so what
+-- is asserted here is exactly what was read out of the game, and nothing that was
+-- inferred from it.
+do
+    local rv = reqscript('bonsai-roomvalue')
+
+    -- Read from the binary: 29 contiguous strings, four ladders, these lengths. The
+    -- lengths are the whole argument against the legacy table, which had eight entries
+    -- for every room type.
+    local SHAPE = { Office = 7, Bedroom = 8, DiningHall = 8, Tomb = 6 }
+    local bad = {}
+    for kind, n in pairs(SHAPE) do
+        local l = rv.LADDER[kind]
+        if not l or #l ~= n then
+            bad[#bad + 1] = string.format('%s=%s want %d', kind, l and #l or 'nil', n)
+        end
+    end
+    ok('quality ladders have the length DF states', #bad == 0, table.concat(bad, ' '))
+
+    local nobottom = {}
+    for kind, l in pairs(rv.LADDER) do
+        if not (l[#l]):match('^No ') then nobottom[#nobottom + 1] = kind .. ':' .. l[#l] end
+    end
+    ok('every ladder ends in the v50 "No X" rung', #nobottom == 0,
+        table.concat(nobottom, ' '))
+
+    -- Names that exist in DFHack's pre-v50 table and return ZERO hits in this binary.
+    -- Any of them reappearing means the legacy table crept back in.
+    local GONE = { ['Splendid Office'] = true, ['Throne Room'] = true,
+                   ['Burial Chamber'] = true, ['Mausoleum'] = true, ['Tomb'] = true,
+                   ['Office'] = true, ['Quarters'] = true, ['Dining Room'] = true }
+    local ghosts = {}
+    for kind, l in pairs(rv.LADDER) do
+        for _, name in ipairs(l) do
+            if GONE[name] then ghosts[#ghosts + 1] = kind .. ':' .. name end
+        end
+    end
+    ok('no pre-v50 rung name has crept back', #ghosts == 0, table.concat(ghosts, ' '))
+
+    -- The cutoffs are NOT known, and the module has to keep saying so. DFHack's
+    -- getRoomDescription is the only thing that would tell us and it is the stub: called
+    -- live on a fresh zone, with an owner and without, it answered "" both times.
+    ok('the module still admits the cutoffs are unknown',
+        rv.LADDER_CUTOFFS_KNOWN == false,
+        'set this true only with a live measurement behind it')
+
+    -- DF's own scale, re-read from the world every run. This is the check that catches
+    -- the recorded table drifting away from the game.
+    local live = rv.live_demands()
+    local by_pos = {}
+    for _, d in ipairs(live) do by_pos[d.pos] = d end
+    local drift = {}
+    for _, want in ipairs(rv.DEMANDS) do
+        local got = by_pos[want.pos]
+        if not got then
+            drift[#drift + 1] = want.pos .. ':absent'
+        else
+            for _, f in ipairs({ 'office', 'bedroom', 'dining', 'tomb' }) do
+                if (got[f] or 0) ~= want[f] then
+                    drift[#drift + 1] = string.format('%s.%s=%d want %d',
+                        want.pos, f, got[f] or 0, want[f])
+                end
+            end
+        end
+    end
+    if #live == 0 then
+        skipped('recorded noble demands match the game', 'no entity positions loaded')
+    else
+        ok('recorded noble demands match the game', #drift == 0,
+            string.format('%d live positions; %s', #live,
+                #drift == 0 and 'exact' or table.concat(drift, ' ')))
+    end
+
+    -- meets() is the ranking the agent asks against, so it has to be monotone: a better
+    -- room can never serve fewer ranks than a worse one.
+    local monotone, prev = true, -1
+    for _, v in ipairs({ 0, 1, 100, 250, 500, 1500, 2500, 10000 }) do
+        local names = rv.meets('Bedroom', v, rv.DEMANDS)
+        if #names < prev then monotone = false end
+        prev = #names
+    end
+    ok('room rank is monotone in value', monotone,
+        string.format('a 10000 bedroom serves %d ranks',
+            #rv.meets('Bedroom', 10000, rv.DEMANDS)))
+
+    ok('a bare room serves nobody', #rv.meets('Bedroom', 0, rv.DEMANDS) == 0)
+    ok('a kind nobody demands is not ranked',
+        rv.meets('MeetingHall', 10000, rv.DEMANDS) == nil,
+        'meeting halls carry no noble requirement')
 end
 
 -- ================================================================ orders, in brief

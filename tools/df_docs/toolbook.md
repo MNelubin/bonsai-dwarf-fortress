@@ -227,16 +227,37 @@ Place a 2×2 stockpile on a ring around the wagon.
 verb places what it can. The one thing it will not do is claim a placement that did not
 happen: the count only rises when `constructBuilding` returns a building.
 
-**Measured:** 0 → 1 buildings of type Stockpile.
+**Measured:** 0 → 1 buildings of type Stockpile, and the new pile accepts 17 of 17
+categories with 343 real stone materials in its list.
 
 **It walks the ring until a placement takes**, the same way `build_workshop` does. A
 single attempt worked on an empty embark and silently placed nothing once the ring
 filled: measured on a fort with three stockpiles, `create_stockpile 1` reported 3 → 3.
 
-**Still unknown, and it is a real gap.** It accepts the default everything. A player's
-first act is to NARROW it — the guide removes stone and wood so bulk goods cannot crowd
-out perishables. `configure_stockpile` is still planned, so the agent can make a pile but
-not make it useful.
+**A pile that exists is not a pile that works — and for weeks these did not.** The verb
+placed an UNTYPED stockpile: every accept flag false, every per-category material vector
+at length 0. DF matches items against those vectors, so the pile accepted nothing, DF
+generated no hauling job, and the test fort's wagon was still fully loaded three game days
+after embark with all 54 embark goods reading "another civilisation owns it". The battery
+counted piles and passed the whole time. The catalog note said it "accepts the default
+everything", which was the opposite of the truth.
+
+**How it is set now, and why not by hand.** DFHack ships the complete per-category
+settings as `.dfstock` presets in `hack/data/stockpiles`, and its own quickfort applies
+them through `plugins.stockpiles.import_settings`. Importing `library/cat_stone` sets
+`flags.stone` AND fills `stone.mats` — verified live, 0 → 343, with an un-imported
+category left at 0 as the control. Writing those vectors ourselves would mean guessing
+their sizes out of the raws.
+
+**The modes do not do what their names suggest.** Measured on a pile accepting all 17
+categories: `enable` adds one; `set` replaces wholesale (17 → 1, `stone.mats` 343 → 0);
+**`disable` did nothing at all** — 17 categories before, 17 after. The first draft of the
+narrowing path disabled all seventeen and then enabled one, and reported success while
+changing nothing.
+
+**Naming a category is the player's move.** `create_stockpile 2 food` places two food
+piles, the way DF's own UI makes you pick a type from a menu. Omitting it means
+everything. An unknown category is refused, not substituted.
 
 ---
 
@@ -643,18 +664,36 @@ every dwarf busy on something trivial. See `bonsai-reach why`.
 Say what a pile accepts. Addressed by index, so a fort with several can narrow them
 differently.
 
-**Refuses:** a category outside DF's own list (food, wood, stone, furniture, refuse,
-corpses, bars_blocks, gems, finished_goods, leather, cloth, ammo, weapons, armor, animals,
-coins, sheet, misc, ore).
+**Refuses:** a category outside the list DFHack ships a preset for — ammo, animals, armor,
+bars_blocks, cloth, coins, corpses, finished_goods, food, furniture, gems, leather, refuse,
+sheets, stone, weapons, wood. `drink`, `sheet`, `bars`, `blocks`, `goods`, `ore` and `misc`
+are accepted as aliases onto those. Note the preset is spelled **sheets** where the
+settings flag is spelled **sheet**; they are not interchangeable.
 
-**Why it matters more than it looks.** `create_stockpile` accepts the default everything,
-and the guide's first act on a new pile is to NARROW it — removing stone and wood so bulk
-goods cannot crowd out perishables. This turns every category off and then turns on only
-the one asked for, which is that act.
+**Measured:** food=true, stone=false, 1 of 17 categories on, and `food.meat` accepting
+20644 materials — the flag AND the list, because DF matches on the list.
+
+**It reported success and did nothing, for as long as it has existed.** The old body
+walked `settings[<group>]` flipping any boolean it found. Those groups hold VECTORS, so it
+flipped almost nothing, and it never touched `settings.flags` at all. Measured on three
+configured piles: every flag still false, every material vector still empty.
+
+**Why it matters more than it looks.** The guide's first act on a new pile is to NARROW
+it — removing stone and wood so bulk goods cannot crowd out perishables — and it has three
+separate fort-saving uses: a seeds pile with barrels OFF so dwarves can find the seeds, a
+refuse pile so corpses leave the fort, and a starter pile with stone and wood excluded.
+
+**Narrowing is DFHack's `set` mode**, chosen by measurement rather than by name: `disable`
+turned out to be a no-op on a whole category, while `set` took a pile from 17 categories
+to 1 and `stone.mats` from 343 to 0.
+
+**Containers live on `storage`**, not on the building and not in `settings` — enumerated
+live, because the first draft wrote `target.max_barrels`, which is not a field and would
+have failed silently inside a `pcall`. `containers False` sets `storage.max_barrels` and
+`max_bins` to 0, which is the guide's seed-pile trick.
 
 **Still unknown:** it is one category per call, all-or-nothing within that category. DF's
-settings are per-subtype (food → seeds, drink, meat…) and the barrel/bin toggle is not
-wired up.
+settings are per-subtype (food → seeds, drink, meat…) and nothing here reaches that far.
 
 ---
 
