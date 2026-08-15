@@ -1538,21 +1538,55 @@ for line in f:lines() do
                 m.filters = filters
             end
 
-            -- Place them in a row, each on ground the fort can walk to.
-            local built = {}
+            -- ONE contiguous block, workshops edge to edge with the stockpiles flush
+            -- against them.
+            --
+            -- Each member used to get its own `find_site`, which scattered them: measured
+            -- on the live fort, the last `survival` cluster had its two shops 10 tiles
+            -- apart and its piles 9, 10 and 10 tiles from the shop they feed. That is not
+            -- a cluster, it is three buildings that happen to be linked, and the link does
+            -- nothing for distance — it only constrains which items are candidates.
+            --
+            -- DFHack's own shipped blueprints answer the layout and they agree with each
+            -- other: embark.csv is a 15x3 row of four 3x3 shops sharing edges with a
+            -- 15-wide stockpile slab abutting it at gap 0, and dreamfort's industry level
+            -- has 25 of its 28 workshops with a stockpile tile at Chebyshev distance 0,
+            -- median 0. Neither cuts corridors inside the block: the stockpile band IS
+            -- the lane.
+            local sizes, total_w, max_h = {}, 0, 0
             for _, m in ipairs(members) do
                 local fw, fh = 3, 3
                 pcall(function()
-                    local sz = dfhack.buildings.getCorrectSize(1, 1, m.btype, m.sub, -1)
-                    if sz then fw, fh = sz, sz end
+                    local a, b2 = dfhack.buildings.getCorrectSize(1, 1, m.btype, m.sub, -1)
+                    if a then fw = a end
+                    if b2 then fh = b2 end
                 end)
-                local x, y, z = find_site(fw, fh, 6, P.cluster or 0, 24)
-                P.cluster = (P.cluster or 0) + 1
-                if not x then
-                    _G.BONSAI_CLUSTER_REASON = string.format(
-                        'no free %dx%d site for %s', fw, fh, m.what)
-                    break
-                end
+                sizes[#sizes + 1] = { w = fw, h = fh }
+                total_w = total_w + fw
+                if fh > max_h then max_h = fh end
+            end
+            -- the pile band is two rows deep under the shop row, and wide enough for
+            -- every 2x2 pile side by side
+            local npiles = 0
+            for _ in tostring(a[4] or ''):gmatch('[^,]+') do npiles = npiles + 1 end
+            local blockw = math.max(total_w, npiles * 2)
+            local blockh = max_h + 2
+            local bx, by, bz = find_site(blockw, blockh, 6, P.cluster or 0, 24)
+            P.cluster = (P.cluster or 0) + 1
+            if not bx then
+                return decline(string.format('no free %dx%d site for the whole block',
+                    blockw, blockh))
+            end
+
+            local built = {}
+            local cursor = 0
+            for mi, m in ipairs(members) do
+                local fw, fh = sizes[mi].w, sizes[mi].h
+                -- constructBuilding takes the CENTRE of a workshop, not its corner
+                local x = bx + cursor + math.floor(fw / 2)
+                local y = by + math.floor(fh / 2)
+                local z = bz
+                cursor = cursor + fw
                 local b
                 pcall(function()
                     b = dfhack.buildings.constructBuilding{
@@ -1586,11 +1620,23 @@ for line in f:lines() do
 
             -- The stockpiles that feed it.
             local piles = {}
+            local pile_x = 0
             for cat in tostring(a[4] or ''):gmatch('[^,]+') do
                 local c2 = pile_category(cat)
                 if c2 then
-                    local x, y, z = find_site(2, 2, 4, P.stock, 24)
-                    P.stock = P.stock + 1
+                    -- Flush against the shop row, stepping across the band. The bounds
+                    -- check has to look at the slot we are ABOUT to use, not the next
+                    -- one: incrementing first sent the last pile of every full band off
+                    -- to the old scatter, 19 tiles from the shops it feeds.
+                    local x, y, z
+                    if pile_x + 2 <= blockw then
+                        x, y, z = bx + pile_x, by + max_h, bz
+                        pile_x = pile_x + 2
+                    else
+                        -- the band really is full; scatter rather than overlap
+                        x, y, z = find_site(2, 2, 4, P.stock, 24)
+                        P.stock = P.stock + 1
+                    end
                     if x then
                         local pb
                         pcall(function()

@@ -261,14 +261,30 @@ cost items no fort has at embark.
 its four vectors live at `profile.links`, enumerated live. Writing only one side is this
 project's signature bug and has already cost it the noble seat and the room owner.
 
-**Sending workers is NOT wired.** The field exists — `shop.profile.permitted_workers`, a
-`vector<int32_t>` of unit ids, verified live — and the owner asked for it ("когда мы можем
-посылать рабочих"). It is not written yet, and saying so is better than a verb that
-appears to do it.
+**It sends the workers.** `building.profile.permitted_workers` is what DF's own Workers
+tab edits, established causally: two identical Carpenters restricted to different dwarves,
+the assignment swapped, and the working dwarf swapped with it three times out of three.
+Written with `utils.insert_sorted` and NOT `insert('#', id)` — DF scans the vector linearly
+and honours an unsorted list, but DFHack's binsearch then denies an id that is physically
+there, so our own read-back would lie. There is no back-reference: `df.unit` has only
+`owned_buildings`, which is rooms, so here the one-sided link is correct by design.
 
-**Still unknown:** the cluster is laid out as one row of buildings and the stockpiles go
-wherever `find_site` puts them, which is not necessarily next to the shops they feed. A
-real player packs a cluster so the hauling distance is short.
+**The labour guard is the one that matters.** A master who lacks the shop's labour makes
+the job sit forever with NO announcement — measured at 2,760 frames of `WORKER=none`,
+then one labour bit flipped and the same dwarf took it within 540. So
+`#permitted_workers > 0` is a worthless assertion and the battery checks the master can do
+the work. A recommended build-stage guard was WRONG and would have made the feature
+useless: every shop a cluster places is unbuilt at that moment. Measured — the name sticks
+at stage 0/3 and binsearch finds it.
+
+**It is packed, not scattered.** The whole cluster takes ONE contiguous site: workshops
+edge to edge in a row, stockpiles in a two-deep band flush underneath. The link does
+nothing for distance — it only constrains which items are candidates — so a pile ten tiles
+away is ten tiles of hauling forever, and the previous version left them 9, 10 and 10
+tiles out with its two shops 10 apart. DFHack's own blueprints are the yardstick:
+embark.csv abuts a 15-wide pile slab against a 15-wide shop row at gap 0, and dreamfort's
+industry level has 25 of 28 workshops with a stockpile tile at gap 0. Measured after:
+worst distance from a pile to its nearest shop = 0.
 
 ---
 

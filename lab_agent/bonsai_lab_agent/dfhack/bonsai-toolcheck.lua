@@ -382,6 +382,8 @@ do
 
     _G.BONSAI_LAST_CLUSTER = nil
     local before = all_shops()
+    local before_ids = {}
+    for _, b in ipairs(w.buildings.all) do before_ids[b.id] = true end
     apply('build_workshop_cluster\tsurvival\tW:Carpenters,W:Still\twood,food,furniture\t6\t3')
     local L = _G.BONSAI_LAST_CLUSTER
     if not L then
@@ -420,6 +422,41 @@ do
         -- 2,760 frames of WORKER=none before one labour bit was flipped.
         local utils = require('utils')
         local orders = require('plugins.orders')
+        -- PACKED, not scattered. The link does nothing for distance — it only constrains
+        -- which items are candidates — so a pile ten tiles away is ten tiles of hauling
+        -- forever. DFHack's own shipped blueprints are the yardstick: embark.csv abuts a
+        -- 15-wide stockpile slab against a 15-wide row of shops at gap 0, and dreamfort's
+        -- industry level has 25 of its 28 workshops with a stockpile tile at Chebyshev
+        -- gap 0, median 0, worst 4. Before this, our own last cluster had its piles 9, 10
+        -- and 10 tiles from the shop they fed, and its two shops 10 apart from each other.
+        local newshops, newpiles = {}, {}
+        for _, b in ipairs(w.buildings.all) do
+            if not before_ids[b.id] then
+                if df.building_workshopst:is_instance(b) then
+                    newshops[#newshops + 1] = b
+                elseif b:getType() == df.building_type.Stockpile then
+                    newpiles[#newpiles + 1] = b
+                end
+            end
+        end
+        local worst_near = 0
+        for _, pb in ipairs(newpiles) do
+            local near = 999
+            for _, sb in ipairs(newshops) do
+                local dx = math.max(0, math.max(sb.x1 - pb.x2, pb.x1 - sb.x2))
+                local dy = math.max(0, math.max(sb.y1 - pb.y2, pb.y1 - sb.y2))
+                local gap = math.max(dx, dy)
+                if gap < near then near = gap end
+            end
+            if near > worst_near then worst_near = near end
+        end
+        -- 2 rather than 0: a 2x2 pile under a row of 3x3 shops cannot touch every one of
+        -- them, and DFHack's own worst is 4.
+        ok('every stockpile sits beside a shop it feeds',
+            #newpiles == 0 or worst_near <= 2,
+            string.format('%d piles, worst distance to the nearest shop = %d',
+                #newpiles, worst_near))
+
         ok('the cluster staffs every shop it raises', (L.staffed or 0) == L.shops,
             string.format('%d of %d shops have a master', L.staffed or 0, L.shops))
 
