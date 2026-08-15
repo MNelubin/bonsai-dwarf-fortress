@@ -723,6 +723,55 @@ local function site(n, radius)
            u1.pos.z
 end
 
+-- Can the fort actually satisfy this build requirement, right now?
+--
+-- DF will happily let you PLACE a Quern with no quern in the fort; the job simply waits
+-- forever. A player can see that and undo it. Our agent cannot: `build_workshop` would
+-- report success, the building would be counted by every observer that counts buildings,
+-- and nothing would ever stand there. So the verb asks first.
+--
+-- `f.flags2.fire_safe` cannot be evaluated exactly here — that needs the material's melt
+-- point — so this uses the one rule that is certainly true and certainly relevant on an
+-- early fort: WOOD BURNS. A furnace asking for fire-safe material will not accept a log,
+-- and refusing on that is conservative in the direction that matters.
+local function can_supply(f, groups)
+    local want_type = -1
+    pcall(function() want_type = f.item_type or -1 end)
+    local qty = 1
+    pcall(function() qty = math.max(1, f.quantity or 1) end)
+    local need_fire, need_magma, need_empty = false, false, false
+    pcall(function()
+        need_fire = f.flags2 and f.flags2.fire_safe or false
+        need_magma = f.flags2 and f.flags2.magma_safe or false
+        need_empty = f.flags1 and f.flags1.empty or false
+    end)
+    local found = 0
+    for _, it in ipairs(w.items.all) do
+        local t = it:getType()
+        local match
+        if want_type >= 0 then
+            match = (t == want_type)
+        else
+            -- "any building material": what an early fort actually has
+            match = (t == df.item_type.WOOD or t == df.item_type.BOULDER
+                     or t == df.item_type.BLOCKS or t == df.item_type.BAR)
+        end
+        if match and (need_fire or need_magma) and t == df.item_type.WOOD then
+            match = false                        -- wood burns
+        end
+        if match and need_empty then
+            local n = 0
+            pcall(function() n = #dfhack.items.getContainedItems(it) end)
+            if n > 0 then match = false end
+        end
+        if match and (not reach or reach.item(it, groups)) then
+            found = found + 1
+            if found >= qty then return true, found end
+        end
+    end
+    return false, found
+end
+
 -- The ring runs out, and when it does every placing verb stops working forever.
 --
 -- Measured on the test fort after five battery runs: `build_workshop`, `create_stockpile`
@@ -745,13 +794,36 @@ local function find_site(bw, bh, radius, cursor, tries, for_digging)
         if x and fits(x, y, z) then return x, y, z end
     end
     if not u1 then return nil end
-    for r = 2, 30 do
-        for dx = -r, r do
-            for dy = -r, r do
-                -- only the ring's edge, so the scan grows outward instead of re-testing
-                if math.abs(dx) == r or math.abs(dy) == r then
-                    local x, y, z = u1.pos.x + dx, u1.pos.y + dy, u1.pos.z
-                    if fits(x, y, z) then return x, y, z end
+    -- Every z-level the fort demonstrably lives on, nearest-first from each anchor.
+    --
+    -- The fallback used to scan only `u1.pos.z`, which is wherever the FIRST citizen
+    -- happens to be standing. On a fort with a deep shaft that is a one-tile corridor,
+    -- and the verb would report "no room" with the whole surface empty above it —
+    -- measured: build_workshop, create_stockpile and create_zone all refused while
+    -- apply_template was stamping designs two z-levels up. Anchoring on every level a
+    -- citizen stands on, plus the shaft head, uses what the fort is actually doing
+    -- rather than one dwarf's accident.
+    local anchors, seen = {}, {}
+    for _, u in ipairs(cits) do
+        local key = u.pos.z
+        if not seen[key] then
+            seen[key] = true
+            anchors[#anchors + 1] = { u.pos.x, u.pos.y, u.pos.z }
+        end
+    end
+    if P and P.dig and not seen[P.dig[3]] then
+        anchors[#anchors + 1] = { P.dig[1], P.dig[2], P.dig[3] }
+    end
+    for _, a in ipairs(anchors) do
+        for r = 2, 30 do
+            for dx = -r, r do
+                for dy = -r, r do
+                    -- only the ring's edge, so the scan grows outward instead of
+                    -- re-testing ground it has already refused
+                    if math.abs(dx) == r or math.abs(dy) == r then
+                        local x, y, z = a[1] + dx, a[2] + dy, a[3]
+                        if fits(x, y, z) then return x, y, z end
+                    end
                 end
             end
         end
@@ -1250,18 +1322,36 @@ for line in f:lines() do
             -- into five beds: the agent asks for a Still, gets a carpenter, and the
             -- brewing it was planning quietly never happens.
             if sub == nil then return end
-            -- Masons and Craftsdwarfs work stone; the rest of what an early fort builds
-            -- wants wood. A workshop may legitimately be made of either, so each order
-            -- of preference falls back to the other — unlike a job reagent, where the
-            -- wrong material gets the job cancelled.
-            local item
-            if name == "Masons" or name == "Craftsdwarfs" then
-                item = free_material(df.item_type.BOULDER, df.item_type.WOOD)
-            else
-                item = free_material(df.item_type.WOOD, df.item_type.BOULDER)
+            -- ASK DF WHAT THIS WORKSHOP IS MADE OF. It used to hand every kind a log
+            -- (or a boulder for the stone shops), which is right for the fifteen shops
+            -- whose filter is "any building material" and a lie for the rest. Read live
+            -- from `getFiltersByType`, DF's own table:
+            --
+            --     Quern              a manufactured QUERN item
+            --     Millstone          a MILLSTONE item + TRAPPARTS
+            --     Ashery             BLOCKS + an EMPTY barrel + a bucket
+            --     Dyers              an EMPTY barrel + a bucket
+            --     MetalsmithsForge   an ANVIL + a fire-safe building material
+            --     MagmaForge         an ANVIL + a magma-safe building material
+            --     Siege              three building materials, not one
+            --
+            -- Handing a Quern a log does not fail loudly. DFHack builds the job from
+            -- whatever items you pass, so the job carries a reagent, our success guard
+            -- (`#b.jobs[0].items > 0`) fires, and the fort gets a building it can never
+            -- finish. Passing the FILTERS instead makes DF record the real requirement
+            -- and pick the items itself, exactly as it does for a player.
+            local filters = {}
+            local got = pcall(function()
+                filters = dfhack.buildings.getFiltersByType({}, df.building_type.Workshop,
+                                                            sub, -1) or {}
+            end)
+            if not got then return end
+            local want = #filters
+            -- Refuse rather than place something the fort cannot finish.
+            for _, f in ipairs(filters) do
+                local okmat = can_supply(f, REACH_GROUPS)
+                if not okmat then return end
             end
-            if not item then return end          -- nothing to build it out of, so do not
-                                                 -- claim we did
             -- Try many spots before giving up. One attempt was enough on an empty
             -- embark and silently did nothing once the ring filled: measured first on a
             -- fort with eight workshops and again at fifteen, where twelve attempts were
@@ -1276,15 +1366,26 @@ for line in f:lines() do
                 local x, y, z = find_site(3, 3, 8, P.shop, 8)
                 P.shop = P.shop + 1
                 if x then
-                    local b = dfhack.buildings.constructBuilding{
-                        type = df.building_type.Workshop, subtype = sub,
-                        pos = { x = x, y = y, z = z }, items = { item } }
-                    -- Count it only if DF actually attached a build job with a reagent.
-                    -- The old count was "constructBuilding returned something", which it
-                    -- does even when the building is about to be cancelled and removed.
-                    if b and #b.jobs > 0 and #b.jobs[0].items > 0 then
+                    local b
+                    pcall(function()
+                        b = dfhack.buildings.constructBuilding{
+                            type = df.building_type.Workshop, subtype = sub,
+                            pos = { x = x, y = y, z = z }, filters = filters }
+                    end)
+                    -- Count it only if DF attached a build job carrying EVERY requirement
+                    -- the filter table declares. The count before this was "the job has at
+                    -- least one item", which a Quern holding a log satisfies.
+                    local reqs = 0
+                    if b and #b.jobs > 0 then
+                        pcall(function() reqs = #b.jobs[0].job_items.elements end)
+                    end
+                    if b and reqs >= want then
                         c.build_workshop = c.build_workshop + 1
                         return
+                    elseif b then
+                        -- do not leave a half-specified building standing: it would read
+                        -- as a workshop to every observer that counts buildings
+                        pcall(function() dfhack.buildings.deconstruct(b) end)
                     end
                 end
             end

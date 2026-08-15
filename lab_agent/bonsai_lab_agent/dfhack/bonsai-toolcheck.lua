@@ -137,10 +137,14 @@ local function designated_near()
     if not P.dig then return 0, 0 end
     local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
     local marked, widest = 0, 0
+    -- The window has to cover the verb's REACH, not a guess at it. designate_dig now
+    -- starts each chamber at the measured frontier and may work up to MAX_REACH = 30
+    -- tiles from the shaft; a +/-8 window reported 543 -> 543 while the verb was placing
+    -- 40 tiles just outside it. Twice now this counter has been too small and twice the
+    -- red line was the counter's fault, so it is sized off the verb's own constant.
     for dz = 1, 30 do
-        -- the largest square of designated-or-dug floor, which is what a farm needs
-        for dx = -8, 8 do
-            for dy = -8, 8 do
+        for dx = -32, 32 do
+            for dy = -32, 32 do
                 local x, y, z = ox + dx, oy + dy, oz - dz
                 local okd, des = pcall(function() return dfhack.maps.getTileFlags(x, y, z) end)
                 if okd and des and des.dig ~= df.tile_dig_designation.No then
@@ -152,9 +156,9 @@ local function designated_near()
     -- widest solid run of designated tiles on any one row, a cheap proxy for "a chamber
     -- rather than a corridor"
     for dz = 1, 30 do
-        for dy = -8, 8 do
+        for dy = -32, 32 do
             local run = 0
-            for dx = -8, 8 do
+            for dx = -32, 32 do
                 local okd, des = pcall(function()
                     return dfhack.maps.getTileFlags(ox + dx, oy + dy, oz - dz)
                 end)
@@ -251,6 +255,79 @@ else
         workshops_of('Still') > still_before,
         string.format('Still %d -> %d, material item %d',
             still_before, workshops_of('Still'), buildmat.id))
+end
+
+-- A workshop whose material the fort has not got must be REFUSED, not placed.
+--
+-- DF lets you place a Quern with no quern in the fort; the job simply waits forever. A
+-- player sees that and undoes it. Our agent cannot, so the verb has to ask first —
+-- otherwise `build_workshop Quern` reports success, every observer that counts buildings
+-- believes the fort gained a workshop, and nothing is ever built there. Measured: before
+-- this, handing a Quern a WOOD log produced a job with a reagent attached and the verb's
+-- own success guard fired.
+do
+    local function shops_of(kind)
+        local n = 0
+        for _, b in ipairs(w.buildings.all) do
+            if df.building_workshopst:is_instance(b) and b.type == df.workshop_type[kind] then
+                n = n + 1
+            end
+        end
+        return n
+    end
+    local function stock(t)
+        local n = 0
+        for _, i in ipairs(w.items.all) do if i:getType() == t then n = n + 1 end end
+        return n
+    end
+
+    local q_before = shops_of('Quern')
+    apply('build_workshop\tQuern')
+    if stock(df.item_type.QUERN) > 0 then
+        skipped('a workshop the fort cannot supply is refused',
+            'this fort actually has a QUERN item, so building one is correct')
+    else
+        ok('a workshop the fort cannot supply is refused',
+            shops_of('Quern') == q_before,
+            string.format('Quern needs a QUERN item, fort has %d; shops %d -> %d',
+                stock(df.item_type.QUERN), q_before, shops_of('Quern')))
+    end
+
+    local m_before = shops_of('Millstone')
+    apply('build_workshop\tMillstone')
+    ok('a two-item requirement is checked in full',
+        shops_of('Millstone') == m_before or stock(df.item_type.MILLSTONE) > 0,
+        string.format('Millstone needs MILLSTONE + TRAPPARTS, fort has %d and %d',
+            stock(df.item_type.MILLSTONE), stock(df.item_type.TRAPPARTS)))
+
+    -- A workshop at stage 0 is NOT a ghost — it is one no dwarf has walked to yet, which
+    -- on a paused fort is every one this battery just placed. The property that actually
+    -- matters is that each unbuilt workshop carries a build job stating its FULL
+    -- requirement, because that is what DF matches items against. Five workshops were
+    -- found standing on this fort holding a job with a single log attached, for buildings
+    -- whose filter demands a quern, a millstone or an anvil: those would have waited
+    -- forever while every observer that counts buildings believed the fort had gained a
+    -- workshop.
+    local unspecified = {}
+    for _, b in ipairs(w.buildings.all) do
+        if df.building_workshopst:is_instance(b) and b:getBuildStage() == 0 then
+            local want = 0
+            pcall(function()
+                want = #(dfhack.buildings.getFiltersByType({}, df.building_type.Workshop,
+                                                           b.type, -1) or {})
+            end)
+            local reqs = 0
+            if #b.jobs > 0 then
+                pcall(function() reqs = #b.jobs[0].job_items.elements end)
+            end
+            if reqs < want then
+                unspecified[#unspecified + 1] = string.format('%s#%d wants %d has %d',
+                    tostring(df.workshop_type[b.type]), b.id, want, reqs)
+            end
+        end
+    end
+    ok('every unbuilt workshop states its full requirement', #unspecified == 0,
+        #unspecified == 0 and 'none understated' or table.concat(unspecified, ' '))
 end
 
 -- ================================================================ apply_template
