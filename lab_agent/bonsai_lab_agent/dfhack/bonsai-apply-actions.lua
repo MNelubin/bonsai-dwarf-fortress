@@ -640,11 +640,44 @@ for line in f:lines() do
         pcall(function()
             local n = tonumber(a[2]) or 25
             if not u1 then return end
-            -- Pin the shaft head for the whole episode. Citizen[1] WANDERS, so using
-            -- its live position started a fresh one-tile shaft at a new spot on every
-            -- call (observed: 96,91 then 95,98) - orphaned designations that connect
-            -- to nothing and can never be reached, hence zero tiles actually dug.
-            P.dig = P.dig or { u1.pos.x, u1.pos.y, u1.pos.z }
+            -- Pin the shaft head for the whole FORT, not the whole process. Citizen[1]
+            -- wanders, so using its live position started a fresh one-tile shaft at a
+            -- new spot on every call (observed: 96,91 then 95,98) — orphaned
+            -- designations that connect to nothing and can never be reached.
+            --
+            -- Pinning it in a Lua global fixed that only until the next reload: the
+            -- global is per DF process, so after a save/load the origin re-pinned to
+            -- wherever citizen[1] happened to stand and the fort started a SECOND
+            -- orphan shaft, leaving the first one's designations stranded at z-1 with
+            -- reachable=false. Measured on a reloaded year-3 fort: shaft head 73,44
+            -- while every outstanding dig job sat around 104,83.
+            --
+            -- So recover the origin from the map itself, which is in the save: if the
+            -- fort already has a carved stairway, that IS the shaft, and digging
+            -- continues from it.
+            local function existing_shaft()
+                for _, u in ipairs(cits) do
+                    for r = 0, 25 do
+                        for dx = -r, r do
+                            for dy = -r, r do
+                                local x, y, z = u.pos.x + dx, u.pos.y + dy, u.pos.z
+                                local okt, tt = pcall(function()
+                                    return dfhack.maps.getTileType(x, y, z)
+                                end)
+                                if okt and tt then
+                                    local sh = df.tiletype.attrs[tt].shape
+                                    if sh == df.tiletype_shape.STAIR_DOWN
+                                        or sh == df.tiletype_shape.STAIR_UPDOWN then
+                                        return { x, y, z }
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                return nil
+            end
+            P.dig = P.dig or existing_shaft() or { u1.pos.x, u1.pos.y, u1.pos.z }
             local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
             local placed = 0
             local DIG = df.tile_dig_designation
@@ -740,7 +773,12 @@ for line in f:lines() do
         pcall(function()
             local name = a[2] or "Carpenters"
             local sub = df.workshop_type[name]
-            if sub == nil then sub = df.workshop_type.Carpenters end
+            -- Refuse an unknown kind rather than substituting. This used to read
+            -- `if sub == nil then sub = df.workshop_type.Carpenters end`, the same
+            -- silent-substitution shape that turned `add_workorder NoSuchJobType 5`
+            -- into five beds: the agent asks for a Still, gets a carpenter, and the
+            -- brewing it was planning quietly never happens.
+            if sub == nil then return end
             -- Masons and Craftsdwarfs work stone; the rest of what an early fort builds
             -- wants wood. A workshop may legitimately be made of either, so each order
             -- of preference falls back to the other — unlike a job reagent, where the
