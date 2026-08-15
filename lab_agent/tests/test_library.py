@@ -1,0 +1,150 @@
+"""Tests for the template and cluster library.
+
+The library is DATA the agent chooses from, so the failure mode is not a crash but a
+plausible-looking entry that describes something the game does not have. Every check here
+exists because the equivalent mistake has already been made somewhere in this project:
+an invented enum name, a footprint nobody verified, a cost that drifted from what the
+thing actually costs.
+"""
+
+import re
+from pathlib import Path
+
+import pytest
+
+from bonsai_lab_agent.actions.library import (CLUSTER_NAMES, CLUSTERS, STOCKPILE_KEYS,
+                                              TEMPLATES, TEMPLATES_BY_NAME,
+                                              WORKSHOP_KEYS, Cluster, LibraryError,
+                                              Template, cluster)
+
+
+# ---------------------------------------------------------------- templates
+def test_every_template_declares_a_real_footprint():
+    """A caller asks 'does it fit' before stamping, so a missing or zero extent is a
+    template that can only be applied by hoping."""
+    for t in TEMPLATES:
+        w, h = t.footprint
+        assert w > 0 and h > 0, t.name
+
+
+def test_template_names_are_unique():
+    assert len(TEMPLATES_BY_NAME) == len(TEMPLATES)
+
+
+def test_every_template_says_what_it_makes():
+    """`makes` is what the agent chooses on. A template with an empty one is a name."""
+    assert [t.name for t in TEMPLATES if not t.makes.strip()] == []
+
+
+def test_a_template_with_no_modes_is_refused():
+    with pytest.raises(LibraryError):
+        Template(name="x", path="x.csv", modes=(), footprint=(1, 1), makes="nothing")
+
+
+def test_a_template_with_no_area_is_refused():
+    with pytest.raises(LibraryError):
+        Template(name="x", path="x.csv", modes=("dig",), footprint=(0, 5), makes="nothing")
+
+
+def test_shipped_templates_point_at_csv_files():
+    assert [t.name for t in TEMPLATES if not t.path.endswith(".csv")] == []
+
+
+# ---------------------------------------------------------------- clusters
+def test_cluster_keys_are_quickforts_own():
+    """The keys are DFHack's, read out of quickfort's build.lua and place.lua. Declaring
+    one it does not know would build the wrong thing, silently."""
+    for c in CLUSTERS:
+        for k in c.workshops:
+            assert k in WORKSHOP_KEYS, (c.name, k)
+        for k in c.stockpiles:
+            assert k in STOCKPILE_KEYS, (c.name, k)
+
+
+def test_an_invented_workshop_key_is_refused():
+    with pytest.raises(LibraryError):
+        Cluster(name="x", size=1, workshops=("zz",), stockpiles=(),
+                replenishes=("nothing",))
+
+
+def test_an_invented_stockpile_key_is_refused():
+    with pytest.raises(LibraryError):
+        Cluster(name="x", size=1, workshops=("wc",), stockpiles=("Q",),
+                replenishes=("nothing",))
+
+
+def test_cluster_size_is_bounded():
+    with pytest.raises(LibraryError):
+        Cluster(name="x", size=9, workshops=("wc",), stockpiles=(),
+                replenishes=("nothing",))
+
+
+def test_cost_cannot_drift_from_the_workshop_list():
+    """Cost is derived, not stored. A stored number is one more thing to forget to update
+    when the cluster changes — and the agent is choosing on it."""
+    for c in CLUSTERS:
+        assert c.cost == len(c.workshops), c.name
+
+
+def test_every_cluster_says_what_it_replenishes():
+    """The owner's third criterion: 'что можно восполнить, если их построить'. A cluster
+    that does not answer it cannot be weighed against another."""
+    assert [c.name for c in CLUSTERS if not c.replenishes] == []
+
+
+def test_clusters_come_in_more_than_one_size():
+    """'они могут быть разных размеров' — the point of the library is that the agent
+    picks a scale, so at least one cluster has to offer a choice."""
+    sizes = {}
+    for c in CLUSTERS:
+        sizes.setdefault(c.name, set()).add(c.size)
+    assert any(len(s) > 1 for s in sizes.values()), sizes
+
+
+def test_lookup_takes_the_largest_that_fits():
+    assert cluster("woodworking", 1).size == 1
+    assert cluster("woodworking", 2).size == 2
+    assert cluster("woodworking", 4).size == 2      # nothing bigger exists yet
+    assert cluster("woodworking", 0) is None
+    assert cluster("no_such_cluster", 2) is None
+
+
+def test_cluster_names_are_listed_once_each():
+    assert len(CLUSTER_NAMES) == len(set(CLUSTER_NAMES))
+
+
+# ---------------------------------------------------------------- against the game
+BLUEPRINTS = Path("/srv/df-bonsai/releases/df-53.16-steam-24557528_dfhack-53.16-r1.1"
+                  "/hack/data/blueprints")
+
+
+@pytest.mark.skipif(not BLUEPRINTS.is_dir(),
+                    reason="DFHack's blueprint library is on the lab host, not here")
+def test_shipped_templates_exist_on_disk():
+    missing = [t.name for t in TEMPLATES if not (BLUEPRINTS / t.path).is_file()]
+    assert missing == []
+
+
+@pytest.mark.skipif(not BLUEPRINTS.is_dir(),
+                    reason="DFHack's blueprint library is on the lab host, not here")
+def test_declared_footprints_match_the_files():
+    """The extent is read off the file, so it must keep matching it."""
+    for t in TEMPLATES:
+        text = (BLUEPRINTS / t.path).read_text(encoding="utf-8", errors="replace")
+        rows = text.splitlines()
+        width = max((len(r.split(",")) for r in rows), default=0)
+        assert (width, len(rows)) == t.footprint, t.name
+
+
+@pytest.mark.skipif(not BLUEPRINTS.is_dir(),
+                    reason="DFHack's blueprint library is on the lab host, not here")
+def test_the_embark_cluster_matches_the_shipped_blueprint():
+    """`embark` is decoded from DFHack's own file rather than invented, so the decoding
+    has to keep agreeing with it: every workshop and stockpile key we claim must actually
+    appear in the blueprint."""
+    text = (BLUEPRINTS / "embark.csv").read_text(encoding="utf-8", errors="replace")
+    cells = {c.strip() for c in re.split(r"[,\n]", text)}
+    bare = {re.sub(r"\(.*", "", c) for c in cells}
+    entry = next(c for c in CLUSTERS if c.name == "embark")
+    assert set(entry.workshops) <= bare
+    assert set(entry.stockpiles) <= bare
