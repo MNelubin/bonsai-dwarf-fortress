@@ -43,13 +43,17 @@ local shown = 0
 local link = w.jobs.list.next
 while link and shown < 4 do
     local j = link.item
-    if j and tostring(df.job_type[j.job_type]):match('Dig') then
+    local n = j and tostring(df.job_type[j.job_type]) or ''
+    if n:match('Dig') or n:match('Carve') then
         shown = shown + 1
         local fl = {}
         for k, v in pairs(j.flags) do
             if v == true then fl[#fl + 1] = k end
         end
         table.sort(fl)
+        -- reachable=false on an UNDUG wall is normal, not a diagnosis: you cannot walk
+        -- into rock. What matters is whether the tile ABOVE or beside it can be reached,
+        -- which is what the staircase provides.
         print(string.format('digjob %-24s at %d,%d,%d reachable=%s posting=%s flags=[%s]',
             tostring(df.job_type[j.job_type]), j.pos.x, j.pos.y, j.pos.z,
             walkable(j.pos), tostring(j.posting_index), table.concat(fl, ',')))

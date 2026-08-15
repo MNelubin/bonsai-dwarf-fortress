@@ -119,6 +119,28 @@ print(string.format('-- fort: year %d, %d citizens, %d workshops, %d stockpiles,
     df.global.cur_year, #dfhack.units.getCitizens(true), workshops_of(),
     buildings_of(df.building_type.Stockpile), buildings_of(df.building_type.FarmPlot)))
 
+-- ================================================================ enum names are real
+-- Three times now a name has been written from memory and turned out not to exist:
+-- ConstructBarrel (it is MakeBarrel), BrewDrink (there is no such job type — brewing is
+-- ProcessPlantsBarrel), and a workshop kind that silently became Carpenters. A name that
+-- df does not know blows up on the first write, inside a pcall, so the verb just quietly
+-- does nothing. Assert the whole table instead of finding out one job at a time.
+do
+    local lua = io.open('hack/scripts/bonsai-apply-actions.lua')
+    local bad = {}
+    if lua then
+        local body = lua:read('*a'); lua:close()
+        local block = body:match('local JOB_SPEC = {(.-)\n}')
+        if block then
+            for name in block:gmatch('[\r\n]%s*(%w+)%s*=%s*{') do
+                if df.job_type[name] == nil then bad[#bad + 1] = name end
+            end
+        end
+    end
+    ok('every job name in JOB_SPEC exists in df.job_type', #bad == 0,
+        #bad > 0 and ('invented: ' .. table.concat(bad, ',')) or 'all resolve')
+end
+
 -- ================================================================ advance
 apply('advance\t1')
 ok('advance is harmless', true, 'no error')

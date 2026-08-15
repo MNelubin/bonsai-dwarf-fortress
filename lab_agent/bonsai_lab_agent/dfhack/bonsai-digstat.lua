@@ -30,6 +30,9 @@ if P and P.dig then
                 if okd and des and des.dig ~= df.tile_dig_designation.No then
                     marked = marked + 1
                 end
+                -- A designation that has become a job reads dig=No while the tile is
+                -- still a wall, so counting designations alone makes a fort that is
+                -- busily digging look stalled. Count outstanding work, not paperwork.
             end
         end
     end
@@ -39,7 +42,11 @@ local jobs, worked = 0, 0
 local link = w.jobs.list.next
 while link do
     local j = link.item
-    if j and tostring(df.job_type[j.job_type]):match('Dig') then
+    -- 'Dig' alone misses the staircase: the shaft is carved by CarveDownwardStaircase
+    -- and CarveUpDownStaircase, so a probe matching only Dig reports no stair work and
+    -- makes a shaft that is being cut look abandoned.
+    local n = j and tostring(df.job_type[j.job_type]) or ''
+    if n:match('Dig') or n:match('Carve') or n:match('Chan') then
         jobs = jobs + 1
         if dfhack.job.getWorker(j) then worked = worked + 1 end
     end

@@ -791,18 +791,25 @@ for line in f:lines() do
             end
             if not item then return end          -- nothing to build it out of, so do not
                                                  -- claim we did
-            local x, y, z = site(P.shop, 8)
-            if x then
-                local b = dfhack.buildings.constructBuilding{
-                    type = df.building_type.Workshop, subtype = sub,
-                    pos = { x = x, y = y, z = z }, items = { item } }
-                -- Count it only if DF actually attached a build job with a reagent.
-                -- The old count was "constructBuilding returned something", which it
-                -- does even when the building is about to be cancelled and removed.
-                if b and #b.jobs > 0 and #b.jobs[0].items > 0 then
-                    c.build_workshop = c.build_workshop + 1
-                end
+            -- Try several spots on the ring before giving up. One attempt was enough on
+            -- an empty embark and silently did nothing once the ring filled: measured on
+            -- a fort with eight workshops, `build_workshop Still` reported success zero
+            -- times while sixteen logs sat free. A player looks somewhere else.
+            for _ = 1, 12 do
+                local x, y, z = site(P.shop, 8)
                 P.shop = P.shop + 1
+                if x then
+                    local b = dfhack.buildings.constructBuilding{
+                        type = df.building_type.Workshop, subtype = sub,
+                        pos = { x = x, y = y, z = z }, items = { item } }
+                    -- Count it only if DF actually attached a build job with a reagent.
+                    -- The old count was "constructBuilding returned something", which it
+                    -- does even when the building is about to be cancelled and removed.
+                    if b and #b.jobs > 0 and #b.jobs[0].items > 0 then
+                        c.build_workshop = c.build_workshop + 1
+                        return
+                    end
+                end
             end
         end)
     elseif verb == "assign_noble" then
