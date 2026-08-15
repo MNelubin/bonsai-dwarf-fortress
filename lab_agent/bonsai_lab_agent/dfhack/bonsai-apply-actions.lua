@@ -678,17 +678,35 @@ for line in f:lines() do
                 depth = dz
                 if placed >= n then break end
             end
-            -- rooms off each landing, spiralling out so successive calls extend the fort
-            -- rather than re-designating the same tiles
+            -- A CHAMBER off each landing, not spokes. This used to carve four one-tile
+            -- arms at radii 1..3, which is connected and diggable and useless: nothing
+            -- that needs floor area ever fits. Measured — build_farm_plot refused for
+            -- want of a 3x3 of dug soil while the fort had plenty of dug tiles, all of
+            -- them one tile wide. A room hangs off the shaft so its first column is
+            -- adjacent to the stair, which keeps every tile reachable.
+            local len = math.max(1, math.min(tonumber(a[3]) or 4, 10))
+            local wide = math.max(1, math.min(tonumber(a[4]) or 3, 10))
+            local DIRS = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } }
             P.digring = (P.digring or 0)
-            for dz = 1, depth do
-                for r = 1 + P.digring, 3 + P.digring do
-                    for _, d in ipairs({ { r, 0 }, { -r, 0 }, { 0, r }, { 0, -r } }) do
-                        mark(ox + d[1], oy + d[2], oz - dz, DIG.Default)
-                        if placed >= n then break end
+            local function chamber(z, d)
+                local hh = math.floor(wide / 2)
+                for step = 1, len do
+                    for side = -hh, hh do
+                        local x, y
+                        if d[1] ~= 0 then
+                            x, y = ox + d[1] * step, oy + side
+                        else
+                            x, y = ox + side, oy + d[2] * step
+                        end
+                        mark(x, y, z, DIG.Default)
+                        if placed >= n then return end
                     end
-                    if placed >= n then break end
                 end
+            end
+            -- successive calls take the next side, so the fort grows instead of
+            -- re-designating tiles that are already dug
+            for dz = 1, depth do
+                chamber(oz - dz, DIRS[((P.digring + dz - 1) % 4) + 1])
                 if placed >= n then break end
             end
             if placed > 0 then
