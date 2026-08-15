@@ -12,8 +12,14 @@ success while doing nothing.
 Batteries that keep these honest, both run through the real `bonsai-apply-actions` entry
 point on a live fort:
 
-* `bonsai-toolcheck` — one case per verb plus its refusal path (24/24)
-* `bonsai-ordercheck` — the order machinery in depth (27/27)
+* `bonsai-toolcheck` — one case per verb plus its refusal path (63 pass, 0 fail, 0 skip)
+* `bonsai-ordercheck` — the order machinery in depth (23 pass, 0 fail, 2 skip)
+
+A SKIP is not a pass in disguise: it names the precondition the fort could not meet, and
+says when refusing is the correct behaviour. Six cases have turned out to be measuring
+something other than the verb — two that could never fail, four that could never pass —
+and each was fixed by stating the precondition or correcting the yardstick, never by
+weakening the assertion.
 
 Probes: `bonsai-digstat`, `bonsai-digwhy`, `bonsai-dumporders`, `bonsai-mgrdiff`,
 `bonsai-plotdump`, `bonsai-entdump`, `bonsai-brewprobe`.
@@ -362,7 +368,17 @@ attack before calling the hauling path proved.
 
 Build a workshop on a ring around the wagon.
 
-**Refuses:** an unknown `df.workshop_type` name. It used to fall back to Carpenters — the
+**Refuses:** an unknown `df.workshop_type` name, AND a workshop whose material the fort
+has not got. DF states each building's real requirement through `getFiltersByType`: a
+Quern wants a manufactured QUERN item, a Millstone a MILLSTONE plus TRAPPARTS, the forges
+an ANVIL, the Ashery BLOCKS plus an empty barrel plus a bucket, Siege three materials. The
+verb passes those FILTERS so DF records the requirement and picks the items itself.
+Handing a Quern a log does not fail loudly — DFHack builds the job from whatever you pass,
+so the job carries a reagent and any "has an item" guard fires. Measured: Carpenters
+0 → 1, and Quern, Millstone, MetalsmithsForge and Ashery all 0 → 0 on a fort with none of
+those items and only wood, which burns.
+
+It used to fall back to Carpenters for an unknown name — the
 same silent-substitution shape that turned `add_workorder NoSuchJobType 5` into five beds
 — so an agent asking for a Still got a carpenter and the brewing it was planning quietly
 never happened.
