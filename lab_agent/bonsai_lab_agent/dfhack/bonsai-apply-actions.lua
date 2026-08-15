@@ -300,6 +300,58 @@ end
 -- rest of the request lives here.
 _G.BONSAI_ORDERS = _G.BONSAI_ORDERS or {}
 
+-- ...and on disk beside the actions file, because a Lua global dies with the DF process.
+-- A mid-episode restart — a crash, a watchdog, a reload to inspect something — used to
+-- take the outstanding remainder with it silently: the agent had asked for twelve beds,
+-- five were queued, and the other seven simply stopped existing. The ledger is small and
+-- flat, so one tab-separated line per order is enough and needs no JSON.
+local LEDGER = path .. '.orders'
+
+local function save_ledger()
+    local fh = io.open(LEDGER, 'w')
+    if not fh then return end
+    for _, e in ipairs(_G.BONSAI_ORDERS) do
+        local cd = e.cond or {}
+        fh:write(table.concat({
+            e.job, e.amount, e.material or '', e.freq, e.remaining,
+            e.next_check or 0, e.fired and 1 or 0,
+            cd.item or '', cd.cmp or '', cd.value or 0, cd.material or '',
+        }, '\t'), '\n')
+    end
+    fh:close()
+end
+
+local function load_ledger()
+    -- Once per DF process, not once per dispatch. Reloading whenever the live table
+    -- happens to be empty resurrects orders that were deliberately cleared — it undid
+    -- the reset in bonsai-ordercheck and brought back a bed order that then answered for
+    -- a craft order's jobs, failing three cases that had nothing to do with it.
+    if _G.BONSAI_LEDGER_LOADED then return end
+    _G.BONSAI_LEDGER_LOADED = true
+    if #_G.BONSAI_ORDERS > 0 then return end     -- the live copy wins
+    local fh = io.open(LEDGER, 'r')
+    if not fh then return end
+    for line in fh:lines() do
+        local f = {}
+        for tok in string.gmatch(line .. '\t', '([^\t]*)\t') do f[#f + 1] = tok end
+        if f[1] and f[1] ~= '' and JOB_SPEC[f[1]] then
+            _G.BONSAI_ORDERS[#_G.BONSAI_ORDERS + 1] = {
+                job = f[1], amount = tonumber(f[2]) or 0, material = f[3],
+                freq = FREQ_TICKS[f[4]] and f[4] or 'OneTime',
+                remaining = tonumber(f[5]) or 0, next_check = tonumber(f[6]) or 0,
+                fired = f[7] == '1',
+                cond = (f[8] ~= '' and df.item_type[f[8]] ~= nil) and {
+                    item = f[8], cmp = f[9], value = tonumber(f[10]) or 0,
+                    material = f[11],
+                } or nil,
+            }
+        end
+    end
+    fh:close()
+end
+
+load_ledger()
+
 local function place_order(rec)
     for _, e in ipairs(_G.BONSAI_ORDERS) do
         if e.job == rec.job and e.material == rec.material
@@ -754,17 +806,28 @@ for line in f:lines() do
         pcall(function()
             local n = tonumber(a[2]) or 1
             for _ = 1, n do
-                local x, y, z = site(P.stock, 4)
-                if x then
-                    local ok = pcall(function()
-                        local b = dfhack.buildings.constructBuilding{
-                            type = df.building_type.Stockpile, abstract = true,
-                            pos = { x = x, y = y, z = z }, width = 2, height = 2 }
-                        if b then c.create_stockpile = c.create_stockpile + 1 end
-                    end)
+                -- Walk the ring until one placement takes, the same way build_workshop
+                -- does. A single attempt worked on an empty embark and silently placed
+                -- nothing once the ring filled: measured on a fort with three
+                -- stockpiles, `create_stockpile 1` reported 3 -> 3.
+                local placed = false
+                for _ = 1, 12 do
+                    local x, y, z = site(P.stock, 4)
                     P.stock = P.stock + 1
-                    if not ok then break end
+                    if x then
+                        pcall(function()
+                            local b = dfhack.buildings.constructBuilding{
+                                type = df.building_type.Stockpile, abstract = true,
+                                pos = { x = x, y = y, z = z }, width = 2, height = 2 }
+                            if b then
+                                c.create_stockpile = c.create_stockpile + 1
+                                placed = true
+                            end
+                        end)
+                    end
+                    if placed then break end
                 end
+                if not placed then break end
             end
         end)
     elseif verb == "build_workshop" then
@@ -996,6 +1059,7 @@ f:close()
 -- and never does on our forts.
 local dispatched = dispatch_orders()
 if dispatched > 0 then c.add_workorder = c.add_workorder + dispatched end
+save_ledger()
 
 local rep = {}
 for k, v in pairs(c) do rep[#rep + 1] = k .. "=" .. v end

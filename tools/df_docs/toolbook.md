@@ -12,7 +12,7 @@ success while doing nothing.
 Batteries that keep these honest, both run through the real `bonsai-apply-actions` entry
 point on a live fort:
 
-* `bonsai-toolcheck` — one case per verb plus its refusal path (18/18)
+* `bonsai-toolcheck` — one case per verb plus its refusal path (19/19)
 * `bonsai-ordercheck` — the order machinery in depth (27/27)
 
 Probes: `bonsai-digstat`, `bonsai-digwhy`, `bonsai-dumporders`, `bonsai-mgrdiff`,
@@ -156,6 +156,10 @@ Place a 2×2 stockpile on a ring around the wagon.
 
 **Measured:** 0 → 1 buildings of type Stockpile.
 
+**It walks the ring until a placement takes**, the same way `build_workshop` does. A
+single attempt worked on an empty embark and silently placed nothing once the ring
+filled: measured on a fort with three stockpiles, `create_stockpile 1` reported 3 → 3.
+
 **Still unknown, and it is a real gap.** It accepts the default everything. A player's
 first act is to NARROW it — the guide removes stone and wood so bulk goods cannot crowd
 out perishables. `configure_stockpile` is still planned, so the agent can make a pile but
@@ -290,9 +294,15 @@ and not received; each `df.manager_order` mirrors **one batch** — exactly the 
 for it — so DF's count and its retirement are both correct. Measured end to end: 12
 requested, beds 25 → 30 → 35 → 37 over three dispatches, owed 12 → 7 → 2 → 0, then flat.
 
-**Still unknown:** the ledger is a Lua global, so it dies with the DF process. Within an
-episode that is one process and it holds; a mid-episode restart loses the outstanding
-remainder silently. Making it file-backed is the obvious fix and is not done.
+**The ledger is now on disk too**, beside the actions file as `<actions>.orders`, one
+tab-separated line per order. A Lua global dies with the DF process, so a mid-episode
+restart — a crash, a watchdog, a reload to inspect something — used to take the
+outstanding remainder with it silently: the agent had asked for twelve beds, five were
+queued, and the other seven simply stopped existing. Verified by wiping the in-memory
+ledger and dispatching again: 12 requested, 3 queued, 9 written, 9 recovered.
+
+**Still unknown:** the ledger is keyed to the actions file path, so two episodes sharing
+one path would share one ledger. They are per-episode today, but nothing enforces it.
 
 ---
 
