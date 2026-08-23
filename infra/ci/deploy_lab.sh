@@ -44,10 +44,11 @@ install -d -m 0755 "$releases"
 if [[ ! -d $release ]]; then
   [[ -x "$install_root/venv/bin/python" ]] || { echo "offline seed venv is missing" >&2; exit 1; }
   building=1
-  install -d -m 0755 "$release/venv"
+  install -d -m 0755 "$release/venv" "$release/source"
   cp -a "$install_root/venv/." "$release/venv/"
+  cp -a "$source_root/lab_agent/." "$release/source/"
   chmod -R u+w "$release/venv"
-  "$release/venv/bin/python" -m pip install --no-deps --no-build-isolation --disable-pip-version-check --force-reinstall "$source_root/lab_agent"
+  "$release/venv/bin/python" -m pip install --no-deps --no-build-isolation --disable-pip-version-check --force-reinstall "$release/source"
   printf '%s\n' "$commit_sha" >"$release/DEPLOYED_COMMIT"
   chmod -R a-w "$release"
   building=0
