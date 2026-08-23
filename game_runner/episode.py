@@ -110,7 +110,7 @@ def _dfhack_run(lualine, timeout=30):
             return {"_raw": raw}
     except subprocess.TimeoutExpired:
         return {"error": "timeout"}
-    except FileNotFoundError as exc:
+    except OSError as exc:
         return {
             "_dfhack_error": True,
             "exit_code": getattr(exc, "errno", 2),

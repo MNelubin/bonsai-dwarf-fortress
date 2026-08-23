@@ -37,7 +37,7 @@ def probe_unit_happiness(timeout: int = 20) -> Optional[float]:
     try:
         raw = _dfhack_run(_lua_unit_happiness_snapshot(), timeout=timeout)
     except Exception:
-        if isinstance(raw, dict) and "mean_happiness" in raw:
-            return float(raw["mean_happiness"])
         return None
+    if isinstance(raw, dict) and raw.get("mean_happiness") is not None:
+        return float(raw["mean_happiness"])
     return None

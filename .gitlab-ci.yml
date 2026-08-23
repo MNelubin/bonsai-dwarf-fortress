@@ -1,0 +1,40 @@
+stages:
+  - test
+  - deploy
+
+default:
+  interruptible: true
+
+test:all:
+  stage: test
+  tags: [bonsai-test]
+  script:
+    - test -x /opt/bonsai-ci/venv/bin/python
+    - /opt/bonsai-ci/venv/bin/python -m pytest -q tests
+    - PYTHONPATH="$CI_PROJECT_DIR/control_plane" /opt/bonsai-ci/venv/bin/python -m pytest -q control_plane/tests
+    - PYTHONPATH="$CI_PROJECT_DIR/lab_agent" /opt/bonsai-ci/venv/bin/python -m pytest -q lab_agent/tests
+    - /opt/bonsai-ci/venv/bin/python -m ruff check control_plane/bonsai_control lab_agent/bonsai_lab_agent
+    - MYPYPATH="$CI_PROJECT_DIR/control_plane:$CI_PROJECT_DIR/lab_agent" /opt/bonsai-ci/venv/bin/python -m mypy lab_agent/bonsai_lab_agent
+    - MYPYPATH="$CI_PROJECT_DIR/control_plane" /opt/bonsai-ci/venv/bin/python -m mypy control_plane/bonsai_control/auth.py control_plane/bonsai_control/cycle_policy.py control_plane/bonsai_control/policy.py control_plane/bonsai_control/quality_gate.py control_plane/bonsai_control/schemas.py control_plane/bonsai_control/settings.py
+
+deploy:control:
+  stage: deploy
+  tags: [bonsai-control-deploy]
+  resource_group: bonsai-control-production
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - sudo /usr/local/sbin/bonsai-deploy-control "$CI_PROJECT_DIR" "$CI_COMMIT_SHA"
+  environment:
+    name: production/control
+
+deploy:lab:
+  stage: deploy
+  tags: [bonsai-lab-deploy]
+  resource_group: bonsai-lab-production
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - sudo /usr/local/sbin/bonsai-deploy-lab "$CI_PROJECT_DIR" "$CI_COMMIT_SHA"
+  environment:
+    name: production/lab
