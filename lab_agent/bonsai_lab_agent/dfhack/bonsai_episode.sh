@@ -18,7 +18,8 @@ for i in $(seq 1 50); do ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT && break;
 click_until "Continue active game" "Planets of Dawning" 10 || { echo "LOADFAIL:worldlist"; exit 1; }
 click_until "The Planets of Dawning" "bonsaifort2" 10 || { echo "LOADFAIL:savelist"; exit 1; }
 click "bonsaifort2"
-for i in $(seq 1 40); do sleep 2; [ "$(getnum 'df.global.cur_year_tick')" != "0" ] && break; done
+for i in $(seq 1 40); do sleep 2; [ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] && break; done
+[ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] || { echo "LOADFAIL:map"; exit 1; }
 run bonsai-headless-init >/dev/null
 [ "$SUPPRESS" = "1" ] && run bonsai-nowild >/dev/null
 run lua "df.global.world.status.popups:resize(0); df.global.pause_state=true" >/dev/null

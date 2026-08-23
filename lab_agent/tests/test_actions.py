@@ -232,6 +232,91 @@ def test_orderable_jobs_match_the_dispatcher_exactly():
         f"only in catalog: {sorted(set(ORDERABLE_JOBS) - in_lua)}")
 
 
+def test_resolved_workshops_survive_asynchronous_material_acquisition():
+    """A fresh embark has no free logs or boulders. The resolver must not attempt the
+    workshop synchronously and lose it before its chop/dig prerequisite completes."""
+    from pathlib import Path
+
+    lua = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+           / "bonsai-apply-actions.lua").read_text(encoding="utf-8")
+    assert "'build_workshop\\t' .. shop .. '\\tdeferred'" in lua
+    assert "bp.addPlannedBuilding(b)" in lua
+    assert "bp.scheduleCycle()" in lua
+    assert "math.max(30, n * 12)" in lua
+    assert "for dz = depth, 1, -1 do" in lua
+
+
+def test_resolved_orders_are_retried_after_workshops_finish():
+    """Orders created before their workshop exists stay in the ledger. A frame-driven
+    pump must revisit them without requiring a second agent request."""
+    from pathlib import Path
+
+    lua = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+           / "bonsai-apply-actions.lua").read_text(encoding="utf-8")
+    assert "local function ensure_order_pump()" in lua
+    assert "BONSAI_ORDER_PUMP_GENERATION" in lua
+    assert "bonsai order pump stopped:" in lua
+    assert "local function repair_pending_shaft()" in lua
+    assert "_G.BONSAI_ORDER_PUMP_TICK = function()" in lua
+    assert "df.global.process_dig = true" in lua
+    assert "dfhack.timeout(300, 'frames', tick)" in lua
+    assert "save_ledger()\nensure_order_pump()" in lua
+    assert "mode ~= 'pump'" in lua
+    runner = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+              / "bonsai-run.lua").read_text(encoding="utf-8")
+    assert "_G.BONSAI_ORDER_PUMP_TICK()" in runner
+    loop = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+            / "bonsai-run-loop.sh").read_text(encoding="utf-8")
+    assert 'bonsai-apply-actions "$ACTIONS" pump' in loop
+
+
+def test_build_room_expands_to_a_durable_verified_workflow():
+    d = judge({"verb": "build_room",
+               "args": ["office_manager", "rock", "any", "manager-1"]})
+    assert d.ok
+    assert d.args[0].endswith("bonsai/office_manager.csv")
+    assert d.args[1].endswith("bonsai/office_manager-surface.csv")
+    assert d.args[2:6] == [3, 4, 1, 1]
+    assert d.args[6:8] == ["Office", "manager"]
+    assert "c:1" in d.args[8] and "t:1" in d.args[8] and "d:1" in d.args[8]
+    assert d.args[-4:] == [1, "rock", "any", "manager-1"]
+
+
+def test_build_room_request_id_cannot_inject_an_action_line():
+    d = judge({"verb": "build_room",
+               "args": ["office_manager", "auto", "any", "x\nadvance\t999"]})
+    assert not d.ok
+    assert "request_id" in d.reason
+
+
+def test_room_workflow_is_persistent_idempotent_and_receipted():
+    from pathlib import Path
+
+    lua = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+           / "bonsai-apply-actions.lua").read_text(encoding="utf-8")
+    assert "bonsai/room-workflows-v1" in lua
+    assert "if #zones > 1" in lua and "duplicate-zone" in lua
+    assert "waiting-dig:" in lua and "waiting-shell:" in lua
+    assert "r.door_x, r.door_y" in lua
+    assert "relocating-stalled-dig" in lua
+    assert "local function prioritize_room_dig(r)" in lua
+    assert "pbse.priority[x % 16][y % 16] = 1000" in lua
+    assert "including the doorway whose designation" in lua
+    priority_fn = lua.split("local function prioritize_room_dig(r)", 1)[1].split(
+        "local function cancel_room_dig_jobs", 1)[0]
+    assert "des.dig ~= df.tile_dig_designation.No" not in priority_fn
+    assert "cancel_room_dig_jobs(r)" in lua
+    reach = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+             / "bonsai-reach.lua").read_text(encoding="utf-8")
+    assert "entry_x, entry_y" in reach and "local is_entry = entry_x == nil" in reach
+    assert "owner-link-missing" in lua and "room-unreachable" in lua
+    assert "value-shortfall:" in lua
+    assert "if mode == 'pump' then" in lua
+    probe = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+             / "bonsai-roomcheck.lua").read_text(encoding="utf-8")
+    assert "zone_count" in probe and "value=%d/%d" in probe
+
+
 def test_a_standing_order_needs_a_job_to_repeat():
     assert not judge({"verb": "add_workorder_conditional", "args": []}).ok
 
@@ -260,24 +345,26 @@ def test_advertised_actions_carry_argument_schemas():
 def test_the_schema_stays_small_enough_to_ship_every_round():
     """It rides in every controller prompt, so it is a running cost, not a one-off.
 
-    The ceiling has moved as the guide's verbs landed, and each move was accounted for.
-    At 22 verbs it was funded by dropping `category` (the model never acts on it). Then
-    `apply_template` and `build_workshop_cluster` went live carrying a library index each,
-    the ceiling was raised to 9000 unfunded, and the debt was written down here with the
-    repayment named. It has now been repaid twice over, and the two savings are the ones
-    that were named:
+    The ledger, because each move has been accounted for rather than waved through:
 
-      * each distinct choice list is emitted ONCE; a repeat says where it already is.
-        ORDERABLE_JOBS was shipping twice. Nothing is lost — the gate validates against
-        the catalog, and `choices` on the wire is only there to tell the model what is
-        legal.                                                              -171 bytes
-      * `required: false` is not emitted alongside a `default`, because a default
-        implies it.                                                         -570 bytes
+      22 verbs, 8.2 KB          dropping `category`, which the model never acts on
+      +apply_template           an 11-name enum; ceiling raised to 9000 UNFUNDED, and
+      +build_workshop_cluster   the debt written down here with its repayment named
+      repaid, -741 bytes        each distinct choice list emitted ONCE with repeats
+                                saying where it already is (-171), and `required: false`
+                                dropped next to a `default` that implies it (-570)
+      +153 bytes                ConstructArmorStand, ConstructWeaponRack and
+                                ConstructStatue — without them a noble's room was
+                                designable and unfurnishable — plus apply_template's
+                                dig/rooms stage
 
-    24 live verbs in 8.4 KB, which is less than 22 of them used to take.
+      +build_room              one high-level resumable workflow with four bounded args
+
+    So 25 verbs in 9.5 KB. The increase buys one request that replaces repeated model
+    turns for dig/wait/zone/build/assign and therefore lowers episode context overall.
     """
     import json
-    assert len(json.dumps(available_actions())) < 8600
+    assert len(json.dumps(available_actions())) < 9600
 
 
 def test_every_live_verb_has_a_toolbook_entry():

@@ -64,6 +64,8 @@ end
 dump_enum('profession', df.profession, 200)
 dump_enum('job_type', df.job_type, 400)
 dump_enum('building_type', df.building_type, 100)
+dump_enum('workshop_type', df.workshop_type, 100)
+dump_enum('furnace_type', df.furnace_type, 100)
 dump_enum('item_type', df.item_type, 200)
 dump_enum('tiletype_shape', df.tiletype_shape, 64)
 dump_enum('tiletype_material', df.tiletype_material, 64)

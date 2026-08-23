@@ -164,7 +164,14 @@ end
 -- Enum names verified live rather than remembered: `df.tiletype_special.SMOOTH` = 3 and
 -- `StoneFloorSmooth` carries it; `df.tiletype_material.FEATURE` = 3 and `FeatureFloor1`
 -- carries it. `df.tiletype.attrs[tt]` returns NUMBERS, so these are compared numerically.
-TILE_VALUE = { rough = 1, smooth = 4, feature = 2 }
+-- Constructed floor/wall multipliers are the values DF applies to the underlying
+-- material. The room workflow uses constructed floors for surface rooms, so treating
+-- them as rough would reject a room the game values correctly. These are conservative
+-- base-material values; furniture is still read from the actual built items.
+TILE_VALUE = {
+    rough = 1, smooth = 4, feature = 2,
+    constructed_floor = 7, constructed_wall = 9,
+}
 
 -- What an ENGRAVING adds, by quality. A whole term the scorer was blind to.
 --
@@ -199,7 +206,13 @@ function tile_value(x, y, z, engravings)
         local tt = dfhack.maps.getTileType(x, y, z)
         if not tt then return end
         local a = df.tiletype.attrs[tt]
-        if a.special == df.tiletype_special.SMOOTH then
+        if a.material == df.tiletype_material.CONSTRUCTION
+            and a.shape == df.tiletype_shape.FLOOR then
+            v = TILE_VALUE.constructed_floor
+        elseif a.material == df.tiletype_material.CONSTRUCTION
+            and a.shape == df.tiletype_shape.WALL then
+            v = TILE_VALUE.constructed_wall
+        elseif a.special == df.tiletype_special.SMOOTH then
             v = TILE_VALUE.smooth
         elseif a.material == df.tiletype_material.FEATURE then
             v = TILE_VALUE.feature

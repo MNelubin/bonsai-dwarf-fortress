@@ -4,9 +4,10 @@
 
 local bridge = {}
 
---- Ticks per season constant (verified from position.lua).
-bridge.TICKS_PER_DAY = 86400
-bridge.TICKS_PER_SEASON = 3600 * bridge.TICKS_PER_DAY
+--- Fort-mode calendar constants. df.global.cur_year_tick advances 1200 ticks
+--- per in-game day; a season is 3 months x 28 days = 84 days.
+bridge.TICKS_PER_DAY = 1200
+bridge.TICKS_PER_SEASON = 84 * bridge.TICKS_PER_DAY
 
 --- Current timestamp as a single table.
 function bridge.observe()

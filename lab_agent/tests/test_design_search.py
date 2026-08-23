@@ -16,7 +16,7 @@ import pytest
 
 from bonsai_lab_agent.actions.library import blueprint_labels, template_extent
 from bonsai_lab_agent.design import (Design, Requirement, anneal, bare_room, item_value,
-                                     score, to_quickfort, validate)
+                                     score, to_quickfort, to_surface_quickfort, validate)
 from bonsai_lab_agent.design.model import (BASE_ITEM_VALUE, DEFAULT_BASE, PIECE_KEYS,
                                            REQUIRED_FURNITURE, REQUIRED_VALUE,
                                            TILE_VALUE, ZONE_KEY, DesignError)
@@ -27,6 +27,19 @@ def _req(**kw) -> Requirement:
     base = dict(kind="Bedroom", position="mayor", max_w=9, max_h=9)
     base.update(kw)
     return Requirement(**base)
+
+
+def test_surface_blueprint_builds_shell_before_zone_and_furniture():
+    d = Design(kind="Bedroom", w=5, h=4,
+               cells=("##+##", "#...#", "#...#", "#####"),
+               pieces=((2, 1, "b"),))
+    csv = to_surface_quickfort(d, "surface_bedroom")
+    assert csv.index("label(shell)") < csv.index("label(zone)") < csv.index("label(build)")
+    shell = csv.split('label(shell)', 1)[1].split('label(zone)', 1)[0]
+    assert shell.count("Cw") == 13
+    assert shell.count("Cf") == 7
+    build = csv.split('label(build)', 1)[1]
+    assert ",b," in build and ",d," in build
 
 
 # ---------------------------------------------------------------- the measured model

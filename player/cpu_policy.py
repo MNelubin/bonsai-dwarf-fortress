@@ -7,7 +7,7 @@ with no ML framework dependency and sub-millisecond inference.
 
 import math
 
-TICKS_PER_DAY = 86400
+TICKS_PER_DAY = 1200
 DAYS_TARGET = 30
 TARGET_TICKS = TICKS_PER_DAY * DAYS_TARGET
 

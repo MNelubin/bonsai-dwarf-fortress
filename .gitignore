@@ -1,4 +1,6 @@
 .codex-tmp/
+.claude/
+.e2e.csv
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -17,3 +19,9 @@ logs/
 *.zip
 *.tar
 *.tar.gz
+
+# Reproducible replay extraction output and local visual-validation captures.
+# The source pipeline and research notes are tracked; generated atlases, raw
+# recordings, and screenshots stay local or in the project knowledge store.
+tools/replay/build/
+tools/replay/live/

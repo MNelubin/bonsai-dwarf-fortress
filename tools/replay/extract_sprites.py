@@ -173,7 +173,17 @@ def parse_raws(raws_dir: pathlib.Path) -> tuple[dict, dict]:
     return pages, tokens
 
 
-def load_sheet(images_dir: pathlib.Path, filename: str):
+def index_images(images_dir: pathlib.Path) -> dict[str, pathlib.Path]:
+    """Index a real DF data tree, whose graphics sheets live in many images/ dirs."""
+    found: dict[str, pathlib.Path] = {}
+    for path in sorted(images_dir.rglob("*")):
+        if path.is_file() and path.suffix.lower() in (".png", ".bmp"):
+            found.setdefault(path.name.lower(), path)
+    return found
+
+
+def load_sheet(images_dir: pathlib.Path, filename: str,
+               image_index: dict[str, pathlib.Path] | None = None):
     """Load a sprite sheet exactly as the raws name it.
 
     Two traps here, both of which produced silently-blank sprites the first time:
@@ -188,9 +198,13 @@ def load_sheet(images_dir: pathlib.Path, filename: str):
 
     exact = images_dir / pathlib.PurePath(filename).name
     src = exact if exact.exists() else None
+    if src is None and image_index is not None:
+        src = image_index.get(exact.name.lower())
     if src is None:
         alt = exact.with_suffix(".png")
         src = alt if alt.exists() else None
+        if src is None and image_index is not None:
+            src = image_index.get(alt.name.lower())
     if src is None:
         return None
     im = Image.open(src)
@@ -231,6 +245,7 @@ def main() -> int:
         return 1
 
     sheets: dict[str, "Image.Image"] = {}
+    image_index = index_images(images_dir)
     missing_pages = set()
     # COMPOSITES reference pages that no token points at on its own (a dwarf's body
     # parts are only ever named by LAYER lines we deliberately skip), so ask for them
@@ -239,7 +254,7 @@ def main() -> int:
                                               for pg, _, _ in parts}
     for page in sorted(needed):
         fn = (pages.get(page) or {}).get("file")
-        im = load_sheet(images_dir, fn) if fn else None
+        im = load_sheet(images_dir, fn, image_index) if fn else None
         if im is None:
             missing_pages.add(page)
         else:
@@ -323,6 +338,15 @@ def main() -> int:
     meta = {
         "tile": TILE, "cols": cols, "rows": (slot + cols - 1) // cols,
         "tokens": index,
+        # Runtime viewport capture sees numeric texpos ids. Those ids are unstable,
+        # but DF's texture handler can resolve each one to this stable raw page/cell.
+        # Keep both directions so a recording can replay the exact engine-selected
+        # background and shadow texture against an atlas rebuilt on another machine.
+        "sources": {tok: list(usable[tok]) for tok in index
+                    if usable[tok][0] != "__composite__"},
+        "source_tokens": {f"{page}:{col}:{row}": tok
+                          for tok, (page, col, row) in reversed(list(usable.items()))
+                          if tok in index and page != "__composite__"},
         "opaque": opaque,
         "note": "token -> [atlas_col, atlas_row]; sprites are TILE x TILE px",
     }

@@ -84,6 +84,20 @@ end
 
 local function heartbeat()
     pcall(function() w.status.popups:resize(0) end)
+    -- The action resolver exports its durable dependency visit here. Driving it from
+    -- the same heartbeat that advances the test makes fresh-embark chains continue
+    -- after logs, stone and planned workshops appear, even when the originating RPC
+    -- client has already exited.
+    -- Apply-side DF mutations are accepted when invoked as a paused command, but the
+    -- same dispatch from an unpaused frame callback returned zero despite built shops
+    -- and free reagents. Make this instant atomic like a normal dfhack-run command.
+    local was_paused = df.global.pause_state
+    df.global.pause_state = true
+    local pump_ok, pump_err = pcall(function()
+        if _G.BONSAI_ORDER_PUMP_TICK then _G.BONSAI_ORDER_PUMP_TICK() end
+    end)
+    df.global.pause_state = was_paused
+    if not pump_ok then _G.BONSAI_RUN_PUMP_ERROR = tostring(pump_err) end
     log('..')
     if w.frame_counter - start >= frames then
         df.global.pause_state = true

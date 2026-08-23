@@ -29,6 +29,8 @@ out = {
     "prof": {int(k): v for k, v in d["profession"].items()},
     "job": {int(k): v for k, v in d["job_type"].items()},
     "bld": {int(k): v for k, v in d["building_type"].items()},
+    "workshop": {int(k): v for k, v in d.get("workshop_type", {}).items()},
+    "furnace": {int(k): v for k, v in d.get("furnace_type", {}).items()},
     "item": {int(k): v for k, v in d["item_type"].items()},
     "df": d["df_version"], "dfhack": d["dfhack_version"],
 }

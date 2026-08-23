@@ -138,11 +138,30 @@ end
 -- So: every tile must be on the map and not already designated, nothing may be built
 -- there, and at least one tile must be one a miner can reach from beside — otherwise the
 -- designation is an orphan that generates no jobs.
-function dig_site(x0, y0, z, width, height, groups)
+function dig_site(x0, y0, z, width, height, groups, hard_only, entry_x, entry_y)
     groups = groups or fort_groups()
-    local reachable = false
-    for x = x0, x0 + (width or 1) - 1 do
-        for y = y0, y0 + (height or 1) - 1 do
+    -- ONE WAY IN IS ENOUGH, and the reason is the cascade: a miner standing beside the
+    -- first tile cuts it, which puts him beside the next, and so on until the whole
+    -- connected block is out. So this does not ask that every tile be reachable, or
+    -- revealed, or even that the whole rectangle be rock — two rules that were tried and
+    -- were both wrong. It asks for three things:
+    --
+    --   1. something to dig            at least one solid wall in the box
+    --   2. a way in                    one wall tile with an ORTHOGONALLY adjacent tile a
+    --                                  citizen can stand on. Orthogonal and not diagonal:
+    --                                  a miner works from the side, so a box touching the
+    --                                  fort only at a corner has no entrance at all, and
+    --                                  `adjacent()` counts diagonals and would call it one
+    --   3. no air pocket splitting it  the wall tiles must form ONE 4-connected group, or
+    --                                  the far part is a separate room the cascade never
+    --                                  reaches
+    local ORTHO = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+    local w = width or 1
+    local h = height or 1
+    local wall, entry = {}, false
+    local nwall = 0
+    for x = x0, x0 + w - 1 do
+        for y = y0, y0 + h - 1 do
             local ok, tt = pcall(function() return dfhack.maps.getTileType(x, y, z) end)
             if not (ok and tt) then return false, x, y, 'off map' end
             local ok2, des = pcall(function() return dfhack.maps.getTileFlags(x, y, z) end)
@@ -152,12 +171,85 @@ function dig_site(x0, y0, z, width, height, groups)
             if dfhack.buildings.findAtTile(xyz2pos(x, y, z)) then
                 return false, x, y, 'occupied'
             end
-            if not reachable and (tile(x, y, z, groups) or adjacent(x, y, z, groups)) then
-                reachable = true
+            -- Solid rock throughout. A room is carved out of stone in one piece; a box
+            -- that is half open floor gets the open cells refused and leaves a design
+            -- half-stamped, which is what "1 designated, 2 could not be" looked like.
+            -- Being HIDDEN is fine and is not checked: a player designates into the dark
+            -- all the time, and the cascade reveals as it goes.
+            if df.tiletype.attrs[tt].shape ~= df.tiletype_shape.WALL then
+                return false, x, y, 'not solid rock, so a room cannot be carved here'
+            end
+            if hard_only then
+                local mat = df.tiletype.attrs[tt].material
+                local hard = mat == df.tiletype_material.STONE
+                    or mat == df.tiletype_material.MINERAL
+                    or mat == df.tiletype_material.FEATURE
+                    or mat == df.tiletype_material.LAVA_STONE
+                    or mat == df.tiletype_material.FROZEN_LIQUID
+                if not hard then
+                    return false, x, y,
+                        'the design needs smoothing, but this wall is soil or another soft material'
+                end
+            end
+            wall[x .. ',' .. y] = true
+            nwall = nwall + 1
+            -- THE ENTRANCE MUST BE A TILE A MINER CAN ACTUALLY START ON: orthogonally
+            -- beside standable ground, and NOT HIDDEN. Measured twice — a box whose
+            -- designated cells were all hidden sat for 55,000 frames with zero dig jobs,
+            -- through 15 miners and a priority bump, while an identical room cut off a
+            -- known corridor face went in 15,000. DF does not dispatch to rock the fort
+            -- has never seen.
+            --
+            -- Only the FIRST tile needs to be visible, though, which is the whole point of
+            -- the cascade: cutting it reveals its neighbours, so they become diggable in
+            -- turn. Requiring the whole box to be revealed was tried and refused every
+            -- site on the map, because only a thin shell around the corridors is known.
+            -- A generated room does not dig its whole bounding box: its perimeter is
+            -- deliberately left as rock and only the doorway opens to the corridor.
+            -- If the caller knows that doorway offset, it MUST be the reachable tile.
+            -- Accepting some unrelated perimeter wall here produced a perfect-looking
+            -- site whose three real dig cells were sealed behind rock forever.
+            local is_entry = entry_x == nil
+                or (x == x0 + entry_x and y == y0 + entry_y)
+            if not entry and is_entry then
+                local okh, dh = pcall(function() return dfhack.maps.getTileFlags(x, y, z) end)
+                local visible = not (okh and dh and dh.hidden)
+                if visible then
+                    for _, d in ipairs(ORTHO) do
+                        if tile(x + d[1], y + d[2], z, groups) then entry = true end
+                    end
+                end
             end
         end
     end
-    if not reachable then return false, x0, y0, 'nothing next to it can be reached' end
+    if nwall == 0 then return false, x0, y0, 'nothing here to dig' end
+    if not entry then
+        return false, x0, y0,
+            'no visible tile a miner could start from; a corner or hidden rock is not one'
+    end
+
+    -- one connected block, so the cascade reaches all of it
+    local first
+    for k in pairs(wall) do if not first or k < first then first = k end end
+    local seen, stack, n = { [first] = true }, { first }, 1
+    while #stack > 0 do
+        local k = table.remove(stack)
+        local cx, cy = k:match('^(-?%d+),(-?%d+)$')
+        cx, cy = tonumber(cx), tonumber(cy)
+        for _, d in ipairs(ORTHO) do
+            local nk = (cx + d[1]) .. ',' .. (cy + d[2])
+            if wall[nk] and not seen[nk] then
+                seen[nk] = true
+                n = n + 1
+                stack[#stack + 1] = nk
+            end
+        end
+    end
+    if n < nwall then
+        return false, x0, y0, string.format(
+            'the rock here is in %d pieces, so digging one does not open the rest',
+            nwall - n + 1)
+    end
     return true
 end
 

@@ -17,14 +17,65 @@ import gzip
 import json
 import os
 import pathlib
+import re
 import sys
+from array import array
+
+from entity_sprites import building_cells, creature_token, item_token, liquid_token
 
 DIRS = [("N", 0, -1), ("S", 0, 1), ("W", -1, 0), ("E", 1, 0)]
+
+
+def canonical_ramp_suffix(parts) -> str:
+    """Return the spelling used by the premium raws for a ramp wall mask.
+
+    The all-cardinal token is the sole irregular spelling: N_S_E_W. Every other
+    cardinal combination follows N,S,W,E order.
+    """
+    parts = set(parts)
+    card = [d for d in ("N", "S", "W", "E") if d in parts]
+    if len(card) == 4:
+        card = ["N", "S", "E", "W"]
+    return "_".join(card + [d for d in ("NW", "NE", "SW", "SE") if d in parts])
+
+
+def decode_floor_flag(flag: int) -> dict[str, int]:
+    """Decode VIEWPORT_FLOOR_FLAG bytes in the order published by DFHack."""
+    flag = int(flag or 0)
+    out = {}
+    for name in ("S", "W", "E", "N"):
+        out[name], flag = flag & 0xFF, flag >> 8
+    out["special"] = flag & 0x7
+    return out
+
+
+def ramp_suffix_from_flag(flag: int) -> str:
+    """Decode the eight wall bits of VIEWPORT_RAMP_FLAG into a raw token suffix."""
+    bits = int(flag or 0) >> 8  # low byte is ramp type
+    order = ("N", "W", "E", "S", "NW", "NE", "SW", "SE")
+    return canonical_ramp_suffix(d for i, d in enumerate(order) if bits & (1 << i))
+
+
+def grass_edge_fragments(is_grass_neighbor) -> list[str]:
+    """Return DF's transparent grass fragments for one foreign floor cell.
+
+    ``GRASS_5*`` are opaque turf centres. The other eight cells on the same sheet
+    belong in neighbouring cells; they are not alternate textures for the foreign
+    floor. Keeping this source-centric prevents stone-on-stone double drawing.
+    """
+    neighbours = (
+        (0, -1, "GRASS_8"), (0, 1, "GRASS_2"),
+        (-1, 0, "GRASS_6"), (1, 0, "GRASS_4"),
+        (-1, -1, "GRASS_9"), (1, -1, "GRASS_7"),
+        (-1, 1, "GRASS_3"), (1, 1, "GRASS_1"),
+    )
+    return [token for dx, dy, token in neighbours if is_grass_neighbor(dx, dy)]
 
 # A cell painted less than this is reported as thin. Half is the "obviously broken"
 # line; raise it (BONSAI_THIN_AT=0.9) to hunt features that render on a black box
 # because nothing was laid underneath them.
 THIN_AT = float(os.environ.get("BONSAI_THIN_AT", "0.5"))
+WALL_INTERIOR = "__WALL_INTERIOR__"
 
 # How many levels down to look for something to show through open air or under a
 # see-through feature. Three was not enough: on the surface level 577 cells of open air
@@ -49,6 +100,9 @@ WOODY = {"TREE", "MUSHROOM", "PLANT"}                # tiletype material classes
 # into a bright field, the inverse of the real thing.
 FEATURE_SHAPES = {"SHRUB", "SAPLING", "BOULDER", "PEBBLES",
                   "TWIG", "BRANCH", "TRUNK_BRANCH"}
+# A grass tile in the game is SOIL with blades on top (verified against a paused
+# in-game frame): a dark earth base showing through sparse green blades. The
+# plant page's turf cells are a species overlay, not the floor.
 
 
 def load_palette(build):
@@ -88,9 +142,54 @@ def vhash(x: int, y: int, z: int) -> int:
     return (h ^ (h >> 13)) & 0xFFFFFFFF
 
 
+def ramp_connection_suffix(solid_at, x: int, y: int) -> str:
+    """Premium ramp token suffix for the walls around one ramp cell."""
+    card = {d: solid_at(x + dx, y + dy) for d, dx, dy in DIRS}
+    out = [d for d, _, _ in DIRS if card[d]]
+    for d, dx, dy, a, b in (("NW", -1, -1, "N", "W"),
+                            ("NE", 1, -1, "N", "E"),
+                            ("SW", -1, 1, "S", "W"),
+                            ("SE", 1, 1, "S", "E")):
+        if not card[a] and not card[b] and solid_at(x + dx, y + dy):
+            out.append(d)
+    return canonical_ramp_suffix(out)
+
+
+def exposed_wall_suffix(solid_at, x: int, y: int) -> str:
+    """Premium wall suffix for the borders that are not joined to solid terrain."""
+    return "_".join(d for d, dx, dy in DIRS if not solid_at(x + dx, y + dy))
+
+
+def hidden_detail_variant(x: int, y: int, z: int) -> int:
+    """0 for plain hidden background, otherwise one of DF's five detail frames."""
+    hv = vhash(x, y, z)
+    return ((hv >> 5) % 5) + 1 if (hv & 31) == 0 else 0
+
+
+def tile_wall_suffix(tile_info: list) -> str | None:
+    """Return the directional wall token encoded by DF's tiletype itself.
+
+    Smooth and constructed walls retain an explicit L/R/U/D graphical form. Recomputing
+    it from nearby solid cells changes the sprite at room boundaries and produces a box
+    around each cell. The digit-bearing corner forms need a separate mapping and remain
+    on the neighbour fallback until we have captured each form from the live viewport.
+    """
+    description = str(tile_info[2]) if len(tile_info) > 2 else ""
+    match = re.search(r"\b([LRUD]+)$", description)
+    if not match:
+        return None
+    # L/R/U/D are connected neighbours; premium wall tokens name the exposed
+    # borders, so the sprite mask is their complement.
+    letters = set(match.group(1))
+    return "_".join(direction for direction, letter in
+                    (("N", "U"), ("S", "D"), ("W", "L"), ("E", "R"))
+                    if letter not in letters)
+
+
 def load_frames(path: pathlib.Path):
     events = []
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if line:
@@ -98,16 +197,16 @@ def load_frames(path: pathlib.Path):
                     events.append(json.loads(line))
                 except json.JSONDecodeError:
                     break
-    frames, grid, origin, dims = [], None, None, None
-    for m in (e for e in events if e.get("kind") == "map"):
-        if m.get("keyframe") and "rle" in m:
+    frames, grid, palette_grid, origin, dims = [], None, None, None, None
+    for m in (e for e in events if e.get("kind") in ("map", "kf", "d")):
+        if (m.get("keyframe") or m.get("kind") == "kf") and "rle" in m:
             origin, dims = m["origin"], m["dims"]
-            grid = [0] * (dims[0] * dims[1] * dims[2])
+            grid = array("H", [0]) * (dims[0] * dims[1] * dims[2])
             p = 0
             rle = m["rle"]
             for i in range(0, len(rle), 2):
                 v, n = rle[i], rle[i + 1]
-                grid[p:p + n] = [v] * n
+                grid[p:p + n] = array("H", [v]) * n
                 p += n
         elif grid is not None and "set" in m:
             s = m["set"]
@@ -118,15 +217,52 @@ def load_frames(path: pathlib.Path):
             # render with everything revealed, which is what the game would NOT show.
             fog = None
             if "hrle" in m:
-                fog = [0] * len(grid)
+                fog = bytearray(len(grid))
                 p, h = 0, m["hrle"]
                 for i in range(0, len(h), 2):
                     v, n = h[i], h[i + 1]
-                    fog[p:p + n] = [v] * n
+                    fog[p:p + n] = bytes([v]) * n
                     p += n
-            frames.append({"tick": m["tick"], "grid": list(grid), "origin": origin,
+            liquid = None
+            if "lrle" in m:
+                liquid = bytearray(len(grid))
+                p, h = 0, m["lrle"]
+                for i in range(0, len(h), 2):
+                    v, n = h[i], h[i + 1]
+                    liquid[p:p + n] = bytes([v]) * n
+                    p += n
+            if "prle" in m:
+                palette_grid = bytearray(len(grid))
+                p, h = 0, m["prle"]
+                for i in range(0, len(h), 2):
+                    v, n = h[i], h[i + 1]
+                    palette_grid[p:p + n] = bytes([v]) * n
+                    p += n
+            elif palette_grid is not None and "pset" in m:
+                h = m["pset"]
+                for i in range(0, len(h), 2):
+                    palette_grid[h[i]] = h[i + 1]
+            viewport = m.get("viewport")
+            if viewport:
+                viewport = dict(viewport)
+                viewport["texrefs"] = {int(row[0]): f"{row[1]}:{row[2]}:{row[3]}"
+                                       for row in viewport.get("tex", [])}
+                for src, dst in (("bgrle", "bg"), ("bg2rle", "bg2"),
+                                 ("frle", "floor"), ("rrle", "ramp"),
+                                 ("srle", "shadow"), ("trle", "top")):
+                    if src not in viewport:
+                        continue
+                    values = []
+                    runs = viewport[src]
+                    for i in range(0, len(runs), 2):
+                        values.extend([runs[i]] * runs[i + 1])
+                    viewport[dst] = values
+            frames.append({"tick": m["tick"], "grid": array("H", grid), "origin": origin,
                            "dims": dims, "units": m.get("units", []),
-                           "blds": m.get("blds", []), "fog": fog})
+                           "blds": m.get("blds", []), "items": m.get("items", []),
+                           "fog": fog, "liquid": liquid,
+                           "palette": bytes(palette_grid) if palette_grid is not None else None,
+                           "dfv": m.get("dfv"), "viewport": viewport})
     return events, frames
 
 
@@ -148,6 +284,7 @@ def main() -> int:
     tt_info = {int(k): v for k, v in enums["tt"].items()}
     atlas = Image.open(build / "atlas.png").convert("RGBA")
     T, toks = sprites["tile"], sprites["tokens"]
+    sprite_tokens = set(toks)
     OPAQUE = set(sprites.get("opaque") or toks)
     PAL = load_palette(build)
     GEO = load_geology(build)
@@ -157,23 +294,68 @@ def main() -> int:
         print("no map track in this recording", file=sys.stderr)
         return 1
     f = frames[idx]
+    if f.get("dfv") and f["dfv"] not in enums.get("df", ""):
+        print(f"version mismatch: recording DF {f['dfv']} vs enums {enums.get('df')}",
+              file=sys.stderr)
+        return 2
     W, H, _ = f["dims"]
     zi = z - f["origin"][2]
 
-    def solid(nx, ny):
+    def solid(nx, ny, zj=zi):
         if nx < 0 or ny < 0 or nx >= W or ny >= H:
             return True
-        m = tilemap.get(str(f["grid"][zi * W * H + ny * W + nx]))
+        if zj < 0 or zj >= f["dims"][2]:
+            return True
+        m = tilemap.get(str(f["grid"][zj * W * H + ny * W + nx]))
         return bool(m) and m["k"] in ("wall", "tree")
 
     def pick(*cands):
         return next((c for c in cands if c and c in toks), None)
 
+    # Generic soil floor, used as the underlay under sparse surface sprites when
+    # no opaque neighbour can be voted on. DIRT_FLOOR_5 is a full 32x32 opaque cell.
+    GROUND = pick("DIRT_FLOOR_5", "PEBBLES_FLOOR_5")
+
     def variant_of(tt):
         v = tt_info.get(tt, [None, None, None, -1])
         return v[3] if len(v) > 3 and isinstance(v[3], int) and v[3] >= 0 else None
 
-    def token(tt, x, y):
+    def ramp_suffix(x, y, zj):
+        """DF's ramp connectivity: cardinals, then exposed diagonal corners."""
+        exact = viewport_value("ramp", x, y, zj)
+        if exact is not None:
+            return ramp_suffix_from_flag(exact)
+        return ramp_connection_suffix(lambda nx, ny: solid(nx, ny, zj), x, y)
+
+    def viewport_value(field, x, y, zj=zi):
+        """Engine-selected value for this cell, or None outside the captured viewport."""
+        if os.environ.get("BONSAI_IGNORE_VIEWPORT") == "1":
+            return None
+        vp = f.get("viewport")
+        if not vp or zj + f["origin"][2] != vp["origin"][2]:
+            return None
+        wx, wy = x + f["origin"][0], y + f["origin"][1]
+        vx, vy, _ = vp["origin"]
+        vw, vh = vp["dims"]
+        sx, sy = wx - vx, wy - vy
+        values = vp.get(field)
+        if values is None or sx < 0 or sy < 0 or sx >= vw or sy >= vh:
+            return None
+        return values[sy * vw + sx]
+
+    def viewport_token(field, x, y, zj=zi):
+        """Resolve an unstable runtime texpos through its stable raw page/cell."""
+        texpos = viewport_value(field, x, y, zj)
+        vp = f.get("viewport") or {}
+        source = (vp.get("texrefs") or {}).get(texpos)
+        return (sprites.get("source_tokens") or {}).get(source)
+
+    def ramp_family(prefix, x, y, zj):
+        suffix = ramp_suffix(x, y, zj)
+        return pick(f"{prefix}_WITH_WALL_{suffix}" if suffix else None,
+                    prefix + "_OTHER")
+
+    def token(tt, x, y, zj=zi):
         m = tilemap.get(str(tt))
         if not m:
             return None
@@ -203,73 +385,109 @@ def main() -> int:
             shape = tt_info.get(tt, ["", ""])[0]
             suf = "_UP" if shape == "STAIR_UP" else "_DOWN" if shape == "STAIR_DOWN" else "_UPDOWN"
             return pick(fam + suf, fam + "_UPDOWN")
-        on = [d for d, dx, dy in DIRS if solid(x + dx, y + dy)]
+        on = [d for d, dx, dy in DIRS if solid(x + dx, y + dy, zj)]
         if kind == "wall":
-            key, v = "_".join(on), (vhash(gx, gy, z) % 4) + 1
+            encoded = tile_wall_suffix(tt_info.get(tt, []))
+            # Premium wall token names are exposed borders, not connected wall
+            # neighbours. Direction-bearing smooth/construction tiletypes already
+            # arrive complemented through tile_wall_suffix(); natural walls need the
+            # same complement applied to the neighbour-derived fallback.
+            exposed = exposed_wall_suffix(lambda nx, ny: solid(nx, ny, zj), x, y)
+            key = encoded if encoded is not None else exposed
+            if key == "":
+                return WALL_INTERIOR
+            v = (vhash(gx, gy, z) % 4) + 1
             return pick(f"{fam}_{key}_{v}", f"{fam}_{key}", fam + "_N_S_W_E_1", fam + "_N_S_W_E")
         if kind == "tree":
             return pick(f"{fam}_{''.join(on)}", fam, fam + "_NSWE")
         if kind == "ramp":
-            c = [n for n, (dx, dy) in
-                 (("NW", (-1, -1)), ("NE", (1, -1)), ("SW", (-1, 1)), ("SE", (1, 1)))
-                 if solid(x + dx, y + dy)]
-            return pick(f"{fam}_{'_'.join(c)}", fam + "_OTHER",
-                        fam.replace("_WITH_WALL", "_OTHER"))
+            base = fam.removesuffix("_WITH_WALL")
+            return ramp_family(base + "_RAMP" if not base.endswith("_RAMP") else base,
+                               x, y, zj)
         return None
 
     def at(x, y):
-        """Chosen token at a cell, resolving ramp tops to the ramp they cap."""
+        """Chosen token at a cell, including the distinct multilevel ramp-top art."""
         if x < 0 or y < 0 or x >= W or y >= H:
             return None
         tt = f["grid"][zi * W * H + y * W + x]
-        if tt_info.get(tt, ["", ""])[0] == "RAMP_TOP" and zi > 0:
-            tt = f["grid"][(zi - 1) * W * H + y * W + x]
-        return token(tt, x, y)
+        shape = tt_info.get(tt, ["", ""])[0]
+        # Renderer-selected backgrounds give us the exact family and variant. Feature
+        # tiletypes (plants/trees) use later viewport layers that are not all captured
+        # yet, so retain their semantic reconstruction for now.
+        exact = viewport_token("bg", x, y)
+        terrain = tilemap.get(str(tt))
+        if (exact and (terrain or {}).get("k") != "tree"
+                and shape not in FEATURE_SHAPES):
+            return exact
+        if shape == "RAMP_TOP" and zi > 0:
+            below = f["grid"][(zi - 1) * W * H + y * W + x]
+            if tt_info.get(below, ["", ""])[0] == "RAMP":
+                return ramp_family("MULTILEVEL_RAMP", x, y, zi - 1)
+        return token(tt, x, y, zi)
 
     def base_under(x, y):
         """A ground sprite to sit a transparent feature on.
 
-        The tiletype of a shrub or boulder says nothing about the floor beneath it, and
-        the recording does not carry per-tile floor material, so take the ground the
-        neighbours agree on. Better than a black hole and never invents a material the
-        surrounding fort does not already have.
+        Prefer DF's captured background at the feature cell. Older/outside-viewport
+        captures do not have it, so search outward for the nearest actual floor. The
+        bounded rings also repair orphan RAMP_TOP cells at the padded edge of a
+        one-z-level capture without turning arbitrary open space into terrain.
         """
-        votes = {}
-        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1)):
-            t = at(x + dx, y + dy)
-            if t and t in OPAQUE:
-                votes[t] = votes.get(t, 0) + 1
-        return max(votes, key=votes.get) if votes else None
+        exact = viewport_token("bg", x, y)
+        if exact and exact in OPAQUE:
+            return exact, 0
+
+        def floor_at(nx, ny):
+            if nx < 0 or ny < 0 or nx >= W or ny >= H:
+                return None
+            ntt = f["grid"][zi * W * H + ny * W + nx]
+            nm = tilemap.get(str(ntt)) or {}
+            family, kind = nm.get("f", ""), nm.get("k")
+            ground = (kind in ("floor9", "var4") or
+                      (kind == "plain" and (family.startswith("FLOOR_") or
+                                            family in ("SMOOTH_ICE_FLOOR", "BROOK_BED"))))
+            if not ground:
+                return None
+            t = at(nx, ny)
+            return (t, palette_row(nx, ny, z)) if t and t in OPAQUE else None
+
+        for radius in range(1, 5):
+            votes = {}
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    if max(abs(dx), abs(dy)) != radius:
+                        continue
+                    candidate = floor_at(x + dx, y + dy)
+                    if candidate:
+                        votes[candidate] = votes.get(candidate, 0) + 1
+            if votes:
+                return max(votes, key=votes.get)
+        return None
 
     def edge_tokens(x, y):
-        """Feathers to composite over a floor9 tile where a different material abuts.
+        """Transparent grass from neighbouring cells, over one foreign floor.
 
-        DF's 3x3 blend set is an overlay: _2 softens the north edge, _4 the west, _1 the
-        north-west corner, and so on around the solid _5 centre. Sides are drawn before
-        corners so a corner sits on top of the two sides it joins.
+        The ZCode crops establish grass crossing tile borders via the eight
+        non-centre cells of DF's GRASS sheet. They do not justify drawing this
+        cell's stone/soil texture a second time, so other material transitions stay
+        disabled until they are confirmed from a real frame.
         """
         tt = f["grid"][zi * W * H + y * W + x]
         m = tilemap.get(str(tt))
         if not m or m["k"] != "floor9":
             return []
-        fam = m["f"]
 
-        def other(dx, dy):
+        def grass(dx, dy):
             nx, ny = x + dx, y + dy
             if nx < 0 or ny < 0 or nx >= W or ny >= H:
                 return False
             m2 = tilemap.get(str(f["grid"][zi * W * H + ny * W + nx]))
-            return (m2 or {}).get("f") != fam
+            return (m2 or {}).get("f") == "PLANT_GRASS"
 
-        n, s, w, e = other(0, -1), other(0, 1), other(-1, 0), other(1, 0)
-        want = []
-        for flag, idx in ((n, 2), (s, 8), (w, 4), (e, 6)):
-            if flag:
-                want.append(idx)
-        for flag, idx in ((n and w, 1), (n and e, 3), (s and w, 7), (s and e, 9)):
-            if flag:
-                want.append(idx)
-        return [t for t in (f"{fam}_{i}" for i in want) if t in toks]
+        # GRASS art already carries its final greens. Applying this stone cell's
+        # palette row would recreate the material-on-material overlay in the old shots.
+        return [(t, 0) for t in grass_edge_fragments(grass) if t in toks]
 
     # ---------------------------------------------------------------- palette recolour
     # DF draws natural rock, soil and wood from GREYSCALE key art and swaps the key
@@ -293,6 +511,8 @@ def main() -> int:
 
     def sprite(tok, row):
         """The atlas cell for a token, recoloured to a palette row. Cached per pair."""
+        if tok == WALL_INTERIOR:
+            return Image.new("RGBA", (T, T), (0, 0, 0, 0))
         ax, ay = toks[tok]
         if not PAL or row <= 0 or tok not in PAL["tokens"]:
             return atlas.crop((ax * T, ay * T, ax * T + T, ay * T + T))
@@ -314,6 +534,8 @@ def main() -> int:
 
     def palette_row(x, y, zz):
         """Which palette row this cell's material calls for. 0 means leave the art alone."""
+        if f.get("palette") is not None:
+            return f["palette"][(zz - f["origin"][2]) * W * H + y * W + x]
         if not GEO:
             return 0
         tt = f["grid"][(zz - f["origin"][2]) * W * H + y * W + x]
@@ -332,6 +554,15 @@ def main() -> int:
     def blit(tok, x, y, row=0):
         img.alpha_composite(sprite(tok, row), (x * T, y * T))
 
+    def wall_backdrop(x, y, row):
+        """Opaque material-colour backing required by translucent wall key art."""
+        if PAL and 0 < row < len(PAL["table"]):
+            r, g, b = PAL["table"][row][9]
+        else:
+            r, g, b = (47, 48, 56)
+        img.alpha_composite(Image.new("RGBA", (T, T), (r, g, b, 255)), (x * T, y * T))
+
+
     def token_at_z(x, y, zoff):
         """Token at a cell on a level `zoff` below the one being viewed."""
         zj = zi - zoff
@@ -340,7 +571,7 @@ def main() -> int:
         tt = f["grid"][zj * W * H + y * W + x]
         if tt_info.get(tt, ["", ""])[0] in ("EMPTY", "NONE", "ENDLESS_PIT", "RAMP_TOP"):
             return None
-        return token(tt, x, y)
+        return token(tt, x, y, zj)
 
     def blit_below(x, y):
         """Draw the nearest level below this cell, dimmed with distance. Returns True if
@@ -370,42 +601,166 @@ def main() -> int:
     for y in range(H):
         for x in range(W):
             cell_tt[y * W + x] = f["grid"][zi * W * H + y * W + x]
-            # Fog of war: an undiscovered tile is black, full stop. Drawing the rock
-            # there showed the viewer an entire layer the player never saw — at embark
-            # this level is 100% hidden.
+            # Premium DF has dedicated unrevealed-rock art. Pure black made a revealed
+            # corridor look like a wall and let entities appear to stand "inside" it.
             if FOG is not None and FOG[zi * W * H + y * W + x]:
                 unseen += 1
+                gx, gy = x + f["origin"][0], y + f["origin"][1]
+                # The real frame is mostly the HIDDEN_ROCK background colour. Its five
+                # rock-detail cells are a sparse animated variation, not a tile pattern
+                # stamped over every unrevealed cell. A second hash avoids a regular
+                # grid and pins the roughly 1/32 density measured in the reference shot.
+                img.alpha_composite(Image.new("RGBA", (T, T), (49, 44, 52, 255)),
+                                    (x * T, y * T))
+                variant = hidden_detail_variant(gx, gy, z)
+                if variant:
+                    hidden = pick(f"HIDDEN_ROCK_{variant}", "HIDDEN_ROCK_1")
+                    if hidden:
+                        blit(hidden, x, y)
                 continue
             tk = at(x, y)
             if not tk:
                 # Open space: DF shows the levels below, dimmed with distance. Without
                 # this an open tile is a black void and the fort reads as full of holes.
-                if blit_below(x, y):
+                tt = f["grid"][zi * W * H + y * W + x]
+                info = tt_info.get(tt, ["?", "?", "?"])
+                base = base_under(x, y) if info[0] == "RAMP_TOP" else None
+                if base:
+                    blit(base[0], x, y, base[1])
+                    layered += 1
+                elif blit_below(x, y):
                     depth += 1
                 else:
-                    tt = f["grid"][zi * W * H + y * W + x]
-                    info = tt_info.get(tt, ["?", "?", "?"])
                     if info[0] not in ("EMPTY", "NONE", "ENDLESS_PIT"):
                         holes[f"{info[0]}/{info[1]}"] = holes.get(f"{info[0]}/{info[1]}", 0) + 1
                 continue
             row = palette_row(x, y, z)
-            if (tt_info.get(cell_tt[y * W + x], ["", ""])[0] in FEATURE_SHAPES
-                    and tk not in OPAQUE):
+            m = tilemap.get(str(cell_tt[y * W + x]))
+            shape = tt_info.get(cell_tt[y * W + x], ["", ""])[0]
+            if shape == "RAMP_TOP" and zi > 0:
+                below_tt = f["grid"][(zi - 1) * W * H + y * W + x]
+                if tt_info.get(below_tt, ["", ""])[0] == "RAMP":
+                    # MULTILEVEL_RAMP is translucent transition/shadow art. It is not
+                    # a terrain base: on an empty canvas it becomes the black/cyan
+                    # wedges seen in the old upper-level render. DF first exposes the
+                    # material ramp from z-1 and composites the multilevel pass above.
+                    below_base = token(below_tt, x, y, zi - 1)
+                    if below_base:
+                        blit(below_base, x, y, palette_row(x, y, z - 1))
+            if m and m["k"] == "wall":
+                # Wall sprites are intentionally translucent key art. DF composites
+                # them over an opaque material-colour cell; compositing straight over
+                # our transparent canvas is what produced the half-black walls.
+                wall_backdrop(x, y, row)
+                if tk == WALL_INTERIOR:
+                    drawn += 1
+                    continue
+            if (shape in FEATURE_SHAPES or (m or {}).get("k") == "tree"):
                 # A shrub belongs on the grass around it; a tree branch four levels up has
                 # only other branches beside it, so it falls through to the ground below,
                 # which is what DF shows through a canopy.
                 base = base_under(x, y)
                 if base:
-                    blit(base, x, y, row)
+                    blit(base[0], x, y, base[1])
                     layered += 1
                 elif blit_below(x, y):
                     layered += 1
             blit(tk, x, y, row)
-            for edge in edge_tokens(x, y):
-                blit(edge, x, y, row)
+            if shape == "RAMP":
+                if overlay := ramp_family("OVERLAY_RAMP", x, y, zi):
+                    blit(overlay, x, y)
+                # Ramp lighting is another raw pass, separate from both the material
+                # slope and its outline. Compose the straight side pieces for every
+                # cardinal wall touching the ramp.
+                for d, dx, dy in DIRS:
+                    if solid(x + dx, y + dy, zi):
+                        if shadow := pick("RAMP_SHADOW_ON_RAMP_" + d):
+                            blit(shadow, x, y)
+            for edge, edge_row in edge_tokens(x, y):
+                blit(edge, x, y, edge_row)
             drawn += 1
 
-    dwarf = "CREATURE_DWARF" if "CREATURE_DWARF" in toks else None
+    # The wall texture is only the base layer. DF adds a separate shadow onto each
+    # neighbouring revealed walkable tile; omitting it flattened rooms into a grid of
+    # unrelated squares. Straight pieces are safe to compose and cover all four sides.
+    for y in range(H):
+        for x in range(W):
+            p = zi * W * H + y * W + x
+            if FOG is not None and FOG[p]:
+                continue
+            here = tilemap.get(str(f["grid"][p]))
+            if here and here["k"] in ("wall", "tree"):
+                continue
+            for d, dx, dy in DIRS:
+                nx, ny = x + dx, y + dy
+                near = (tilemap.get(str(f["grid"][zi * W * H + ny * W + nx]))
+                        if 0 <= nx < W and 0 <= ny < H else None)
+                if near and near["k"] == "wall":
+                    shadow = pick("WALL_SHADOW_STRAIGHT_" + d)
+                    if shadow:
+                        blit(shadow, x, y)
+
+    # Liquids are a surface layer in DF. The recorder preserves depth and water/magma;
+    # both are rendered from the game's own WATER/MAGMA tokens over the terrain.
+    liquid = f.get("liquid")
+    if liquid is not None:
+        for y in range(H):
+            for x in range(W):
+                p = zi * W * H + y * W + x
+                if FOG is not None and FOG[p]:
+                    continue
+                if tok := liquid_token(liquid[p], sprite_tokens):
+                    blit(tok, x, y)
+
+    # Furniture and workshops are buildings in DF, not terrain. Only render a building
+    # when we have its real graphical token. Invented footprint rectangles made unknown
+    # buildings and old Construction records look like boxed wall sprites.
+    building_footprints = set()
+    for b in f["blds"]:
+        if len(b) < 7 or b[6] != z:
+            continue
+        cells = building_cells(b, enums, sprite_tokens)
+        if cells:
+            for gx, gy, tok in cells:
+                building_footprints.add((gx, gy, b[6]))
+                x, y = gx - f["origin"][0], gy - f["origin"][1]
+                p = zi * W * H + y * W + x if 0 <= x < W and 0 <= y < H else -1
+                if p >= 0 and not (FOG is not None and FOG[p]):
+                    # Workshop/furnace art already contains its own base and overlay
+                    # passes. Applying the construction material palette here painted
+                    # a second full-footprint material sheet over the building.
+                    blit(tok, x, y, 0)
+
+    # On-ground items use their real item family and material. Inventory/building
+    # components were filtered by the capture, so a workshop no longer becomes a pile
+    # of duplicate dots.
+    visible_items = {}
+    for it in f["items"]:
+        if len(it) >= 5:
+            key = (it[2], it[3], it[4])
+            # Recordings made before the explicit on-ground marker contain workshop
+            # inventory collapsed onto the building centre. Never turn that legacy
+            # capture bug into a random object painted over a valid workshop sprite.
+            if len(it) <= 13:
+                gx, gy, gz = key
+                lx, ly = gx - f["origin"][0], gy - f["origin"][1]
+                lz = gz - f["origin"][2]
+                construction_tile = False
+                if 0 <= lx < W and 0 <= ly < H and 0 <= lz < f["dims"][2]:
+                    terrain_tt = f["grid"][lz * W * H + ly * W + lx]
+                    construction_tile = tt_info.get(terrain_tt, ["", ""])[1] == "CONSTRUCTION"
+                if key in building_footprints or construction_tile:
+                    continue
+            visible_items[key] = it
+    for it in visible_items.values():
+        if len(it) < 5 or it[4] != z:
+            continue
+        tok = item_token(it, enums, sprite_tokens)
+        x, y = it[2] - f["origin"][0], it[3] - f["origin"][1]
+        p = zi * W * H + y * W + x if 0 <= x < W and 0 <= y < H else -1
+        if tok and p >= 0 and not (FOG is not None and FOG[p]):
+            blit(tok, x, y, it[11] if len(it) > 11 else 0)
+
     # Recordings made before the capture carried an explicit citizen flag fall back to
     # the pinned T0 cohort id-set - which is also exactly the set the score counts.
     meta = next((e for e in events if e.get("kind") == "meta"), {})
@@ -419,9 +774,12 @@ def main() -> int:
         # and wildlife is not. Drawing it threw IndexError and killed the whole render.
         if not (0 <= ux < W and 0 <= uy < H):
             continue
+        if FOG is not None and FOG[zi * W * H + uy * W + ux]:
+            continue
         citizen = bool(u[7]) if len(u) > 7 else (u[0] in cohort)
-        if citizen and dwarf:
-            blit(dwarf, ux, uy)
+        ctok = creature_token(u, sprite_tokens)
+        if ctok:
+            blit(ctok, ux, uy)
         else:
             # wildlife: the recording carries no creature race yet, so mark it rather
             # than guess a species
@@ -437,8 +795,23 @@ def main() -> int:
                            FOG, zi)
     backdrop = Image.new("RGBA", img.size, (13, 12, 11, 255))
     backdrop.alpha_composite(img)
+    crop = os.environ.get("BONSAI_CROP")
+    if crop:
+        try:
+            cx1, cy1, cx2, cy2 = (int(v) for v in crop.split(","))
+            lx1, ly1 = cx1 - f["origin"][0], cy1 - f["origin"][1]
+            lx2, ly2 = cx2 - f["origin"][0] + 1, cy2 - f["origin"][1] + 1
+            box = (max(0, lx1) * T, max(0, ly1) * T,
+                   min(W, lx2) * T, min(H, ly2) * T)
+            if box[2] > box[0] and box[3] > box[1]:
+                backdrop = backdrop.crop(box)
+            else:
+                raise ValueError("viewport is outside the capture")
+        except (TypeError, ValueError) as exc:
+            print(f"invalid BONSAI_CROP={crop!r}: {exc}", file=sys.stderr)
+            return 2
     backdrop.convert("RGB").save(out, optimize=True)
-    print(f"{out}  {img.width}x{img.height}  tick {f['tick']}  z={z}")
+    print(f"{out}  {backdrop.width}x{backdrop.height}  tick {f['tick']}  z={z}")
     print(f"  drew {drawn} of {W*H} tiles ({100*drawn/(W*H):.1f}%), "
           f"{layered} needed a ground layer, {depth} showed the level below")
     if FOG is None:
@@ -446,7 +819,7 @@ def main() -> int:
               "shown as if the player had seen it")
     else:
         print(f"  fog of war: {unseen} of {W*H} cells undiscovered "
-              f"({100*unseen/(W*H):.1f}%) and left black")
+              f"({100*unseen/(W*H):.1f}%) using DF's hidden-rock sprites")
     if holes:
         print("  UNDRAWN (would be holes in the map):")
         for k, v in sorted(holes.items(), key=lambda kv: -kv[1]):
@@ -474,6 +847,13 @@ def coverage_report(img, cell_tt, W, H, T, tt_info, tilemap, fog=None, zi=0) -> 
                 continue                      # black on purpose, not a hole
             tt = cell_tt[y * W + x]
             info = tt_info.get(tt, ["?", "?"])
+            # These sprites intentionally use alpha as texture/silhouette. The real game
+            # draws stone walls over black (dark rock with pale flecks) and branches as
+            # sparse canopy. Treating their designed transparency as a missing render
+            # made the verifier reject the frame that visually matches Steam.
+            if info[0] in ("WALL", "FORTIFICATION", "TREE", "BRANCH",
+                           "TRUNK_BRANCH", "TWIG"):
+                continue
             m = tilemap.get(str(tt)) or {}
             key = f"{info[0]}/{info[1]}" + (f" -> {m.get('f')}({m.get('k')})" if m else " -> UNMAPPED")
             e = worst.setdefault(key, [0, 0])

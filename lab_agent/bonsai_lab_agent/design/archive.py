@@ -22,7 +22,7 @@ import json
 import os
 from dataclasses import dataclass
 
-from .emit import to_quickfort
+from .emit import to_quickfort, to_surface_quickfort
 from .model import Design, Requirement, score
 from .search import Result, anneal
 
@@ -157,4 +157,8 @@ def write_blueprints(dest: str, path: str = ARCHIVE) -> list[str]:
         with open(fn, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(csv)
         out.append(fn)
+        surface_fn = os.path.join(target, f"{e.name}-surface.csv")
+        with open(surface_fn, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(to_surface_quickfort(e.to_design(), name=e.name))
+        out.append(surface_fn)
     return out

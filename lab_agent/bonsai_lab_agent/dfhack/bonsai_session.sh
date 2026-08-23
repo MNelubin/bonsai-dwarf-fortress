@@ -92,8 +92,10 @@ boot)
   click_until "Continue active game" "Planets of Dawning" 20 || { echo "LOADFAIL:worldlist"; exit 1; }
   click_until "The Planets of Dawning" "$SAVE" 20             || { echo "LOADFAIL:savelist"; exit 1; }
   click "$SAVE"
-  for i in $(seq 1 60); do sleep 2; [ "$(getnum 'df.global.cur_year_tick')" != "0" ] && break; done
-  [ "$(getnum 'df.global.cur_year_tick')" != "0" ] || { echo "LOADFAIL:notick"; exit 1; }
+  # A perfectly valid save can sit at tick 0 (the 53.16 full-game audit save does).
+  # Readiness is map state, not an arbitrary non-zero calendar value.
+  for i in $(seq 1 60); do sleep 2; [ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] && break; done
+  [ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] || { echo "LOADFAIL:map"; exit 1; }
 
   run bonsai-headless-init >/dev/null
   run lua "df.global.world.status.popups:resize(0); df.global.pause_state=true" >/dev/null

@@ -26,6 +26,8 @@ it is a model that is supposed to learn the game.
 
 from __future__ import annotations
 
+import re
+
 from .library import (BUILDING_KEYS, FURNACE_KEYS, STOCKPILE_KEYS,
                       TEMPLATES_BY_NAME, cluster as pick_cluster,
                       start_offset)
@@ -176,7 +178,19 @@ def judge(intent) -> Decision:
         # second copy of the template table that could drift from this one — it receives
         # a quickfort name, a measured extent and the blueprint's own anchor, and does
         # what it is told.
-        out = _expand_template(str(out[0]))
+        out = _expand_template(str(out[0]), str(out[1] or "dig"))
+
+    if name == "build_room":
+        request_id = str(out[3] or "default")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", request_id):
+            return Decision(False, verb=name,
+                            reason="request_id must be 1..64 safe identifier characters")
+        expanded = _expand_room(str(out[0]), str(out[1] or "auto"),
+                                str(out[2] or "role"), request_id)
+        if expanded is None:
+            return Decision(False, verb=name,
+                            reason=f"{out[0]!r} is not a generated room template")
+        out = expanded
 
     return Decision(True, verb=name, args=out, repairs=notes)
 
@@ -198,11 +212,90 @@ def _expand_cluster(name: str, scale: int):
     return [c.name, members, piles, w, h]
 
 
-def _expand_template(name: str) -> list:
+def _expand_template(name: str, stage: str = "dig") -> list:
+    """Expand a template name into what the DFHack side needs.
+
+    The FURNITURE list travels with it. The owner's point: a build request has to raise
+    the work orders it implies by itself, because DF will not let you place a bed that
+    does not exist — and a design that names five pieces the fort has never made is a
+    request nobody acted on.
+    """
     t = TEMPLATES_BY_NAME[name]
     w, h = t.footprint
     sx, sy = start_offset(t)
-    return [t.qf_name, w, h, t.levels, sx, sy, t.label, t.label_mode]
+    label, mode = t.label, t.label_mode
+    if stage == "rooms":
+        # the second pass: the zone and the furniture, once the digging has finished
+        label, mode = "rooms", "build"
+    return [t.qf_name, w, h, t.levels, sx, sy, label, mode, _furniture_of(t)]
+
+
+def _furniture_of(t) -> str:
+    """`b:1,c:1,t:1,d:1` — what the design puts in the room, from the archive that made it.
+
+    Shipped DFHack blueprints carry no piece list of ours, so they send nothing and the
+    dispatcher orders nothing for them.
+
+    THE DOORWAY COUNTS. It is not in `pieces` — it lives in `cells` as `+`, because
+    validate treats it as part of the room's shape rather than as furniture — but the
+    build section emits a `d` for it and DF will not hang a door that does not exist.
+    Measured: the office stamped three planned buildings and ordered two, so the door sat
+    at stage 0/1 forever with nothing on the manager's list to ever satisfy it.
+    """
+    if t.shipped:
+        return ""
+    try:
+        from ..design.archive import load
+    except ImportError:
+        return ""
+    entry = next((e for e in load() if e.name == t.name), None)
+    if entry is None:
+        return ""
+    counts: dict[str, int] = {}
+    for _, _, key in entry.pieces:
+        counts[key] = counts.get(key, 0) + 1
+    doors = sum(row.count("+") for row in entry.cells)
+    if doors:
+        counts["d"] = counts.get("d", 0) + doors
+    return ",".join(f"{k}:{n}" for k, n in sorted(counts.items()))
+
+
+def _expand_room(name: str, terrain: str = "auto", owner: str = "role",
+                 request_id: str = "default") -> list | None:
+    """Everything the trusted side needs to resume and verify one room request."""
+    t = TEMPLATES_BY_NAME[name]
+    if t.shipped:
+        return None
+    try:
+        from ..design.archive import load
+    except ImportError:
+        return None
+    entry = next((e for e in load() if e.name == name), None)
+    if entry is None:
+        return None
+    d = entry.to_design()
+    w, h = t.footprint
+    sx, sy = start_offset(t)
+    zone = d.zone_cells
+    xs = [x for x, _ in zone]
+    ys = [y for _, y in zone]
+    zx, zy = min(xs), min(ys)
+    zw, zh = max(xs) - zx + 1, max(ys) - zy + 1
+    dig = sum(ch in ".se+" for row in d.cells for ch in row)
+    smooth = sum(ch in "se" for row in d.cells for ch in row)
+    walls = sum(ch == "#" for row in d.cells for ch in row)
+    floors = dig
+    doors = [(x, y) for y, row in enumerate(d.cells)
+             for x, ch in enumerate(row) if ch == "+"]
+    if len(doors) != 1:
+        return None
+    door_x, door_y = doors[0]
+    surface_name = t.qf_name[:-4] + "-surface.csv"
+    return [
+        t.qf_name, surface_name, w, h, sx, sy, entry.kind, entry.position,
+        _furniture_of(t), dig, smooth, walls, floors, zx, zy, zw, zh,
+        door_x, door_y, entry.demand, terrain, owner, request_id,
+    ]
 
 
 def sanitize(raw_actions) -> tuple[list[dict], list[str]]:

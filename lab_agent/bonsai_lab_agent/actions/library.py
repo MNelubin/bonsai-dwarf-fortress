@@ -664,6 +664,7 @@ ALL_TEMPLATES: tuple[Template, ...] = TEMPLATES + GENERATED
 
 TEMPLATES_BY_NAME = {t.name: t for t in ALL_TEMPLATES}
 TEMPLATE_NAMES = tuple(t.name for t in ALL_TEMPLATES)
+ROOM_TEMPLATE_NAMES = tuple(t.name for t in GENERATED)
 CLUSTER_NAMES = tuple(dict.fromkeys(c.name for c in CLUSTERS))
 
 

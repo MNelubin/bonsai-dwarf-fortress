@@ -137,6 +137,98 @@ const ENUMS = JSON.parse(document.getElementById("enums").textContent);
 // own decomposition — so an unmapped tile shows as visible terrain, not a hole.
 const SPRITES = JSON.parse(document.getElementById("sprites").textContent || "null");
 const TILEMAP = JSON.parse(document.getElementById("tilemap").textContent || "null");
+const ENTITY_TOKENS = new Set(SPRITES ? Object.keys(SPRITES.tokens) : []);
+const MAT_SUFFIX = {1:"WOOD", 2:"STONE", 3:"METAL", 4:"GLASS"};
+const FURNITURE = {
+  Chair:"ITEM_CHAIR", Bed:"ITEM_BED", Table:"ITEM_TABLE", Coffin:"ITEM_COFFIN",
+  Door:"ITEM_DOOR", Box:"ITEM_BOX", Weaponrack:"ITEM_WEAPON_RACK",
+  Armorstand:"ITEM_ARMOR_STAND", Cabinet:"ITEM_CABINET", Statue:"ITEM_STATUE",
+  Hatch:"ITEM_HATCH", Slab:"ITEM_SLAB", Bookcase:"ITEM_BOOKCASE",
+  TractionBench:"ITEM_TRACTION_BENCH",
+};
+const WORKSHOP = {
+  Carpenters:"CARPENTER", Farmers:"FARMER", Masons:"MASON", Craftsdwarfs:"CRAFTS",
+  Jewelers:"JEWELER", MetalsmithsForge:"METALSMITH", MagmaForge:"MAGMAFORGE",
+  Bowyers:"BOWYER", Mechanics:"MECHANIC", Siege:"SIEGE", Butchers:"BUTCHER",
+  Leatherworks:"LEATHER", Tanners:"TANNER", Clothiers:"CLOTHES", Fishery:"FISHERY",
+  Still:"STILL", Loom:"LOOM", Quern:"QUERN", Kennels:"KENNEL", Kitchen:"KITCHEN",
+  Ashery:"ASHERY", Dyers:"DYER", Millstone:"MILLSTONE",
+};
+const FURNACE = {
+  WoodFurnace:"WOOD", Smelter:"SMELTER", MagmaSmelter:"SMELTER_LAVA",
+  GlassFurnace:"GLASS", MagmaGlassFurnace:"GLASS_LAVA", Kiln:"KILN",
+  MagmaKiln:"KILN_LAVA",
+};
+const epick = (...c) => c.find((x) => x && ENTITY_TOKENS.has(x)) || null;
+function familyFallback(prefix) {
+  const bad = /DAMAGE|DAMAGED|BLOOD|VOMIT|MUD|WATER|DEBRIS|FORBIDDEN|SPIKES|RINGS|STUDS|ENGRAVING|OVERLAY/;
+  const a = [...ENTITY_TOKENS].filter((t) => (t === prefix || t.startsWith(prefix + "_")) && !bad.test(t));
+  a.sort((x,y) => (x.split("_").length-y.split("_").length) || (x.length-y.length) || x.localeCompare(y));
+  return a[0] || null;
+}
+function itemToken(it) {
+  let name = ENUMS.item && ENUMS.item[it[1]];
+  if (!name || name === "NONE") return null;
+  let p = "ITEM_" + name.toUpperCase().replace(/[^A-Z0-9]+/g,"_").replace(/^_|_$/g,"");
+  p = ({ITEM_ARMORSTAND:"ITEM_ARMOR_STAND", ITEM_WEAPONRACK:"ITEM_WEAPON_RACK",
+        ITEM_HATCH_COVER:"ITEM_HATCH"})[p] || p;
+  const raw=it.length>12&&it[12];
+  if (raw && ["FISH","FISH_RAW","CORPSE","CORPSEPIECE","REMAINS"].includes(name)) {
+    const creature="CREATURE_"+String(raw).toUpperCase().replace(/[^A-Z0-9_]+/g,"_");
+    if (ENTITY_TOKENS.has(creature)) return creature;
+  }
+  if (["CORPSEPIECE","REMAINS"].includes(name) && ENTITY_TOKENS.has("ITEM_REMAINS"))
+    return "ITEM_REMAINS";
+  const mat = MAT_SUFFIX[it.length > 10 ? it[10] : 0];
+  return epick(mat && `${p}_${mat}`, p) || familyFallback(mat ? `${p}_${mat}` : p) || familyFallback(p);
+}
+function creatureToken(u) {
+  const raw = u.length > 9 && u[9];
+  const t = raw && ("CREATURE_" + String(raw).toUpperCase().replace(/[^A-Z0-9_]+/g,"_"));
+  if (t && ENTITY_TOKENS.has(t)) return t;
+  return u.length > 7 && u[7] && ENTITY_TOKENS.has("CREATURE_DWARF") ? "CREATURE_DWARF" : null;
+}
+function buildStage(b) {
+  const now = b.length > 9 ? b[9] : 3, max = b.length > 10 ? b[10] : 3;
+  if (now < 0) return 3;
+  return Math.max(0, Math.min(3, max > 0 ? Math.round(3 * now / max) : now));
+}
+function buildingCells(b) {
+  if (b.length < 7) return [];
+  const type = ENUMS.bld && ENUMS.bld[b[1]], mat = MAT_SUFFIX[b.length > 13 ? b[13] : 0];
+  const fam = FURNITURE[type];
+  if (fam) {
+    const empty = (type === "Weaponrack" || type === "Armorstand") && mat && `${fam}_${mat}_EMPTY`;
+    const tok = epick(empty, mat && `${fam}_${mat}`, fam) || familyFallback(fam);
+    return tok ? [[b[2], b[3], tok]] : [];
+  }
+  if (type === "Wagon" && ENTITY_TOKENS.has("WAGON_BLD"))
+    return [[Math.floor((b[2]+b[4])/2),Math.floor((b[3]+b[5])/2),"WAGON_BLD"]];
+  const sub = b.length > 7 ? b[7] : -1;
+  let base = null;
+  if (type === "Workshop") base = WORKSHOP[ENUMS.workshop && ENUMS.workshop[sub]];
+  if (type === "Furnace") base = FURNACE[ENUMS.furnace && ENUMS.furnace[sub]];
+  if (!base) return [];
+  const prefix = (type === "Workshop" ? "WORKSHOP_" : "FURNACE_") + base;
+  const stage = buildStage(b), baseCells = [], overlayCells = [];
+  const width=b[4]-b[2]+1, height=b[5]-b[3]+1;
+  // Live 53.16 maps a footprint cell to raw [stage][x][y+1]. Row zero is not drawn.
+  // The game's one registered building texture is reconstructed from base + detail.
+  for (let dy=0; dy<height; dy++) for (let dx=0; dx<width; dx++) {
+    const x=b[2]+dx, y=b[3]+dy, rawY=dy+1;
+    for (const [layer,target] of [["",baseCells],["_OVERLAY",overlayCells]]) {
+      const p=prefix+layer;
+      const tok=epick(`${p}_S${stage}_${dx}_${rawY}`, `${p}_S3_${dx}_${rawY}`, `${p}_S0_${dx}_${rawY}`);
+      if (tok) target.push([x,y,tok]);
+    }
+  }
+  return baseCells.concat(overlayCells);
+}
+function liquidToken(v) {
+  const depth=v&7; if (!depth) return null;
+  if (v&8) return epick(`MAGMA_${depth<=2?1:depth<=5?2:3}`, "MAGMA_3", "MAGMA_1");
+  return epick("WATER");
+}
 
 // ---------------------------------------------------------------- palette recolouring
 // DF v50 does not ship one sprite per stone. Natural rock, soil and wood are drawn ONCE
@@ -245,10 +337,40 @@ function vhash(x, y, z) {
 }
 
 const DIRS = [["N", 0, -1], ["S", 0, 1], ["W", -1, 0], ["E", 1, 0]];
+function canonicalRampSuffix(parts) {
+  const p = new Set(parts), card = ["N","S","W","E"].filter((d) => p.has(d));
+  if (card.length === 4) card.splice(0, 4, "N", "S", "E", "W");
+  return [...card, ...["NW","NE","SW","SE"].filter((d) => p.has(d))].join("_");
+}
+function decodeFloorFlag(flag) {
+  // JS bitwise operators truncate to 32 bits; division preserves DF's 35-bit value.
+  let v = Number(flag || 0), out = {};
+  for (const d of ["S","W","E","N"]) { out[d] = v % 256; v = Math.floor(v / 256); }
+  out.special = v % 8;
+  return out;
+}
+function rampSuffixFromFlag(flag) {
+  let v = Math.floor(Number(flag || 0) / 256), out = [];
+  for (const d of ["N","W","E","S","NW","NE","SW","SE"]) {
+    if (v % 2) out.push(d);
+    v = Math.floor(v / 2);
+  }
+  return canonicalRampSuffix(out);
+}
+const WALL_INTERIOR = "__WALL_INTERIOR__";
 
 function variantOf(tt) {
   const v = ENUMS.tt[tt];
   return v && v.length > 3 && v[3] >= 0 ? v[3] : null;
+}
+
+function tileWallSuffix(tt) {
+  const description = String(tileInfo(tt)[2] || "");
+  const match = description.match(/\b([LRUD]+)$/);
+  if (!match) return null;
+  const letters = new Set(match[1]);
+  return [["N","U"],["S","D"],["W","L"],["E","R"]]
+    .filter(([, letter]) => !letters.has(letter)).map(([direction]) => direction).join("_");
 }
 
 function spriteToken(tt, x, y, z, f, W, H, zi) {
@@ -295,7 +417,13 @@ function spriteToken(tt, x, y, z, f, W, H, zi) {
   const on = DIRS.filter(([, dx, dy]) => solid(lx + dx, ly + dy)).map(([d]) => d);
 
   if (kind === "wall") {
-    const key = on.join("_");
+    const encoded = tileWallSuffix(tt);
+    // Premium wall tokens name exposed borders. Natural walls have no LRUD form in
+    // the tiletype, so complement their solid-neighbour fallback just like the
+    // direction-bearing smooth and constructed walls above.
+    const exposed = DIRS.filter(([, dx, dy]) => !solid(lx + dx, ly + dy)).map(([d]) => d);
+    const key = encoded === null ? exposed.join("_") : encoded;
+    if (key === "") return WALL_INTERIOR;
     const v = (vhash(gx, gy, z) % 4) + 1;
     return pick(`${fam}_${key}_${v}`, `${fam}_${key}`, fam + "_N_S_W_E_1", fam + "_N_S_W_E");
   }
@@ -303,12 +431,13 @@ function spriteToken(tt, x, y, z, f, W, H, zi) {
     return pick(`${fam}_${on.join("")}`, fam, fam + "_NSWE");
   }
   if (kind === "ramp") {
-    const c = [];
-    if (solid(lx - 1, ly - 1)) c.push("NW");
-    if (solid(lx + 1, ly - 1)) c.push("NE");
-    if (solid(lx - 1, ly + 1)) c.push("SW");
-    if (solid(lx + 1, ly + 1)) c.push("SE");
-    return pick(`${fam}_${c.join("_")}`, fam + "_OTHER", fam.replace("_WITH_WALL", "_OTHER"));
+    const card = Object.fromEntries(DIRS.map(([d,dx,dy]) => [d,solid(lx+dx,ly+dy)]));
+    const c = DIRS.filter(([d]) => card[d]).map(([d]) => d);
+    for (const [d,dx,dy,a,b] of [["NW",-1,-1,"N","W"],["NE",1,-1,"N","E"],
+                                 ["SW",-1,1,"S","W"],["SE",1,1,"S","E"]])
+      if (!card[a] && !card[b] && solid(lx+dx,ly+dy)) c.push(d);
+    const base=fam.endsWith("_WITH_WALL")?fam.slice(0,-10):fam;
+    return pick(c.length?`${base}_WITH_WALL_${c.join("_")}`:null, base+"_OTHER");
   }
   return null;
 }
@@ -362,13 +491,15 @@ function build() {
   META = EV.find((e) => e.kind === "meta") || {};
   ROUNDS = EV.filter((e) => e.kind === "round");
   STATS = EV.filter((e) => e.kind === "stat");
-  const maps = EV.filter((e) => e.kind === "map");
+  // Also accept a raw bonsai-map-capture JSONL. That turns the same viewer into a live
+  // renderer/debugger without manufacturing a fake episode wrapper first.
+  const maps = EV.filter((e) => e.kind === "map" || e.kind === "kf" || e.kind === "d");
 
   // Reconstruct each frame: a keyframe rebuilds the grid, a delta patches it.
   FRAMES = [];
-  let grid = null, origin = null, dims = null;
+  let grid = null, paletteGrid = null, origin = null, dims = null;
   for (const m of maps) {
-    if (m.keyframe && m.rle) {
+    if ((m.keyframe || m.kind === "kf") && m.rle) {
       origin = m.origin; dims = m.dims;
       grid = new Uint16Array(dims[0] * dims[1] * dims[2]);
       let p = 0;
@@ -394,9 +525,40 @@ function build() {
         fog.fill(m.hrle[k], q, q + m.hrle[k + 1]); q += m.hrle[k + 1];
       }
     }
-    FRAMES.push({ tick: m.tick, i: m.i, origin, dims,
-                  grid: grid.slice(), fog, units: m.units || [], blds: m.blds || [],
-                  items: m.items || [] });
+    let liquid = null;
+    if (m.lrle) {
+      liquid = new Uint8Array(grid.length);
+      let q = 0;
+      for (let k = 0; k < m.lrle.length; k += 2) {
+        liquid.fill(m.lrle[k], q, q + m.lrle[k + 1]); q += m.lrle[k + 1];
+      }
+    }
+    if (m.prle) {
+      paletteGrid = new Uint8Array(grid.length);
+      let q = 0;
+      for (let k = 0; k < m.prle.length; k += 2) {
+        paletteGrid.fill(m.prle[k], q, q + m.prle[k + 1]); q += m.prle[k + 1];
+      }
+    } else if (paletteGrid && m.pset) {
+      for (let k = 0; k < m.pset.length; k += 2) paletteGrid[m.pset[k]] = m.pset[k + 1];
+    }
+    let viewport = m.viewport ? {...m.viewport} : null;
+    if (viewport) {
+      viewport.texrefs=Object.fromEntries((viewport.tex||[]).map(
+        (row)=>[row[0],`${row[1]}:${row[2]}:${row[3]}`]));
+      for (const [src,dst] of [["bgrle","bg"],["bg2rle","bg2"],["frle","floor"],
+                               ["rrle","ramp"],["srle","shadow"],["trle","top"]]) {
+        if (!viewport[src]) continue;
+        const values = [];
+        for (let k=0;k<viewport[src].length;k+=2)
+          for (let n=0;n<viewport[src][k+1];n++) values.push(viewport[src][k]);
+        viewport[dst] = values;
+      }
+    }
+    FRAMES.push({ tick: m.tick, i: m.i, origin, dims, dfv: m.dfv,
+                  grid: grid.slice(), fog, liquid,
+                  palette: paletteGrid && paletteGrid.slice(), units: m.units || [],
+                  blds: m.blds || [], items: m.items || [], viewport });
   }
 
   $("drop").classList.add("hide");
@@ -404,6 +566,13 @@ function build() {
     META.episode_id, META.regime_key && "regime " + META.regime_key,
     ENUMS.df, FRAMES.length + " frames", ROUNDS.length + " rounds",
   ].filter(Boolean).join("  ·  ");
+  const recVersion = FRAMES.find((f) => f.dfv)?.dfv;
+  if (recVersion && !String(ENUMS.df || "").includes(recVersion)) {
+    $("hdr").textContent += `  ·  VERSION MISMATCH recording ${recVersion} / assets ${ENUMS.df}`;
+    $("hdr").classList.add("no");
+  } else {
+    $("hdr").classList.remove("no");
+  }
 
   if (!FRAMES.length) {
     $("stage").insertAdjacentHTML("beforeend",
@@ -417,7 +586,15 @@ function build() {
     for (let i = D - 1; i >= 0; i--) {
       $("zsel").insertAdjacentHTML("beforeend", `<option value="${z0 + i}">${z0 + i}</option>`);
     }
-    curZ = z0 + Math.floor(D / 2);
+    // Start where the fort actually is. The old midpoint default opened a 73-level
+    // mature recording on an empty black layer even though hundreds of citizens and
+    // buildings were present elsewhere.
+    const zScore = new Map();
+    for (const u of FRAMES[0].units) zScore.set(u[3], (zScore.get(u[3]) || 0) + (u[7] ? 4 : 1));
+    for (const b of FRAMES[0].blds) zScore.set(b[6], (zScore.get(b[6]) || 0) + 1);
+    curZ = zScore.size
+      ? [...zScore].sort((a,b) => b[1]-a[1] || b[0]-a[0])[0][0]
+      : z0 + Math.floor(D / 2);
     $("zsel").value = curZ;
     $("zsel").disabled = false;
     $("scrub").max = FRAMES.length - 1;
@@ -472,14 +649,57 @@ function drawMap() {
   const sprites = atlasReady && SPRITES && TILEMAP;
 
   const OPAQUE = sprites ? new Set(SPRITES.opaque || Object.keys(SPRITES.tokens)) : null;
+  const FEATURE_SHAPES = new Set(["SHRUB","SAPLING","BOULDER","PEBBLES",
+                                  "TWIG","BRANCH","TRUNK_BRANCH"]);
+  const viewportValue = (field,x,y,zj=zi) => {
+    const vp=f.viewport;
+    if(!vp || zj+f.origin[2]!==vp.origin[2] || !vp[field]) return null;
+    const sx=x+f.origin[0]-vp.origin[0], sy=y+f.origin[1]-vp.origin[1];
+    const [vw,vh]=vp.dims;
+    return sx>=0&&sy>=0&&sx<vw&&sy<vh ? vp[field][sy*vw+sx] : null;
+  };
+  const viewportToken = (field,x,y,zj=zi) => {
+    const id=viewportValue(field,x,y,zj), vp=f.viewport;
+    const source=vp&&vp.texrefs&&vp.texrefs[id];
+    return source&&SPRITES.source_tokens&&SPRITES.source_tokens[source] || null;
+  };
+  const rampFamily = (prefix,x,y,zj) => {
+    const solidAt=(nx,ny) => {
+      if (nx<0||ny<0||nx>=W||ny>=H) return true;
+      const m=TILEMAP.tiles[f.grid[zj*W*H+ny*W+nx]];
+      return !!m&&(m.k==="wall"||m.k==="tree");
+    };
+    const exact=viewportValue("ramp",x,y,zj);
+    let suffix;
+    if(exact!==null) suffix=rampSuffixFromFlag(exact);
+    else {
+      const card=Object.fromEntries(DIRS.map(([d,dx,dy])=>[d,solidAt(x+dx,y+dy)]));
+      const c=DIRS.filter(([d])=>card[d]).map(([d])=>d);
+      for (const [d,dx,dy,a,b] of [["NW",-1,-1,"N","W"],["NE",1,-1,"N","E"],
+                                   ["SW",-1,1,"S","W"],["SE",1,1,"S","E"]])
+        if(!card[a]&&!card[b]&&solidAt(x+dx,y+dy)) c.push(d);
+      suffix=canonicalRampSuffix(c);
+    }
+    return epick(suffix?`${prefix}_WITH_WALL_${suffix}`:null,`${prefix}_OTHER`);
+  };
   const tokAt = (x, y) => {
     if (x < 0 || y < 0 || x >= W || y >= H) return null;
-    let tt = f.grid[zi * W * H + y * W + x];
-    // a ramp top caps the ramp below and shows it; leaving it blank punched holes
-    if (tileInfo(tt)[0] === "RAMP_TOP" && zi > 0) tt = f.grid[(zi - 1) * W * H + y * W + x];
+    const tt = f.grid[zi * W * H + y * W + x];
+    const shape=tileInfo(tt)[0], terrain=TILEMAP.tiles[tt];
+    const exact=viewportToken("bg",x,y);
+    if(exact && terrain && terrain.k!=="tree" &&
+       !["SHRUB","SAPLING","BOULDER","PEBBLES","BRANCH","TWIG","TRUNK_BRANCH"].includes(shape))
+      return exact;
+    // RAMP_TOP is open space above a ramp, with its own multilevel art. Substituting
+    // the material ramp base made the same slope appear on both z-levels.
+    if (tileInfo(tt)[0] === "RAMP_TOP" && zi > 0) {
+      const below=f.grid[(zi-1)*W*H+y*W+x];
+      if (tileInfo(below)[0] === "RAMP") return rampFamily("MULTILEVEL_RAMP",x,y,zi-1);
+    }
     return spriteToken(tt, x + f.origin[0], y + f.origin[1], curZ, f, W, H, zi);
   };
   const blit = (tok, x, y, row) => {
+    if (tok === WALL_INTERIOR) return;
     const T = SPRITES.tile;
     if (PALETTE && row > 0 && PAL_TOKENS.has(tok)) {
       ctx.drawImage(swapped(tok, row), 0, 0, T, T, x * px, y * px, px, px);
@@ -488,8 +708,14 @@ function drawMap() {
     const [ax, ay] = SPRITES.tokens[tok];
     ctx.drawImage(ATLAS, ax * T, ay * T, T, T, x * px, y * px, px, px);
   };
+  const wallBackdrop = (x,y,row) => {
+    const c=PALETTE&&row>0&&PALETTE.table[row]?PALETTE.table[row][9]:[47,48,56];
+    ctx.fillStyle=`rgb(${c[0]},${c[1]},${c[2]})`;
+    ctx.fillRect(x*px,y*px,px,px);
+  };
   // Which palette row a cell's material calls for; 0 leaves the art alone.
   const paletteRow = (x, y, zz) => {
+    if (f.palette) return f.palette[(zz-f.origin[2])*W*H+y*W+x];
     if (!GEO_GRID) return 0;
     const tt = f.grid[(zz - f.origin[2]) * W * H + y * W + x];
     // Wood is not geology: a trunk is coloured by its species and the dump knows the rock
@@ -500,30 +726,51 @@ function drawMap() {
     if (ix < 0 || iy < 0 || iz < 0 || ix >= gw || iy >= gh || iz >= gd) return 0;
     return GEO_GRID[iz * gw * gh + iy * gw + ix];
   };
-  // Feathers to lay over a floor9 tile where a different material abuts. Sides first so
-  // a corner sits on top of the two sides it joins. Kept identical to render_frame.py's
-  // edge_tokens() — the two renderers agreeing is what makes either one evidence.
+  // Transparent pieces of neighbouring grass. The foreign floor is drawn exactly once;
+  // we never paint its stone/soil family or palette over itself as an "edge" layer.
   const edgeTokens = (x, y) => {
     const m = TILEMAP.tiles[f.grid[zi * W * H + y * W + x]];
     if (!m || m.k !== "floor9") return [];
-    const fam = m.f;
-    const other = (dx, dy) => {
+    const grass = (dx, dy) => {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= W || ny >= H) return false;
       const m2 = TILEMAP.tiles[f.grid[zi * W * H + ny * W + nx]];
-      return (m2 ? m2.f : null) !== fam;
+      return !!m2 && m2.f === "PLANT_GRASS";
     };
-    const n = other(0, -1), s = other(0, 1), w = other(-1, 0), e = other(1, 0);
-    const want = [];
-    if (n) want.push(2);
-    if (s) want.push(8);
-    if (w) want.push(4);
-    if (e) want.push(6);
-    if (n && w) want.push(1);
-    if (n && e) want.push(3);
-    if (s && w) want.push(7);
-    if (s && e) want.push(9);
-    return want.map((i) => `${fam}_${i}`).filter((t) => SPRITES.tokens[t]);
+    return [[0,-1,"GRASS_8"],[0,1,"GRASS_2"],[-1,0,"GRASS_6"],[1,0,"GRASS_4"],
+            [-1,-1,"GRASS_9"],[1,-1,"GRASS_7"],[-1,1,"GRASS_3"],[1,1,"GRASS_1"]]
+      .filter(([dx,dy,t]) => grass(dx,dy) && SPRITES.tokens[t])
+      .map(([, , t]) => [t,0]);
+  };
+
+  const baseUnder = (x,y) => {
+    // The captured bg is DF's actual terrain below a tree/plant, not a guessed
+    // material overlay. It is therefore the strongest source when present.
+    const exact=viewportToken("bg",x,y);
+    if(exact&&OPAQUE.has(exact)) return [exact,0];
+    const floorAt=(nx,ny) => {
+      if(nx<0||ny<0||nx>=W||ny>=H) return null;
+      const tt=f.grid[zi*W*H+ny*W+nx], m=TILEMAP.tiles[tt]||{};
+      const family=m.f||"";
+      const ground=m.k==="floor9"||m.k==="var4"||
+        (m.k==="plain"&&(family.startsWith("FLOOR_")||
+                          family==="SMOOTH_ICE_FLOOR"||family==="BROOK_BED"));
+      if(!ground) return null;
+      const t=tokAt(nx,ny);
+      return t&&OPAQUE.has(t)?[t,paletteRow(nx,ny,curZ)]:null;
+    };
+    for(let radius=1;radius<=4;radius++) {
+      const votes=new Map();
+      for(let dy=-radius;dy<=radius;dy++) for(let dx=-radius;dx<=radius;dx++) {
+        if(Math.max(Math.abs(dx),Math.abs(dy))!==radius) continue;
+        const candidate=floorAt(x+dx,y+dy);
+        if(!candidate) continue;
+        const key=`${candidate[0]}\0${candidate[1]}`;
+        const old=votes.get(key)||[candidate,0]; old[1]++; votes.set(key,old);
+      }
+      if(votes.size) return [...votes.values()].sort((a,b)=>b[1]-a[1])[0][0];
+    }
+    return null;
   };
 
   // Show the nearest level below a cell, dimmed with distance. Returns true if anything
@@ -551,32 +798,54 @@ function drawMap() {
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      // Undiscovered: black, full stop. Not a hole in the render — a hole in what the
-      // player knows.
-      if (f.fog && f.fog[zi * W * H + y * W + x]) continue;
+      // Premium DF ships five dedicated unrevealed-rock tiles. Pure black made the
+      // edge of explored space indistinguishable from a wall.
+      if (f.fog && f.fog[zi * W * H + y * W + x]) {
+        ctx.fillStyle="rgb(49,44,52)"; ctx.fillRect(x*px,y*px,px,px);
+        const hv=vhash(x+f.origin[0],y+f.origin[1],curZ);
+        const hidden=sprites&&(hv&31)===0&&epick(`HIDDEN_ROCK_${((hv>>>5)%5)+1}`,"HIDDEN_ROCK_1");
+        if(hidden) blit(hidden,x,y,0);
+        continue;
+      }
       const tt = f.grid[zi * W * H + y * W + x];
       const [shape, mat] = tileInfo(tt);
       if (sprites) {
         const tok = tokAt(x, y);
-        if (tok) {
+        if (!tok) {
+          const base=shape==="RAMP_TOP"&&baseUnder(x,y);
+          if(base) blit(base[0],x,y,base[1]);
+          else showBelow(x,y);
+          continue;
+        } else {
           // DF composites a tile: an opaque floor, then features on top. Shrubs are
           // 634/1024 opaque, saplings 319, boulders 743 — drawn alone they sit on the
           // page background instead of on the ground. The recording carries no per-tile
           // floor material, so take the ground the neighbours agree on.
           const row = paletteRow(x, y, curZ);
-          if (!OPAQUE.has(tok)) {
-            const votes = {};
-            for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0],[-1,-1],[1,-1],[-1,1],[1,1]]) {
-              const t = tokAt(x + dx, y + dy);
-              if (t && OPAQUE.has(t)) votes[t] = (votes[t] || 0) + 1;
+          const terrain=TILEMAP.tiles[tt];
+          let rampTopBase = false;
+          if (shape === "RAMP_TOP" && zi > 0) {
+            const belowTt = f.grid[(zi - 1) * W * H + y * W + x];
+            if (tileInfo(belowTt)[0] === "RAMP") {
+              // MULTILEVEL_RAMP is a translucent transition pass, not standalone
+              // terrain. Paint the real material ramp from z-1 before this upper pass.
+              const belowBase = spriteToken(belowTt, x+f.origin[0], y+f.origin[1],
+                                            curZ-1, f, W, H, zi-1);
+              if (belowBase) {
+                blit(belowBase, x, y, paletteRow(x, y, curZ - 1));
+                rampTopBase = true;
+              }
             }
-            let best = null, n = 0;
-            for (const k in votes) if (votes[k] > n) { best = k; n = votes[k]; }
+          }
+          if(terrain&&terrain.k==="wall") wallBackdrop(x,y,row);
+          if(terrain&&terrain.k==="wall"&&tok===WALL_INTERIOR) continue;
+          if (!rampTopBase && (FEATURE_SHAPES.has(shape)||terrain&&terrain.k==="tree")) {
+            const base=baseUnder(x,y);
             // A tree branch four levels up has only other branches beside it, so there is
             // no neighbour to borrow ground from — fall through to the level below, which
             // is what DF shows through a canopy. Without this a third of the canopy
             // levels rendered at 22-34% coverage, branches floating on black.
-            if (best) blit(best, x, y, row);
+            if (base) blit(base[0], x, y, base[1]);
             else showBelow(x, y);
           }
           const m = TILEMAP.tiles[tt];
@@ -590,7 +859,20 @@ function drawMap() {
           } else {
             blit(tok, x, y, row);
           }
-          for (const edge of edgeTokens(x, y)) blit(edge, x, y, row);
+          if (shape === "RAMP") {
+            const overlay=rampFamily("OVERLAY_RAMP",x,y,zi);
+            if (overlay) blit(overlay,x,y,0);
+            for (const [d,dx,dy] of DIRS) {
+              const nx=x+dx,ny=y+dy;
+              if(nx<0||ny<0||nx>=W||ny>=H) continue;
+              const near=TILEMAP.tiles[f.grid[zi*W*H+ny*W+nx]];
+              if(near&&(near.k==="wall"||near.k==="tree")) {
+                const shadow=epick("RAMP_SHADOW_ON_RAMP_"+d);
+                if(shadow) blit(shadow,x,y,0);
+              }
+            }
+          }
+          for (const [edge,edgeRow] of edgeTokens(x, y)) blit(edge, x, y, edgeRow);
           continue;
         }
       }
@@ -607,30 +889,86 @@ function drawMap() {
     }
   }
 
-  // buildings: outline their footprint on this z
-  ctx.strokeStyle = "#c9a227"; ctx.lineWidth = 1;
-  for (const [, , x1, y1, x2, y2, z] of f.blds) {
-    if (z !== curZ) continue;
-    const ax = (x1 - f.origin[0]) * px, ay = (y1 - f.origin[1]) * px;
-    ctx.strokeRect(ax + .5, ay + .5, (x2 - x1 + 1) * px - 1, (y2 - y1 + 1) * px - 1);
+  // Wall base art and wall shadows are separate raw layers in Premium DF.
+  if (sprites) for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
+    const p=zi*W*H+y*W+x;
+    if (f.fog&&f.fog[p]) continue;
+    const here=TILEMAP.tiles[f.grid[p]];
+    if (here&&(here.k==="wall"||here.k==="tree")) continue;
+    for (const [d,dx,dy] of DIRS) {
+      const nx=x+dx,ny=y+dy;
+      if(nx<0||ny<0||nx>=W||ny>=H) continue;
+      const near=TILEMAP.tiles[f.grid[zi*W*H+ny*W+nx]];
+      if(near&&near.k==="wall") { const s=epick("WALL_SHADOW_STRAIGHT_"+d); if(s) blit(s,x,y,0); }
+    }
   }
 
-  // items: faint dots, so hauling and stockpiles are visible without noise
-  ctx.fillStyle = "#5f5a52";
-  for (const [, , x, y, z] of f.items) {
-    if (z !== curZ) continue;
-    ctx.fillRect((x - f.origin[0]) * px + px / 2 - 1, (y - f.origin[1]) * px + px / 2 - 1, 2, 2);
+  // Water and magma are designation state, not terrain or items. Draw the game's own
+  // liquid art after terrain and before entities, preserving captured depth.
+  if (sprites && f.liquid) {
+    for (let y=0; y<H; y++) for (let x=0; x<W; x++) {
+      const p=zi*W*H+y*W+x;
+      if (f.fog && f.fog[p]) continue;
+      const tok=liquidToken(f.liquid[p]);
+      if (tok) blit(tok,x,y,0);
+    }
+  }
+
+  // Only draw buildings for which a real graphical token is known. A generic footprint
+  // outline is not DF art and boxed every unsupported/Construction cell.
+  const buildingFootprints = new Set();
+  for (const b of f.blds) {
+    if (b.length < 7 || b[6] !== curZ) continue;
+    const cells = sprites ? buildingCells(b) : [];
+    if (cells.length) {
+      for (const [gx,gy,tok] of cells) {
+        buildingFootprints.add(`${gx},${gy},${b[6]}`);
+        const x=gx-f.origin[0], y=gy-f.origin[1];
+        const p=zi*W*H+y*W+x;
+        if (x>=0 && y>=0 && x<W && y<H && !(f.fog&&f.fog[p])) blit(tok,x,y,0);
+      }
+    }
+  }
+
+  // On-ground items use their real item family and material. Inventory and building
+  // components are removed at capture time, so they are neither duplicate dots nor
+  // visual clutter inside workshops.
+  const visibleItems = new Map();
+  for (const it of f.items) if (it.length >= 5) {
+    const key=`${it[2]},${it[3]},${it[4]}`;
+    if (it.length <= 13) {
+      const lx=it[2]-f.origin[0],ly=it[3]-f.origin[1],lz=it[4]-f.origin[2];
+      let constructionTile=false;
+      if(lx>=0&&ly>=0&&lz>=0&&lx<W&&ly<H&&lz<f.dims[2]) {
+        const terrainTT=f.grid[lz*W*H+ly*W+lx];
+        constructionTile=tileInfo(terrainTT)[1]==="CONSTRUCTION";
+      }
+      if(buildingFootprints.has(key)||constructionTile) continue;
+    }
+    visibleItems.set(key, it);
+  }
+  for (const it of visibleItems.values()) {
+    if (it.length < 5 || it[4] !== curZ) continue;
+    const x=it[2]-f.origin[0], y=it[3]-f.origin[1], tok=sprites&&itemToken(it);
+    const p=zi*W*H+y*W+x;
+    if (tok && x>=0 && y>=0 && x<W && y<H && !(f.fog&&f.fog[p])) blit(tok,x,y,it.length>11?it[11]:0);
+    else {
+      ctx.fillStyle="#5f5a52";
+      ctx.fillRect(x*px+px/2-1,y*px+px/2-1,2,2);
+    }
   }
 
   // units last, on top
-  const dwarfTok = sprites && SPRITES.tokens["CREATURE_DWARF"] ? "CREATURE_DWARF" : null;
   for (const u of f.units) {
     const [, x, y, z, , , dead, cit] = u;
     if (z !== curZ) continue;
     const isCit = cit === undefined ? isT0Cohort(u[0]) : !!cit;
     const ux = x - f.origin[0], uy = y - f.origin[1];
-    if (isCit && !dead && dwarfTok) {
-      blit(dwarfTok, ux, uy, 0);
+    if (ux < 0 || uy < 0 || ux >= W || uy >= H) continue;
+    if (f.fog && f.fog[zi*W*H+uy*W+ux]) continue;
+    const ctok = sprites && !dead && creatureToken(u);
+    if (ctok) {
+      blit(ctok, ux, uy, 0);
       continue;
     }
     // wildlife: the recording carries no creature race yet, so mark it rather than

@@ -104,3 +104,55 @@ def to_quickfort(d: Design, name: str = "bonsai") -> str:
     rows.append(",".join(["#"] * (d.w + 1)))
 
     return "\n".join(rows) + "\n"
+
+
+def to_surface_quickfort(d: Design, name: str = "bonsai") -> str:
+    """A staged variant for building the same room on open, walkable ground.
+
+    The normal blueprint treats ``#`` as natural rock that remains after excavation.
+    On the surface there is no rock ring, so the shell is real construction: ``Cw``
+    walls and ``Cf`` floors.  Shell, zone, and furniture are deliberately separate
+    labels.  The room workflow waits for one stage to become real before starting the
+    next and can therefore resume safely after a process or save reload.
+    """
+    rows: list[str] = []
+
+    rows.append(f'"#build label(shell) start(1;1) {name} constructed shell"')
+    for y in range(d.h):
+        line = []
+        for x in range(d.w):
+            ch = d.cells[y][x]
+            if ch == "#":
+                line.append("Cw")
+            elif ch in ".se+":
+                line.append("Cf")
+            else:
+                line.append("")
+        rows.append(",".join(line) + ",#")
+    rows.append(",".join(["#"] * (d.w + 1)))
+
+    rows.append(f'"#zone label(zone) start(1;1) hidden() {name}"')
+    zone = d.zone_cells
+    key = ZONE_KEY.get(d.kind, "b")
+    if zone:
+        xs = [x for x, _ in zone]
+        ys = [y for _, y in zone]
+        x0, y0 = min(xs), min(ys)
+        zw, zh = max(xs) - x0 + 1, max(ys) - y0 + 1
+        for y in range(d.h):
+            line = []
+            for x in range(d.w):
+                line.append(f"{key}({zw}x{zh})" if (x, y) == (x0, y0) else "")
+            rows.append(",".join(line) + ",#")
+    rows.append(",".join(["#"] * (d.w + 1)))
+
+    rows.append(f'"#build label(build) start(1;1) hidden() {name} furniture"')
+    at = {(x, y): k for x, y, k in d.pieces}
+    for y in range(d.h):
+        line = []
+        for x in range(d.w):
+            line.append("d" if d.cells[y][x] == "+" else at.get((x, y), ""))
+        rows.append(",".join(line) + ",#")
+    rows.append(",".join(["#"] * (d.w + 1)))
+
+    return "\n".join(rows) + "\n"

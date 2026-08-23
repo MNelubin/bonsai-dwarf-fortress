@@ -145,6 +145,49 @@ Cut a staircase down from a pinned origin and carve a chamber off each landing.
 
 **Refuses:** nothing outright — it designates what it can and reports the count.
 
+### The fourth defect: a designation nobody could reach from the side
+
+Found 2026-08-15 on a fort that had designated rock for 55,000 frames and dug none of it.
+Every read agreed the fort was healthy: time advanced, dwarves moved, the reachability
+module said the site was reachable, priority was 1000, fifteen dwarves carried the MINE
+labour. The job list stayed empty and **DF said nothing at all**, which is the tell:
+`world.status.announcements` explains every job DF *cancels*, so silence means no job was
+ever created, not that one is pending.
+
+Three things were wrong, in the order they matter:
+
+**A miner cuts a wall from an orthogonally adjacent tile on the SAME z-level.** Not
+diagonally, and not from the level above or below. `bonsai-reach`'s general-purpose
+`adjacent()` walks six neighbours including z±1, and `dig_site` used it, so open air above
+a cliff face counted as a way in. Measured on the stuck fort: of 29 designated tiles, 12
+looked reachable by the 6-way test and **0** by the 4-way same-z one.
+
+**`find_site` anchored on `u.pos.z` for every citizen.** Every dwarf was standing on the
+surface, so every candidate site was on the surface, and the verb proposed rooms in the
+unexplored cliff face twenty tiles from the fort. Replaced by `fort_anchors()`, which
+enumerates the tiles a citizen can actually STAND on — walkable group ∈ fort groups —
+deepest first, then nearest the fort's centroid, and lays the box against each on all four
+sides. Bound it in z as well as x and y: unbounded it asks the pathfinder about half a
+million tiles.
+
+**Only one tile needs a way in.** The owner's cascade rule, and it is correct: cutting the
+entry tile puts the miner beside the next, so a 4-connected block with a single visible
+side entrance excavates entirely. `dig_site` therefore requires one visible entry, one
+connected block, and solid wall throughout — and refuses a block split by an air pocket,
+because the far half is a separate room the cascade never reaches.
+
+Proved live: 3 tiles designated at 92,112–114 on z=49 with only 92,114 visible and beside
+standable ground; all three read `FLOOR` after 6,000 frames, with zero cancellations.
+
+**How it was actually found: by rendering the map and looking at it.** One PNG of z=49
+showed a surface camp on a meadow with a single 11×5 chamber below at z=48 — the fort had
+never dug in, and the designations sat in undiscovered black. Recipe:
+
+    ./dfhack-run bonsai-map-capture kf /tmp/look.jsonl
+    # wrap the line as {"kind":"map","keyframe":true, ...the rest verbatim...}, gzip it
+    python tools/replay/render_frame.py live/look.rec.jsonl.gz 49 out.png -1 build
+    # crop using the frame's OWN origin, not from 0,0
+
 ### Three defects, each of which produced zero excavated tiles
 
 **1. Designating sealed rock.** The original version stamped dig flags on a 5×5×13 block
@@ -288,6 +331,80 @@ worst distance from a pile to its nearest shop = 0.
 
 ---
 
+## ensure_furniture — a request unfolds into its own prerequisites
+
+`ensure_furniture  c:1,d:1,t:1` — "these pieces must exist", resolved all the way down and
+executed in the SAME call.
+
+The owner's requirement:
+
+    вся эта цепочка из требований должна раскрываться и автоматически резолвится
+
+Placing an office is not one action. It is a chair, a table and a door; those are three
+items nobody has made; making them needs a Carpenter's workshop; building that needs a log;
+getting a log needs a tree felled. Running that chain by hand proves the mechanics and is
+precisely what a player never does — DF's own build menu will not offer a bed that does not
+exist, so the REQUEST has to be the thing that unfolds.
+
+**The dispatcher is a queue, not a file scan.** `need()` splices a prerequisite in ahead of
+whatever is still pending, so the closure runs in dependency order inside one request. The
+insertion cursor matters: splicing every prerequisite at the same index reverses them, and
+the chain would try to build a workshop before there is a log to build it from.
+
+**It terminates at what the world gives directly** — trees (`chop_trees`) and rock
+(`designate_dig`). Everything else is a workshop plus a reagent, read off `JOB_SPEC`.
+
+**It does not redo what is done.** Variants are preferred in the order: workshop already
+built AND reagent in stock (costs nothing) → workshop built → first variant, building down
+to it. A per-call `RESOLVED` set stops a design that wants a chair and a table from ordering
+two carpenters and felling the forest twice.
+
+Measured live on a fort with 332 logs, one built Carpenter's and no Masons:
+
+    ensure_furniture  s:1,b:2
+    RESOLVED 4 prerequisite(s):
+      - dig for 1 stone
+      - build a Masons
+      - ConstructStatue x1 from stone at the Masons
+      - ConstructBed x2 from wood at the Carpenters
+    APPLY ... add_workorder=2 build_workshop=1 designate_dig=30 ensure_furniture=1
+
+The stone request deliberately opens more than three tiles. A clean embark can have a
+soil cap, and mined rock does not yield a boulder on every tile. The old three-tile leaf
+built the Masons from the only available material and left the statue order armed forever.
+
+Clean DF 53.16 control, from frame 0 with seven citizens and no logs, boulders or
+workshops, using the external `bonsai-run-loop.sh` (5,000-frame chunks and paused pump
+visits): the single request `ensure_furniture s:1,b:2` finished at frame 40,000 with a
+built Masons, a built Carpenters, `BED=2`, `STATUE=1`, five spare boulders and 105 free
+logs. The durable ledger was zero bytes and the pump reported `orders=0`, `error=nil`.
+The shaft crossed five soil levels, repaired DF's cancelled next-stair designation, and
+cut its ordinary chamber tiles deepest-first so the batch reached actual stone.
+
+The outer loop is intentional. DF accepts scanner wakeups from frame callbacks, but live
+tests showed workshop job creation returning zero from that callback context despite
+built shops and free reagents. `bonsai-run-loop.sh` therefore alternates simulation with
+an evaluator-side paused `bonsai-apply-actions <same-file> pump`; pump mode keeps the same
+ledger but does not reread or restate the original intent.
+
+Note what it did NOT do: no felling (logs existed) and no second Carpenter's.
+
+**The deferred half is DFHack's `buildingplan`,** which quickfort already routes `#build`
+through. A `#build` section on a fort with no furniture leaves the pieces at stage 0/1
+marked PLANNED, and they resolve by themselves the moment the items exist — measured on the
+office at 92,112–114: Chair/Table/Door went PLANNED → `stage=1/1` with no further request.
+
+**Where the stamp lives.** `apply_template` runs twice per design — the dig, then the zone
+and furniture — and the second call must land on the first one's site. That memory used to
+be a Lua global; a global survives between `dfhack-run` calls but dies with the process, and
+when the scratch DF died mid-test the fort came back with a dug room nobody could name. It
+is now `dfhack.persistent.saveSiteData('bonsai/stamped', ...)`, which is written into the
+save with the fort — the owner's point that the marker has to be in the GAME, not only in
+our own head.
+
+**Open:** running the `rooms` stage twice stamps a SECOND civzone on the same tiles (two
+Office zones at 92,112..113, values 34 and 34). Harmless to the fort, wrong as accounting.
+
 ## apply_template
 
 Stamp one of DFHack's shipped room designs — dig, build and zone in one intent.
@@ -326,6 +443,37 @@ number the game will never confirm has no business in the contract. See
 **Still unknown:** every extent is the largest single z-level, and `levels` is carried but
 not yet used to check the fort has that much depth below the site. `pump_stack` reports
 one level because its repetition lives in a `#meta` section, which understates it.
+
+---
+
+## build_room
+
+Build one generated room as a durable workflow instead of asking the controller to
+remember a multi-hour sequence of atomic calls. A stable `request_id` is the identity of
+the intent; repeating it resumes the same coordinates and never means "build another".
+
+**Rock strategy:** require one visible, orthogonally reachable face and a single connected
+block of hard natural wall; stamp `dig`, wait for the expected floor count and zero pending
+designations, stamp `smooth`, then create the zone and furniture. Soil is refused for a
+design that banks smoothing value. `auto` falls back to the surface strategy when no legal
+hard-rock site exists.
+
+**Surface strategy:** require an empty reachable rectangle of open floor, plan a real
+constructed shell (`Cw` walls and `Cf` floors) through buildingplan, unfold missing blocks
+through stone, a Mason's and `ConstructBlocks`, then create the zone and furniture only
+after the shell exists.
+
+**Refuses or waits:** unsafe request ids, shipped templates with no room contract, no legal
+site, missing role holder, unreachable finished interiors, resource chains still in
+progress, value below the archived demand, or more than one matching civzone. It does not
+delete a duplicate zone automatically because choosing which player object to destroy is
+not a safe recovery.
+
+**Acceptance receipt:** exactly one active civzone at the stored extent; every required
+furniture building at full build stage; the bidirectional owner link in
+`unit.owned_buildings`; a reachable interior tile; and `bonsai-roomvalue` at least the
+design's live noble demand. Workflow records live in `bonsai/room-workflows-v1` site data
+and are revisited by evaluator-side `pump` calls after save or client restart.
 
 ---
 

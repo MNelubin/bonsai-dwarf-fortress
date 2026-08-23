@@ -30,7 +30,7 @@ that the manager is what turns an order into a job — which is the most plausib
 
 from __future__ import annotations
 
-from .library import CLUSTER_NAMES, TEMPLATE_NAMES
+from .library import CLUSTER_NAMES, ROOM_TEMPLATE_NAMES, TEMPLATE_NAMES
 from .schema import Arg, Verb
 
 # Labours the guide singles out as needing equipment, so they cannot be blanket-assigned
@@ -51,6 +51,11 @@ ORDERABLE_JOBS = (
     "ConstructCabinet", "ConstructChest", "ConstructBin", "MakeBarrel",
     "ConstructCoffin",                       # carpenter, one log each
     "MakeCrafts", "ConstructBlocks",         # stone
+    # A noble's room needs these and none of them could be ordered, so a baron's bedroom
+    # was designable and unfurnishable. The names were checked against df.job_type:
+    # ConstructArmorStand=76, ConstructWeaponRack=77, ConstructStatue=79 exist;
+    # MakeArmorStand, MakeWeaponRack and MakeStatue do not.
+    "ConstructArmorStand", "ConstructWeaponRack", "ConstructStatue",
 )
 
 # Material classes the dispatcher can pick a reagent and a workshop for. "any" lets it
@@ -423,8 +428,10 @@ CATALOG: tuple[Verb, ...] = (
         doc="Stamp one of DFHack's shipped room designs: dig, build and zone in one "
             "intent.",
         observable="dig designations and buildings inside the template's own box",
-        args=(Arg("template", "enum", "which shipped design to stamp",
-                  choices=TEMPLATE_NAMES),),
+        args=(Arg("template", "enum", "which design to stamp",
+                  choices=TEMPLATE_NAMES),
+              Arg("stage", "enum", "dig it, or furnish it once it is dug",
+                  choices=("dig", "rooms"), required=False, default="dig")),
         guide="",
         note="The owner asked for the game's own template system rather than a homegrown "
              "format — 'использование именно шаблонов внутри игры внутри двхака' — and "
@@ -438,6 +445,27 @@ CATALOG: tuple[Verb, ...] = (
              "quickfort's own statistics line. The tier argument is gone: v50's quality "
              "cutoffs are not knowable (see bonsai-roomvalue), so a number the game will "
              "not confirm has no business in the contract."
+    ),
+    Verb(
+        name="build_room", category="composition",
+        doc="Build and finish one generated room as a resumable workflow, from carved "
+            "rock or as a constructed room on open ground.",
+        observable="a single active civzone with its real furniture built, an owner link, "
+                   "a reachable entrance, and live room value meeting the target demand",
+        args=(
+            Arg("template", "enum", "generated room design", choices=ROOM_TEMPLATE_NAMES),
+            Arg("terrain", "enum", "where to make it",
+                choices=("auto", "rock", "surface"), required=False, default="auto"),
+            Arg("owner", "str", "citizen id, any, best, or role",
+                required=False, default="role"),
+            Arg("request_id", "str", "stable id used to resume without duplicating",
+                required=False, default="default"),
+        ),
+        note="One request owns the entire dependency chain and survives later pump calls. "
+             "Rock rooms wait for excavation and smoothing; surface rooms first build a "
+             "constructed wall/floor shell. Both wait for real resources and furniture, "
+             "create at most one zone, assign through DFHack ownership links, and finish "
+             "only after a behavioural receipt passes.",
     ),
     Verb(
         name="build_workshop_cluster", category="composition",

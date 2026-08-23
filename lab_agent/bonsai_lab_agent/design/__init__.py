@@ -9,9 +9,9 @@ search become entries in `actions.library.TEMPLATES`.
 """
 
 from .model import Design, Requirement, bare_room, item_value, score
-from .emit import to_quickfort
+from .emit import to_quickfort, to_surface_quickfort
 from .validate import validate
 from .search import Result, anneal
 
 __all__ = ["Design", "Requirement", "Result", "anneal", "bare_room", "item_value",
-           "score", "to_quickfort", "validate"]
+           "score", "to_quickfort", "to_surface_quickfort", "validate"]
