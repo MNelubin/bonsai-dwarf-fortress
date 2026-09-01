@@ -179,8 +179,30 @@ def test_the_food_and_drink_chain_has_shipped():
     existed to fix exactly that, and it is now delivered — so these must be LIVE, and
     nothing may quietly refile them as future work."""
     live = {a["verb"] for a in available_actions()}
-    assert {"build_farm_plot", "set_crop", "set_kitchen_flag"} <= live
+    assert {"build_farm_plot", "brew_drink", "set_crop", "set_kitchen_flag"} <= live
     assert not [r for r in roadmap() if r["tranche"] == 1]
+
+
+def test_brewing_is_a_bounded_reaction_action_not_a_fake_job_type():
+    d = judge({"verb": "brew_drink", "args": [99]})
+    assert d.ok and d.args == [5]
+    assert any("lowered to 5" in repair for repair in d.repairs)
+
+    # Generic work orders remain strict: DF 53.16 has no BrewDrink df.job_type.
+    assert not judge({"verb": "add_workorder", "args": ["BrewDrink", 1]}).ok
+
+
+def test_brewing_dispatch_copies_the_real_reaction_reagents():
+    from pathlib import Path
+
+    lua = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+           / "bonsai-apply-actions.lua").read_text(encoding="utf-8")
+    branch = lua.split('elseif verb == "brew_drink" then', 1)[1].split(
+        'elseif verb == "set_crop" then', 1)[0]
+    assert "df.job_type.CustomReaction" in branch
+    assert "BREW_DRINK_FROM_PLANT" in branch
+    assert "reaction.reagents" in branch
+    assert "job.job_items.elements:insert" in branch
 
 
 def test_standing_orders_are_live_and_guard_a_stock_level():

@@ -92,14 +92,21 @@ class EpisodeRecorder:
     def on_round(self, i: int, cobs: dict, raw_actions, kept, dispatched,
                  applied: str, error: str | None, decide_ms: int, post_raw: dict) -> None:
         """One controller round: what it saw, what it asked for, what we allowed."""
+        from bonsai_lab_agent.actions import sanitize
+        from bonsai_lab_agent.stepped_episode import dependency_state
+
+        _, gate_messages = sanitize(raw_actions)
         self._write({
             "kind": "round", "i": i,
             "tick": cobs.get("cur_tick"), "ticks_remaining": cobs.get("ticks_remaining"),
             "decide_ms": decide_ms,
+            "dependencies": _jsonable(cobs.get("dependencies")),
+            "post_dependencies": _jsonable(dependency_state(post_raw)),
             "intents": _jsonable(raw_actions),
             "kept": _jsonable(kept),
             "dispatched": [a.get("verb") for a in dispatched],
             "dropped": _dropped(raw_actions),
+            "gate_messages": [message[:240] for message in gate_messages[:16]],
             "applied": (applied or "")[:400],
             "controller_error": error,
         })

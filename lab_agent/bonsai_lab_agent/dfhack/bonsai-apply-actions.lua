@@ -20,7 +20,7 @@ pcall(function() reach = reqscript('bonsai-reach') end)
 local REACH_GROUPS = reach and reach.fort_groups() or nil
 local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorder = 0,
             build_workshop = 0, advance = 0, assign_noble = 0,
-            add_workorder_conditional = 0, build_farm_plot = 0, set_crop = 0,
+            add_workorder_conditional = 0, build_farm_plot = 0, brew_drink = 0, set_crop = 0,
             set_kitchen_flag = 0, create_zone = 0, assign_room = 0,
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
             configure_stockpile = 0, chop_trees = 0, smooth = 0,
@@ -2947,6 +2947,83 @@ while QI <= #QUEUE do
             if idx then for s = 0, 3 do b.plant_id[s] = idx end end
             c.build_farm_plot = c.build_farm_plot + 1
         end)
+    elseif verb == "brew_drink" then
+        -- Brewing in DF 53.16 is not a BrewDrink job type. It is the raws-defined
+        -- BREW_DRINK_FROM_PLANT custom reaction. The live probe proved that a bare job
+        -- is cancelled and that copying the reaction's own two reagents (processable
+        -- unrotten plant + empty food-storage container) produces drink 0 -> 1.
+        local ok, why = pcall(function()
+            local want = math.max(1, math.min(tonumber(a[2]) or 1, 5))
+            local still = nil
+            for _, b in ipairs(w.buildings.all) do
+                if df.building_workshopst:is_instance(b)
+                    and b.type == df.workshop_type.Still and built(b) then
+                    still = b
+                    break
+                end
+            end
+            if not still then error('no built Still') end
+
+            local reaction, reaction_id = nil, nil
+            for i, r in ipairs(w.raws.reactions.reactions) do
+                if tostring(r.code) == 'BREW_DRINK_FROM_PLANT' then
+                    reaction, reaction_id = r, i
+                    break
+                end
+            end
+            if not reaction then error('BREW_DRINK_FROM_PLANT raw is absent') end
+
+            local existing = 0
+            for _, job in ipairs(still.jobs) do
+                if job.job_type == df.job_type.CustomReaction
+                    and tostring(job.reaction_name) == 'BREW_DRINK_FROM_PLANT' then
+                    existing = existing + 1
+                end
+            end
+
+            local queued = 0
+            for _ = existing + 1, want do
+                local job = df.job:new()
+                job.job_type = df.job_type.CustomReaction
+                job.reaction_name = reaction.code
+                job.pos = xyz2pos(still.centerx, still.centery, still.z)
+                dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, still.id)
+                still.jobs:insert('#', job)
+                dfhack.job.linkIntoWorld(job, true)
+
+                local copied, copy_ok = 0, true
+                for _, reagent in ipairs(reaction.reagents) do
+                    local one_ok = pcall(function()
+                        local ji = df.job_item:new()
+                        ji.item_type = reagent.item_type
+                        ji.item_subtype = reagent.item_subtype
+                        ji.mat_type = reagent.mat_type
+                        ji.mat_index = reagent.mat_index
+                        ji.quantity = reagent.quantity
+                        ji.vector_id = df.job_item_vector_id.IN_PLAY
+                        ji.reaction_id = reaction_id
+                        for _, flags in ipairs({ 'flags1', 'flags2', 'flags3' }) do
+                            for key, value in pairs(reagent[flags]) do
+                                if value == true then ji[flags][key] = true end
+                            end
+                        end
+                        job.job_items.elements:insert('#', ji)
+                        copied = copied + 1
+                    end)
+                    if not one_ok then copy_ok = false; break end
+                end
+                if not copy_ok or copied ~= #reaction.reagents then
+                    pcall(function() dfhack.job.removeJob(job) end)
+                    error(string.format('copied %d of %d reaction reagents',
+                                        copied, #reaction.reagents))
+                end
+                queued = queued + 1
+            end
+            c.brew_drink = c.brew_drink + ((queued > 0 or existing >= want) and 1 or 0)
+            print(string.format('BREW target=%d existing=%d queued=%d reagents=%d',
+                                want, existing, queued, #reaction.reagents))
+        end)
+        if not ok then print('REFUSED brew_drink: ' .. tostring(why)) end
     elseif verb == "set_crop" then
         -- Which crop, in which season, PER PLOT: a surface plot and a dug-out one want
         -- different plants, and sowing the wrong one is invisible — the plot reads as

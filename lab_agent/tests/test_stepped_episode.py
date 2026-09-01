@@ -105,6 +105,17 @@ def test_controller_invoked_once_per_round():
     assert s.advances == [400] * 6
 
 
+def test_persistent_episode_sends_full_action_schema_only_once():
+    seen = []
+    se.run_stepped_episode(lambda obs: seen.append(obs) or [],
+                           horizon_ticks=900, rounds=3, session=FakeSession(),
+                           repeat_schema=False)
+    assert "action_schema" in seen[0]
+    assert "action_schema" not in seen[1] and seen[1]["action_schema_ref"] == "round:0"
+    assert "available_actions" not in seen[1]
+    assert "action_schema" not in seen[2]
+
+
 def test_controller_sees_live_evolving_state_not_a_frozen_t0():
     """The whole point of model B: round N's observation reflects rounds 0..N-1."""
     seen = []
@@ -119,6 +130,119 @@ def test_controller_sees_live_evolving_state_not_a_frozen_t0():
     assert rounds == [0, 1, 2, 3]
     assert buildings == [1, 2, 3, 4]          # grew as the agent's own actions landed
     assert remaining == [1200, 900, 600, 300]
+
+
+def test_controller_receives_previous_gate_and_game_receipt():
+    """Round N+1 must explain round N; otherwise the model cannot replan."""
+    seen = []
+    s = FakeSession()
+
+    def controller(obs):
+        seen.append(obs.get("previous_action_feedback"))
+        if obs["round"] == 0:
+            return [
+                {"command": "create_stockpile", "args": [999]},
+                {"command": "not_a_real_action"},
+            ]
+        return []
+
+    se.run_stepped_episode(controller, horizon_ticks=600, rounds=2, session=s)
+
+    assert seen[0] is None
+    receipt = seen[1]
+    assert receipt["round"] == 0
+    assert receipt["dispatched"] == ["create_stockpile"]
+    assert any("lowered to 8" in msg for msg in receipt["gate_messages"])
+    assert any("not an action" in msg for msg in receipt["gate_messages"])
+    assert receipt["dfhack"] == "APPLIED 1"
+    assert receipt["observed_delta"]["buildings"] == 1
+    assert receipt["elapsed_ticks"] == 300
+
+
+def test_controller_sees_real_dependency_state_and_delta():
+    class DependencyFort(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.wood = 5
+            self.built_shops = 0
+
+        def apply_actions(self, actions):
+            result = super().apply_actions(actions)
+            if any(action["verb"] == "build_workshop" for action in actions):
+                self.wood -= 1
+                self.built_shops += 1
+            return result
+
+        def observe(self):
+            raw = super().observe()
+            raw.update({
+                "nwood": str(self.wood), "nboulder": "3", "nblocks": "0",
+                "nbars": "0", "nbeds": "0", "nbarrels": "1",
+                "nseeds": "6", "nplants": "4", "nworkshop": str(self.built_shops),
+                "nbuiltshop": str(self.built_shops), "nunbuiltshop": "0",
+                "nfarmplots": "0",
+                "shops": f"Carpenters:{self.built_shops},Still:0",
+                "pending_shops": "Carpenters:0,Still:0",
+                "njobs": "2", "nunassignedjobs": "1", "nmanagerjobs": "0",
+                "nbrewjobs": "0",
+                "norders": "0", "norderleft": "0",
+            })
+            return raw
+
+    seen = []
+    se.run_stepped_episode(
+        lambda obs: seen.append(obs)
+        or ([{"command": "build_workshop", "args": ["Carpenters"]}]
+            if obs["round"] == 0 else []),
+        horizon_ticks=600, rounds=2, session=DependencyFort())
+
+    first = seen[0]["dependencies"]
+    assert first["resources"]["wood"] == 5
+    assert first["workshops"]["built_by_type"] == {"Carpenters": 0, "Still": 0}
+    assert first["workshops"]["pending_by_type"] == {"Carpenters": 0, "Still": 0}
+    assert first["jobs"] == {"total": 2, "unassigned": 1, "by_manager": 0,
+                             "brewing": 0}
+    second = seen[1]
+    assert second["dependencies"]["resources"]["wood"] == 4
+    delta = second["previous_action_feedback"]["dependency_delta"]
+    assert delta["resources"]["wood"] == -1
+    assert delta["workshops"]["built"] == 1
+    assert delta["workshops"]["built_by_type"]["Carpenters"] == 1
+
+
+def test_old_observer_dependency_fields_are_unknown_not_fake_zeroes():
+    state = se.dependency_state({"t": "1"})
+    assert state["resources"]["wood"] is None
+    assert state["workshops"]["built"] is None
+    assert state["manager_orders"]["active"] is None
+
+
+def test_action_receipt_bounds_dfhack_output():
+    class Noisy(FakeSession):
+        def apply_actions(self, actions):
+            super().apply_actions(actions)
+            return "x" * (se.FEEDBACK_TEXT_LIMIT + 500)
+
+    seen = []
+    se.run_stepped_episode(
+        lambda obs: seen.append(obs.get("previous_action_feedback"))
+        or [{"command": "create_stockpile", "args": [1]}],
+        horizon_ticks=600, rounds=2, session=Noisy())
+    assert len(seen[1]["dfhack"]) == se.FEEDBACK_TEXT_LIMIT
+
+
+def test_action_receipt_bounds_untrusted_intents():
+    seen = []
+    huge = "z" * 5000
+    se.run_stepped_episode(
+        lambda obs: seen.append(obs.get("previous_action_feedback"))
+        or [{"command": "set_labor", "args": [huge] * 100}],
+        horizon_ticks=600, rounds=2, session=FakeSession())
+    receipt = seen[1]
+    assert len(receipt["requested"]) == 1
+    assert len(receipt["requested"][0]["args"]) == 16
+    assert all(len(value) <= 240 for value in receipt["requested"][0]["args"])
+    assert all(len(message) <= 240 for message in receipt["gate_messages"])
 
 
 def test_advance_verb_is_not_dispatched_but_round_still_advances():

@@ -37,6 +37,97 @@ pcall(function()
   end
 end)
 
+-- ---------------------------------------------------------------- action dependencies
+-- Scored aggregates tell us whether the fort improved; they do not tell a controller
+-- what prerequisite is missing. Count only claimable + reachable stock, mirroring the
+-- dispatcher's bonsai-reach rule (including supplies held by the embark wagon).
+local reach, reach_groups = nil, nil
+pcall(function()
+  reach = reqscript('bonsai-reach')
+  reach_groups = reach.fort_groups()
+end)
+
+local stock = { WOOD=0, BOULDER=0, BLOCKS=0, BAR=0, BED=0, BARREL=0, SEEDS=0, PLANT=0 }
+pcall(function()
+  for _, it in ipairs(w.items.all) do
+    local name = tostring(df.item_type[it:getType()])
+    if stock[name] ~= nil and not it.flags.rotten then
+      local usable = false
+      if reach then
+        usable = reach.item(it, reach_groups)
+      else
+        usable = not (it.flags.in_job or it.flags.forbid or it.flags.dump
+                      or it.flags.construction or it.flags.removed or it.flags.foreign)
+      end
+      -- An item already consumed by furniture/workshop construction is reachable but
+      -- not stock. The embark wagon is the deliberate exception: its contents are the
+      -- fort's starting supplies and the dispatcher can claim them directly.
+      if usable then
+        local holder = nil
+        pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
+        if holder and holder:getType() ~= df.building_type.Wagon then usable = false end
+      end
+      if usable then stock[name] = stock[name] + 1 end
+    end
+  end
+end)
+
+local nworkshop, nbuiltshop, nunbuiltshop, nfarmplots = 0, 0, 0, 0
+local shop_names = { 'Carpenters', 'Masons', 'Still', 'Craftsdwarfs', 'Farmers' }
+local shops, pending_shops = {}, {}
+for _, name in ipairs(shop_names) do shops[name], pending_shops[name] = 0, 0 end
+pcall(function()
+  for _, b in ipairs(w.buildings.all) do
+    if b:getType() == df.building_type.FarmPlot then nfarmplots = nfarmplots + 1 end
+    if df.building_workshopst:is_instance(b) then
+      nworkshop = nworkshop + 1
+      if b:getBuildStage() >= b:getMaxBuildStage() then
+        nbuiltshop = nbuiltshop + 1
+        local name = tostring(df.workshop_type[b.type])
+        if shops[name] ~= nil then shops[name] = shops[name] + 1 end
+      else
+        nunbuiltshop = nunbuiltshop + 1
+        local name = tostring(df.workshop_type[b.type])
+        if pending_shops[name] ~= nil then pending_shops[name] = pending_shops[name] + 1 end
+      end
+    end
+  end
+end)
+
+local njobs, nunassignedjobs, nmanagerjobs, nbrewjobs = 0, 0, 0, 0
+pcall(function()
+  local link = w.jobs.list.next
+  while link do
+    local job = link.item
+    if job then
+      njobs = njobs + 1
+      local worker_id, by_manager = -1, false
+      pcall(function() worker_id = job.worker_id or -1 end)
+      pcall(function() by_manager = job.flags.by_manager or false end)
+      if worker_id < 0 then nunassignedjobs = nunassignedjobs + 1 end
+      if by_manager then nmanagerjobs = nmanagerjobs + 1 end
+      if job.job_type == df.job_type.CustomReaction
+          and tostring(job.reaction_name) == 'BREW_DRINK_FROM_PLANT' then
+        nbrewjobs = nbrewjobs + 1
+      end
+    end
+    link = link.next
+  end
+end)
+
+local norders, norderleft = 0, 0
+pcall(function()
+  norders = #w.manager_orders.all
+  for _, order in ipairs(w.manager_orders.all) do
+    norderleft = norderleft + math.max(0, order.amount_left or 0)
+  end
+end)
+local shop_summary, pending_summary = {}, {}
+for _, name in ipairs(shop_names) do
+  shop_summary[#shop_summary+1] = name .. ':' .. tostring(shops[name])
+  pending_summary[#pending_summary+1] = name .. ':' .. tostring(pending_shops[name])
+end
+
 -- Solid-tile count over the fort's bounding box. `dug_tiles` is the difference against
 -- the T0 count, computed on the Python side: digging turns walls into floors, so a
 -- falling solid count IS excavation. Before this the observable was never emitted at
@@ -145,9 +236,13 @@ pcall(function()
   end
 end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nhostile=%d ninjured=%d nannounce=%d ndanger=%d warn=%s nwild=%d nitems=%d nunits=%d cids=%s",
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d ninjured=%d nannounce=%d ndanger=%d warn=%s nwild=%d nitems=%d nunits=%d cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, worders,
-  nsolid, nbbox, nhostile, ninjured, nannounce, ndanger,
+  nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
+  stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots,
+  table.concat(shop_summary, ','), table.concat(pending_summary, ','),
+  njobs, nunassignedjobs, nmanagerjobs, nbrewjobs, norders,
+  norderleft, nhostile, ninjured, nannounce, ndanger,
   (#warn > 0 and table.concat(warn, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
   #w.items.all, #w.units.all, table.concat(cids, ",")))

@@ -4,7 +4,8 @@ behaviour in isolation."""
 
 import pytest
 
-from bonsai_lab_agent.baselines import TIERS, v0_idle, v1_developer, v2_reactive
+from bonsai_lab_agent.baselines import (TIERS, v0_idle, v1_developer, v2_reactive,
+                                        v3_survival)
 
 
 def obs(round=0, **kw):
@@ -16,6 +17,29 @@ def obs(round=0, **kw):
 
 def verbs(actions):
     return [a["command"] for a in actions]
+
+
+def dependencies(*, wood=10, boulders=5, barrels=0, plants=0, farms=0,
+                 carpenters=0, stills=0, pending_carpenters=0, pending_stills=0,
+                 brewing=0):
+    return {
+        "resources": {
+            "wood": wood, "boulders": boulders, "blocks": 0, "bars": 0,
+            "beds": 0, "barrels": barrels, "seed_stacks": 6,
+            "plant_stacks": plants,
+        },
+        "workshops": {
+            "total": carpenters + stills, "built": carpenters + stills,
+            "unbuilt": 0,
+            "built_by_type": {"Carpenters": carpenters, "Still": stills},
+            "pending_by_type": {"Carpenters": pending_carpenters,
+                                "Still": pending_stills},
+        },
+        "jobs": {"total": brewing, "unassigned": brewing,
+                 "by_manager": 0, "brewing": brewing},
+        "manager_orders": {"active": 0, "amount_left": 0},
+        "food_chain": {"farm_plots": farms},
+    }
 
 
 # ------------------------------------------------------------------ the floor
@@ -99,6 +123,44 @@ def test_episode_state_does_not_leak_between_runs():
     assert verbs(v2_reactive(obs(3))) == verbs(v1_developer(obs(3)))
 
 
+# ------------------------------------------------------------------ v3 survives
+def test_survival_policy_opens_the_whole_dependency_chain():
+    actions = v3_survival(obs(0, dependencies=dependencies()))
+    names = verbs(actions)
+    assert names.count("set_kitchen_flag") == 2
+    assert "designate_dig" in names and "build_farm_plot" in names
+    assert names.count("build_workshop") == 2
+
+
+def test_survival_policy_makes_barrels_after_carpenter_exists():
+    actions = v3_survival(obs(4, dependencies=dependencies(carpenters=1, stills=1)))
+    order = next(a for a in actions if a["command"] == "add_workorder")
+    assert order["args"] == ["MakeBarrel", 3, "wood"]
+
+
+def test_survival_policy_does_not_duplicate_pending_workshops():
+    deps = dependencies(pending_carpenters=1, pending_stills=1)
+    assert "build_workshop" not in verbs(v3_survival(obs(2, dependencies=deps)))
+
+
+def test_survival_policy_brews_only_when_real_prerequisites_exist():
+    ready = dependencies(barrels=3, plants=8, farms=1, carpenters=1, stills=1)
+    assert "brew_drink" in verbs(v3_survival(obs(5, dependencies=ready)))
+
+    no_plants = dependencies(barrels=3, plants=0, farms=1, carpenters=1, stills=1)
+    assert "brew_drink" not in verbs(v3_survival(obs(5, dependencies=no_plants)))
+
+
+def test_survival_policy_does_not_duplicate_a_live_brew_job():
+    deps = dependencies(barrels=3, plants=8, farms=1, carpenters=1,
+                        stills=1, brewing=1)
+    assert "brew_drink" not in verbs(v3_survival(obs(5, dependencies=deps)))
+
+
+def test_survival_policy_refuses_to_invent_zeroes_for_an_old_observer():
+    assert verbs(v3_survival(obs(0, dependencies={"resources": {"wood": None}}))) == ["advance"]
+
+
 # ------------------------------------------------------------------ contract
 def test_every_tier_emits_only_allow_listed_verbs():
     from bonsai_lab_agent.game_scorer import ALLOWED_VERBS, sanitize_actions
@@ -111,4 +173,4 @@ def test_every_tier_emits_only_allow_listed_verbs():
 
 
 def test_tier_registry_is_ordered_and_complete():
-    assert list(TIERS) == ["v0_idle", "v1_developer", "v2_reactive"]
+    assert list(TIERS) == ["v0_idle", "v1_developer", "v2_reactive", "v3_survival"]

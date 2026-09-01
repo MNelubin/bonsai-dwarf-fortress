@@ -8,6 +8,7 @@ forts fighting over one save.
 """
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -142,6 +143,16 @@ def test_observe_without_an_obs_line_raises(fake):
     fake.replies = ["nothing useful here"]
     with pytest.raises(S.SessionError, match="no OBS line"):
         S.DFSession().observe()
+
+
+def test_observer_exports_dependency_and_brewing_fields():
+    lua = (Path(__file__).resolve().parents[1] / "bonsai_lab_agent" / "dfhack"
+           / "bonsai-observe.lua").read_text(encoding="utf-8")
+    for field in ("nwood=%d", "nboulder=%d", "nbarrels=%d", "nseeds=%d",
+                  "nplants=%d", "nbuiltshop=%d", "nfarmplots=%d",
+                  "pending_shops=%s", "nbrewjobs=%d", "norderleft=%d"):
+        assert field in lua
+    assert "reqscript('bonsai-reach')" in lua
 
 
 def test_apply_actions_writes_tab_separated_intents(tmp_path, fake):

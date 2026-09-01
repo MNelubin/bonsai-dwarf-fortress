@@ -58,6 +58,26 @@ def test_default_horizon_and_k(monkeypatch):
     game_evaluate.evaluate_job_v4(FakeConfig(), {"payload": {"submission_id": "s3"}})
     assert captured["horizon_ticks"] == game_evaluate.DEFAULT_HORIZON  # 3600 (calibrated)
     assert captured["k"] == game_evaluate.DEFAULT_K
+    assert callable(captured["controller_factory"])
+
+
+def test_evaluator_factory_builds_a_persistent_controller(monkeypatch):
+    _fake_evaluator(monkeypatch)
+    made = []
+
+    def fake_make(command, repo, round_timeout):
+        made.append((command, repo, round_timeout))
+        return (lambda obs: []), object()
+
+    def fake_score(cf, controller_factory=None, **kw):
+        controller_factory()
+        return {"suite_name": "x", "suite_version": "4", "score": 0.0, "verdict": "v",
+                "failure_kind": None, "summary": {}, "metrics": []}
+
+    monkeypatch.setattr(game_evaluate, "make_persistent_controller_fn", fake_make)
+    monkeypatch.setattr(game_scorer, "score_submission", fake_score)
+    game_evaluate.evaluate_job_v4(FakeConfig(), {"payload": {"submission_id": "s3"}})
+    assert made == [(["python", "-c", "pass"], "/tmp/repo", 30)]
 
 
 def test_evaluate_job_v4_heartbeats_between_episodes(monkeypatch):

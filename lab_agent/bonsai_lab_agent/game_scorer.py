@@ -81,13 +81,12 @@ PINNED_T0 = EpisodeObs(
 
 
 def controller_observation(t0: EpisodeObs) -> dict:
-    """The observation handed to the untrusted controller at T0. Includes the v4 scored
-    fields PLUS a policy-friendly view (`cur_tick`, `gametype`, `paused`, `units`) so both
-    the legacy step-loop policies (which read `cur_tick`/`units`) and new setup policies
-    can consume it, plus `available_actions` for discoverability. NOTE: v4 uses a one-shot
-    SETUP model — the controller's returned action intents are applied once at T0, then the
-    episode advances to the horizon; a policy that only returns `advance` therefore develops
-    nothing and scores at the no-op baseline. See docs/scorer-v4.md 'Interaction model'."""
+    """Build the common trusted observation fields for an untrusted controller.
+
+    The stepped driver calls this every round and adds timing, threats, dependency
+    state, and the previous action receipt. A policy returning only `advance` develops
+    nothing during that round and therefore remains a meaningful no-op baseline.
+    """
     d = dict(t0.__dict__)
     d["cur_tick"] = t0.abs_tick
     d["gametype"] = "DWARF_FORTRESS"
@@ -171,6 +170,7 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
                      suppress_wildlife: bool = False,
                      rounds: int = 24,
                      recorder_factory: Callable[[int], Any] | None = None,
+                     controller_factory: Callable[[], tuple[Callable, Any]] | None = None,
                      on_episode: Callable[[int, int], None] | None = None) -> dict[str, Any]:
     """Run K real episodes and produce the v4 result dict for evaluate_job.
 
@@ -187,14 +187,30 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
     from bonsai_lab_agent import stepped_episode
 
     pairs = []
+    controller_stats = []
     for _ in range(k):
+        episode_controller = controller_fn
+        controller_handle = None
         try:
+            if controller_factory is not None:
+                episode_controller, controller_handle = controller_factory()
             pairs.append(stepped_episode.run_stepped_episode(
-                controller_fn, horizon_ticks=horizon_ticks, rounds=rounds,
+                episode_controller, horizon_ticks=horizon_ticks, rounds=rounds,
                 suppress_wildlife=suppress_wildlife,
+                repeat_schema=controller_factory is None,
                 recorder=recorder_factory(len(pairs)) if recorder_factory else None))
         except Exception:                       # noqa: BLE001 - one bad episode, not the run
             pass
+        finally:
+            if controller_handle is not None:
+                try:
+                    controller_stats.append(controller_handle.stats())
+                except Exception:               # noqa: BLE001 - untrusted process stats
+                    pass
+                try:
+                    controller_handle.close()
+                except Exception:               # noqa: BLE001 - teardown cannot kill run
+                    pass
         if on_episode is not None:
             try:
                 on_episode(len(pairs), k)
@@ -229,6 +245,7 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
             "ci": [round(st.ci_low, 4), round(st.ci_high, 4)], "ci_half": round(st.ci_half, 4),
             "trustworthy": trustworthy, "all_cohort_survived": survived_all,
             "noop_composite": noop_composite, "ref_composite": ref_composite,
+            "controller_processes": controller_stats,
             "scope": "K-run statistical gameplay score on the deterministic dwarf surface",
         },
         "metrics": [

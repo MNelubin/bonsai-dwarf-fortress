@@ -2,23 +2,17 @@
 
 ## TL;DR for the operator
 
-**Done & proven** (branch `scorer-build`, ~19 commits, all trusted modules pre-staged +
-verified on the server; 36 unit tests): a statistical DF gameplay scorer that replaces
-the degenerate ~1.0 smoke score. Discrimination proven live (no-op 0 → developing 0.857
-→ reference 1.0), validated end-to-end k=1 **and** k=3 (trustworthy), calibrated at all
-three horizons, heartbeat-safe for the 120s job lease, needs **no control-plane changes**.
+**Historical live proof:** the statistical scorer discriminated no-op 0 → developing
+0.857 → reference 1.0 and was calibrated at all three horizons. The current
+`scorer-build` implementation has since moved to the stepped persistent interaction
+model and must receive a fresh live proof before deployment.
 
 **To go live — a single reversible flip** (details below): add the `BONSAI_SUITE==v4`
 gate at `evaluator.py:~447`, set `BONSAI_SUITE=v4` in the `bonsai-evaluator` env, restart,
 restore autonomy. Revert = unset the env var.
 
-**Two decisions only you can make** (everything technical is closed):
-1. **Interaction model** — v4 uses one-shot SETUP (controller returns T0 development
-   intents). Your 93 submissions use a step-loop `advance` baseline that develops nothing
-   → would score 0. Fix cheaply by (a) pointing the objective prompt at "return a T0
-   setup plan" + giving `player.baseline` a couple of `create_stockpile`/`set_labor`
-   intents, or (b) building the hybrid interactive loop (bigger). See "Interaction model".
-2. **When to flip** — verify one real eval, then restore autonomy.
+**Remaining operator step:** run one isolated fresh-save and one mature-save evaluation,
+then flip only after the receipts, replay and score agree.
 
 Everything else in this doc is the how/why.
 
@@ -57,6 +51,22 @@ intents`. The evaluator `sanitize_actions()` allow-lists them (`set_labor`,
 `designate_dig`, `create_stockpile`, `add_workorder`, `advance`) and dispatches them
 via `bonsai-apply-actions.lua` — the agent never runs DFHack or touches DF state.
 
+### Closed-loop action feedback
+
+Each decision after T0 receives `previous_action_feedback`. The receipt records the
+requested and accepted intents, gate repairs/refusals, bounded DFHack output, elapsed
+ticks, and the observed gameplay delta. This lets a persistent controller stop
+repeating an invalid action, satisfy a missing prerequisite, and verify that an accepted
+action actually changed the fort. The same gate messages remain in the replay decision
+track for audit.
+
+The live observation also carries a trusted `dependencies` view: reachable/claimable
+wood, stone, blocks, bars, beds, barrels, seeds and plants; built versus unfinished
+workshops and relevant workshop types; active/unassigned/manager jobs; and active
+manager-order work remaining. Missing fields from an older deployed observer remain
+`null` instead of becoming a false zero. Replay rounds retain both pre- and post-action
+dependency snapshots.
+
 ## Metric
 
 `score = survival_gate × (0.30·provisioning + 0.20·comfort + 0.50·development)`,
@@ -69,15 +79,13 @@ totals, raw item total, raw stress sum.
 
 ## Deployment / cutover (execute once a live discrimination proof passes)
 
-**STATUS: pre-staged, verified, and proven end-to-end.** All trusted modules (`scoring.py`,
-`live_episode.py`, `game_scorer.py`, `controller_invoke.py`, `game_evaluate.py`) are
-deployed to the installed package and import cleanly alongside the running evaluator
-(additive — cannot break it). The DFHack scripts + `bonsai_episode.sh` are in
-`/srv/df-bonsai/current/`. Discrimination is proven and **all three rungs are
-live-calibrated** (H=3600/12000/36000, all +0.055 no-op→ref). The **full v4 path was
-proven end-to-end on the server** (a real controller → `make_controller_fn` → sanitize
-→ live episode → score 0.857 for a 4-stockpile policy). `score_submission` heartbeats
-between episodes via `on_episode`, so a long K-run eval keeps its job lease.
+**STATUS: historical one-shot path proven; current stepped path awaits live proof.** The
+earlier server run proved a real controller → sanitize → live episode → score 0.857 and
+all three horizons were calibrated. Current code replaces per-round cold starts with
+`persistent_controller.py`, adds dependency observations and action receipts, and adds
+the real brewing reaction. These newer changes are locally tested but must not be called
+deployed until the isolated fresh/mature runs pass. `score_submission` still heartbeats
+between episodes, so a long K-run eval keeps its job lease.
 **The entire cutover is a single reversible flip** owned by the operator:
 
 - **Flip (safest, env-gated, defaults to smoke):** at `evaluator.py:~447`, replace
@@ -144,40 +152,22 @@ between episodes via `on_episode`, so a long K-run eval keeps its job lease.
    `bonsai-lab-agent` (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
    The K2 agent now climbs the REAL score.
 
-## Interaction model — the ONE integration decision left for the owner
+## Interaction model — stepped and persistent
 
-This is not a bug; it's a design reconciliation the owner should make before/at the flip.
+The evaluator now runs `observe → decide → sanitize → apply → advance → observe` for
+every round. One controller subprocess remains alive for the whole episode, so it can
+compact and retain its own working state instead of cold-starting 24 times. A fresh
+process is created for each of the K statistical episodes, preventing cross-episode
+state and context leakage.
 
-- **v4 uses a one-shot SETUP model:** the controller is invoked once with the pinned T0
-  observation and returns action *intents* (`set_labor`, `designate_dig`,
-  `create_stockpile`, `add_workorder`); the evaluator dispatches them at T0, then the
-  episode advances to the horizon and is scored.
-- **The existing 93 agent submissions all use `player.baseline:baseline_policy`**, a
-  **step-loop** policy that returns `{"command": "advance", ...}` repeatedly (advance,
-  check survivors, advance…). Under v4's one-shot setup, a policy that returns only
-  `advance` develops nothing → **scores at the no-op baseline (0)**. So out of the box,
-  v4 would score every current submission ~0 (no learning gradient) until the agent
-  writes policies that return development intents.
-- v4 now hands the controller a **policy-compatible + discoverable** observation
-  (`controller_observation`): the v4 scored fields PLUS `cur_tick`/`gametype`/`paused`/
-  `units` (so legacy policies don't crash) PLUS `available_actions` (so the agent can
-  discover the verbs). But the *interaction model* still differs.
-
-**Owner's choice:**
-1. **Keep one-shot setup (recommended, already built):** point the objective/prompt at
-   "return a T0 setup plan of development intents"; update `player.baseline` to emit a
-   couple of `create_stockpile`/`set_labor` intents (so the floor isn't a flat 0), and
-   let the agent climb from there. Minimal work — the scorer already supports this.
-2. **Add a hybrid interactive loop:** extend the episode driver so the controller is
-   re-invoked each chunk (observe → intents → apply → advance chunk → observe…), which
-   also honors step-loop `advance` returns. This matches the legacy convention but is a
-   real change to the episode driver (keep DF alive across steps; observe/apply/advance
-   as separate ops) + live testing. Left unbuilt — it's a design decision, not a defect.
-
-Everything else in the cutover is closed; this is the substantive call the owner makes.
+Round 0 carries the full action schema. Later rounds reference it and carry the current
+dependency state plus `previous_action_feedback`: gate repairs/refusals, bounded DFHack
+output and actual gameplay deltas. A controller crash or timeout degrades the remaining
+rounds of that episode to no-op and is recorded in `controller_processes`; it never turns
+an agent failure into evaluator infrastructure failure.
 
 ## Known follow-ups
-- `dug_tiles` is observed as 0 (TODO: T0 tiletype snapshot + diff over the fort z-range).
-- `add_workorder` uses `CustomReaction` (v50 has no `BrewDrink` job_type name); refine
-  to real production reactions for stronger food/drink development signal.
+- Live-measure the added dependency-observer cost on the 73-level mature save.
+- Verify `brew_drink` against both a fresh farm-grown plant and the mature fort's owned
+  reachable barrels; generic `add_workorder` intentionally still rejects fake BrewDrink.
 - `embark_scenario` catalog table (save-grain provenance) + `start_state_hash` re-verify.

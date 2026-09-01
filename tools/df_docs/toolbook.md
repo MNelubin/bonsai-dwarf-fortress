@@ -785,10 +785,10 @@ across all materials rather than per material.
 
 ---
 
-## Not yet a tool: brewing
+## brew_drink
 
-Deliberately absent from `ORDERABLE_JOBS`. Four things are now known for certain, and the
-last one is why it is still not shipped.
+Queue the real DF 53.16 brewing reaction at a built Still. It remains deliberately
+absent from generic `ORDERABLE_JOBS` because there is no `BrewDrink` job type.
 
 **1. There is no `BrewDrink` job type.** Not on this build — nothing in `df.job_type`
 matches `brew` at all. That is the third enum name written from memory that turned out not
@@ -827,16 +827,18 @@ Two things had to be true before it got that far, and both were invisible until
 `bonsai-reach` was written: there must be an **empty container the fort owns** (14 of the
 fort's 15 barrels belong to another civilisation), and there must be a plant DF accepts.
 
-**What is still missing.** The plants used in the test were synthesised with
-`createItem(PLANT, PLANT_MAT:MUSHROOM_HELMET_PLUMP:STRUCTURAL)`, and DF refuses them as
-not an "unrotten plant" — so the remaining gap is the reagent, not the job. The next step
-is to grow a real one: the farm is planted, and a harvested plump helmet should satisfy it
-where a hand-made item does not.
+**What closed the gap.** A real farm-grown plump helmet satisfied the same job where a
+synthesised plant did not; played live, drink moved `0 -> 1`. The shipped action therefore
+copies the reaction raw's own requirements and never invents a reagent filter.
 
-**Why it stays out of the tool list meanwhile.** A verb that produces jobs DF cancels is
-exactly the silent-success shape every other verb here has been fixed to avoid.
+**Refuses:** no built Still, no `BREW_DRINK_FROM_PLANT` raw, or an incomplete reagent
+copy. It prints the reason into the action receipt. Missing/unreachable plants or empty
+owned barrels remain game-state failures: DF reports those cancellation reasons, the
+observer exposes the corresponding stock and active brew-job count, and a controller can
+correct the dependency on its next round. Repeating the action is idempotent up to its
+bounded target; existing live brewing jobs are counted rather than duplicated.
 
-`bonsai-brewprobe` builds the current best attempt and reports what DF made of it.
+`bonsai-brewprobe` remains the focused diagnostic for the raw reaction/job shape.
 
 ---
 

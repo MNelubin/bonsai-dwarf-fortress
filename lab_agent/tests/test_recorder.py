@@ -65,6 +65,8 @@ def test_decision_track_shows_what_was_allowed_and_what_was_dropped(tmp_path):
     assert any("launch_missiles" in s and "not an action" in s for s in reasons)
     assert any("str" in s or "not an object" in s for s in reasons)
     assert any(d.get("verb") == "launch_missiles" for d in r0["dropped"])
+    assert any("launch_missiles" in s and "not an action" in s
+               for s in r0["gate_messages"])
     assert len(r0["intents"]) == 4                            # the raw ask is preserved
 
 
@@ -78,6 +80,32 @@ def test_metric_track_follows_the_fort(tmp_path):
     assert [e["buildings"] for e in posts] == [2, 3, 4, 5]     # grew every round
     assert [e["i"] for e in posts] == [0, 1, 2, 3]
     assert stats[0]["phase"] == "t0" and stats[-1]["phase"] == "horizon"
+
+
+def test_decision_track_records_dependency_snapshots(tmp_path):
+    class Resources(FakeSession):
+        def observe(self):
+            raw = super().observe()
+            raw.update({
+                "nwood": "7", "nboulder": "2", "nworkshop": "1",
+                "nbuiltshop": "1", "nunbuiltshop": "0", "shops": "Carpenters:1",
+                "pending_shops": "Carpenters:0",
+                "nfarmplots": "2",
+                "njobs": "3", "nunassignedjobs": "2", "nmanagerjobs": "1",
+                "nbrewjobs": "0",
+                "norders": "1", "norderleft": "4",
+            })
+            return raw
+
+    path = str(tmp_path / "dependencies.rec.jsonl.gz")
+    recorder = rec.EpisodeRecorder(path)
+    se.run_stepped_episode(lambda obs: [], horizon_ticks=300, rounds=1,
+                           session=Resources(), recorder=recorder)
+    event = next(e for e in rec.read_recording(path) if e["kind"] == "round")
+    assert event["dependencies"]["resources"]["wood"] == 7
+    assert event["dependencies"]["workshops"]["built_by_type"] == {"Carpenters": 1}
+    assert event["post_dependencies"]["manager_orders"]["amount_left"] == 4
+    assert event["post_dependencies"]["food_chain"]["farm_plots"] == 2
 
 
 def test_controller_error_is_recorded_not_hidden(tmp_path):
@@ -122,6 +150,7 @@ def test_exotic_controller_output_is_shrunk_not_dumped(tmp_path):
     args = rounds[0]["intents"][0]["args"]
     assert len(args) <= 64                      # list truncated
     assert all(len(a) <= 500 for a in args)     # each value truncated
+    assert all(len(message) <= 240 for message in rounds[0]["gate_messages"])
 
 
 def test_truncated_file_still_reads(tmp_path):

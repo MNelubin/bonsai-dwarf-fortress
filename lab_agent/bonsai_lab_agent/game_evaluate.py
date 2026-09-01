@@ -21,7 +21,7 @@ import threading
 from typing import Any
 
 from bonsai_lab_agent import game_scorer
-from bonsai_lab_agent.controller_invoke import make_controller_fn
+from bonsai_lab_agent.persistent_controller import make_persistent_controller_fn
 from bonsai_lab_agent.scoring import CALIBRATION
 
 DEFAULT_HORIZON = int(os.environ.get("BONSAI_SCORE_HORIZON", "3600"))
@@ -65,7 +65,9 @@ def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
 
     repo = prepare_checkout(config, job)
     command = controller_command(repo, manifest)
-    controller_fn = make_controller_fn(command, str(repo), config.controller_timeout_seconds)
+    def controller_factory():
+        return make_persistent_controller_fn(
+            command, str(repo), round_timeout=config.controller_timeout_seconds)
 
     on_episode = None
     stop = threading.Event()
@@ -93,7 +95,7 @@ def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
 
     try:
         result = game_scorer.score_submission(
-            controller_fn, horizon_ticks=horizon, k=k,
+            None, horizon_ticks=horizon, k=k, controller_factory=controller_factory,
             noop_composite=cal["noop"], ref_composite=cal["ref"], on_episode=on_episode)
     finally:
         stop.set()

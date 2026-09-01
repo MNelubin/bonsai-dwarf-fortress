@@ -139,6 +139,43 @@ def test_score_submission_calls_on_episode(monkeypatch):
     assert calls == [(1, 3), (2, 3), (3, 3)]
 
 
+def test_score_submission_uses_one_fresh_persistent_controller_per_episode(monkeypatch):
+    T0 = game_scorer.PINNED_T0
+    seen = []
+
+    class Handle:
+        def __init__(self, number):
+            self.number = number
+            self.closed = False
+
+        def stats(self):
+            return {"process": self.number, "closed": self.closed}
+
+        def close(self):
+            self.closed = True
+
+    handles = []
+
+    def factory():
+        handle = Handle(len(handles))
+        handles.append(handle)
+        return (lambda obs: []), handle
+
+    def fake_episode(controller, **kwargs):
+        seen.append((controller, kwargs["repeat_schema"]))
+        return T0, _GOOD_H
+
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode", fake_episode)
+    result = game_scorer.score_submission(
+        None, horizon_ticks=3600, k=3, noop_composite=0.2, ref_composite=0.6,
+        controller_factory=factory)
+
+    assert len(handles) == 3 and all(handle.closed for handle in handles)
+    assert len({id(controller) for controller, _ in seen}) == 3
+    assert all(repeat is False for _, repeat in seen)
+    assert [s["process"] for s in result["summary"]["controller_processes"]] == [0, 1, 2]
+
+
 def test_regime_key_stable_and_sensitive():
     base = dict(scenario_id="s1", save_sha256="abc", df_version="53.15",
                 dfhack_version="53.15-r2", plugin_set_hash="p1", horizon_ticks=3600, k=5)

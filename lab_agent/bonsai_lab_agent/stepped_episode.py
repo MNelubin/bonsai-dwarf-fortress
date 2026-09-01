@@ -31,6 +31,159 @@ from bonsai_lab_agent.session import DFSession, SessionError
 
 DEFAULT_ROUNDS = 24
 MIN_CHUNK_TICKS = 100
+FEEDBACK_TEXT_LIMIT = 1200
+
+
+def _compact_feedback_value(value):
+    """Bound untrusted controller values before echoing them into model context."""
+    if isinstance(value, str):
+        return value[:240]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k)[:80]: _compact_feedback_value(v)
+                for k, v in list(value.items())[:16]}
+    if isinstance(value, (list, tuple)):
+        return [_compact_feedback_value(v) for v in list(value)[:16]]
+    return str(value)[:240]
+
+
+def _raw_int(raw: dict, key: str) -> int | None:
+    """Parse an optional observer integer without turning 'not deployed' into zero."""
+    try:
+        return int(raw[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def dependency_state(raw: dict) -> dict:
+    """Policy-facing prerequisite state emitted by the trusted DFHack observer."""
+    def counts(key: str) -> dict:
+        parsed = {}
+        for part in str(raw.get(key) or "").split(","):
+            name, sep, value = part.partition(":")
+            if not sep:
+                continue
+            try:
+                parsed[name] = int(value)
+            except ValueError:
+                continue
+        return parsed
+
+    shop_counts = counts("shops")
+    pending_shop_counts = counts("pending_shops")
+    return {
+        "resources": {
+            "wood": _raw_int(raw, "nwood"),
+            "boulders": _raw_int(raw, "nboulder"),
+            "blocks": _raw_int(raw, "nblocks"),
+            "bars": _raw_int(raw, "nbars"),
+            "beds": _raw_int(raw, "nbeds"),
+            "barrels": _raw_int(raw, "nbarrels"),
+            "seed_stacks": _raw_int(raw, "nseeds"),
+            "plant_stacks": _raw_int(raw, "nplants"),
+        },
+        "workshops": {
+            "total": _raw_int(raw, "nworkshop"),
+            "built": _raw_int(raw, "nbuiltshop"),
+            "unbuilt": _raw_int(raw, "nunbuiltshop"),
+            "built_by_type": shop_counts,
+            "pending_by_type": pending_shop_counts,
+        },
+        "jobs": {
+            "total": _raw_int(raw, "njobs"),
+            "unassigned": _raw_int(raw, "nunassignedjobs"),
+            "by_manager": _raw_int(raw, "nmanagerjobs"),
+            "brewing": _raw_int(raw, "nbrewjobs"),
+        },
+        "manager_orders": {
+            "active": _raw_int(raw, "norders"),
+            "amount_left": _raw_int(raw, "norderleft"),
+        },
+        "food_chain": {
+            "farm_plots": _raw_int(raw, "nfarmplots"),
+        },
+    }
+
+
+def _dependency_delta(before_raw: dict, after_raw: dict) -> dict:
+    before, after = dependency_state(before_raw), dependency_state(after_raw)
+    out = {}
+    for section in ("resources", "jobs", "manager_orders", "food_chain"):
+        changed = {}
+        for name, old in before[section].items():
+            new = after[section].get(name)
+            if old is not None and new is not None and old != new:
+                changed[name] = new - old
+        if changed:
+            out[section] = changed
+    changed_workshops = {}
+    for name in ("total", "built", "unbuilt"):
+        old = before["workshops"][name]
+        new = after["workshops"][name]
+        if old is not None and new is not None and old != new:
+            changed_workshops[name] = new - old
+    old_types = before["workshops"]["built_by_type"]
+    new_types = after["workshops"]["built_by_type"]
+    type_delta = {name: new_types.get(name, 0) - old_types.get(name, 0)
+                  for name in set(old_types) | set(new_types)
+                  if new_types.get(name, 0) != old_types.get(name, 0)}
+    if type_delta:
+        changed_workshops["built_by_type"] = type_delta
+    old_pending = before["workshops"]["pending_by_type"]
+    new_pending = after["workshops"]["pending_by_type"]
+    pending_delta = {name: new_pending.get(name, 0) - old_pending.get(name, 0)
+                     for name in set(old_pending) | set(new_pending)
+                     if new_pending.get(name, 0) != old_pending.get(name, 0)}
+    if pending_delta:
+        changed_workshops["pending_by_type"] = pending_delta
+    if changed_workshops:
+        out["workshops"] = changed_workshops
+    return out
+
+
+def _action_feedback(round_index: int, raw_actions, clean: list[dict],
+                     dispatched: list[dict], gate_messages: list[str],
+                     applied: str, controller_error: str | None,
+                     before: EpisodeObs, after: EpisodeObs,
+                     before_raw: dict, after_raw: dict) -> dict:
+    """Build the compact trusted receipt supplied with the next observation.
+
+    Replays already recorded what the controller requested and what DFHack printed,
+    but the controller itself could not see that evidence on the next round. Keep the
+    receipt bounded so a verbose prerequisite trace cannot exhaust model context.
+    """
+    fields = (
+        "cohort_alive", "hunger_sum", "thirst_sum", "stress_danger",
+        "food_count", "drink_count", "buildings", "dug_tiles", "workorders_done",
+    )
+    delta = {name: getattr(after, name) - getattr(before, name) for name in fields}
+    delta = {name: value for name, value in delta.items() if value}
+    requested = raw_actions
+    if isinstance(requested, dict):
+        requested = [requested]
+    if not isinstance(requested, (list, tuple)):
+        requested = []
+    return {
+        "round": round_index,
+        "requested": _compact_feedback_value(list(requested)[:16]),
+        "accepted": _compact_feedback_value(clean[:16]),
+        "dispatched": [a.get("verb") for a in dispatched[:16]],
+        "gate_messages": [message[:240] for message in gate_messages[:16]],
+        "dfhack": (applied or "")[-FEEDBACK_TEXT_LIMIT:],
+        "controller_error": controller_error,
+        "elapsed_ticks": after.abs_tick - before.abs_tick,
+        "observed_delta": delta,
+        "dependency_delta": _dependency_delta(before_raw, after_raw),
+        "after": {
+            "cohort_alive": after.cohort_alive,
+            "food_count": after.food_count,
+            "drink_count": after.drink_count,
+            "buildings": after.buildings,
+            "dug_tiles": after.dug_tiles,
+            "workorders_done": after.workorders_done,
+        },
+    }
 
 
 def chunk_plan(horizon_ticks: int, rounds: int = DEFAULT_ROUNDS) -> list[int]:
@@ -88,6 +241,7 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
                         rounds: int = DEFAULT_ROUNDS,
                         suppress_wildlife: bool = False,
                         recorder=None,
+                        repeat_schema: bool = True,
                         session: DFSession | None = None) -> tuple[EpisodeObs, EpisodeObs]:
     """Run one live stepped episode. Returns the (T0, horizon) observation pair.
 
@@ -112,9 +266,15 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
         cur_raw = t0_raw
         chunks = chunk_plan(horizon_ticks, rounds)
         remaining = horizon_ticks
+        previous_feedback = None
         for i, chunk in enumerate(chunks):
+            before_raw = cur_raw
             cur = obs_to_episode_obs(cur_raw, cohort_ids, t0_solid)
             cobs = game_scorer.controller_observation(cur)
+            if i > 0 and not repeat_schema:
+                cobs.pop("action_schema", None)
+                cobs.pop("available_actions", None)
+                cobs["action_schema_ref"] = "round:0"
             cobs["round"] = i
             cobs["rounds_total"] = len(chunks)
             cobs["ticks_remaining"] = remaining
@@ -128,10 +288,12 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
                                 if w and w != "none"]
             cobs["under_threat"] = (cobs["hostiles"] > 0 or cobs["injured"] > 0
                                     or cobs["danger_events"] > 0)
+            cobs["dependencies"] = dependency_state(cur_raw)
+            cobs["previous_action_feedback"] = previous_feedback
 
             t_dec = time.time()
             raw_actions, err = _safe_controller(controller_fn, cobs)
-            clean = game_scorer.sanitize_actions(raw_actions)
+            clean, gate_messages = game_scorer.sanitize_actions_verbose(raw_actions)
             # `advance` is the legacy step-loop verb: it carries no dispatch, it just
             # means "no development this round". Filter it out of the dispatch set.
             dispatch = [a for a in clean if a["verb"] != "advance"]
@@ -155,6 +317,9 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
             # The metric track is FREE: the driver already had to observe here, so the
             # recorder samples the scored observables at no extra RPC cost.
             post = obs_to_episode_obs(cur_raw, cohort_ids, t0_solid)
+            previous_feedback = _action_feedback(
+                i, raw_actions, clean, dispatch, gate_messages, applied, err, cur, post,
+                before_raw, cur_raw)
             _emit(recorder, "on_post_round", i, post.abs_tick, post)
 
         h = obs_to_episode_obs(cur_raw, cohort_ids, t0_solid)

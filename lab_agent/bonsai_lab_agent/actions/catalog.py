@@ -207,6 +207,19 @@ CATALOG: tuple[Verb, ...] = (
              "ground was chosen for.",
     ),
     Verb(
+        name="brew_drink", category="food-water", tranche=0,
+        doc="Brew plants at a built Still.",
+        observable="brewing jobs appear, then plants and a barrel become drink",
+        args=(Arg("amount", "int", "jobs", lo=1, hi=5,
+                  required=False, default=1),),
+        guide="27:42",
+        note="DF 53.16 has no BrewDrink job type. Brewing is CustomReaction with code "
+             "BREW_DRINK_FROM_PLANT. A bare job is cancelled; the reaction raw's own "
+             "reagents must be copied so DF can select an unrotten processable plant "
+             "and an empty food-storage container. Live research produced drink 0->1 "
+             "with this exact shape.",
+    ),
+    Verb(
         name="set_crop", category="food-water", tranche=0,
         doc="Choose what the farm plots grow, per season.",
         observable="the plot's per-season plant id",

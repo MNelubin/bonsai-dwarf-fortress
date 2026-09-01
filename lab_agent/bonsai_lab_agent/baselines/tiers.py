@@ -7,6 +7,7 @@ save, a horizon and a decision budget, so any score difference is the capability
     v0_idle       nothing            the floor the metric is normalised against
     v1_developer  dig / stock / staff
     v2_reactive   v1, but yields to danger
+    v3_survival   closes the measured dirt-to-beer dependency chain
 
 Every policy takes the stepped observation and returns action intents. The evaluator
 allow-lists and dispatches them; nothing here touches the game.
@@ -83,8 +84,75 @@ def v2_reactive(obs: dict) -> list[dict]:
     return v1_developer(obs)
 
 
+def v3_survival(obs: dict) -> list[dict]:
+    """Dependency-aware reference policy for the first real survival vertical slice.
+
+    This is deliberately a readable ladder rung, not a hidden oracle. It consumes the
+    same trusted dependency view as a submitted controller and requests only public
+    actions. The order is the one established in live 53.16 research: protect seeds and
+    drink, expose soil, build/sow a farm, build the workshops, make barrels, then queue
+    the raws-defined brewing reaction. Every round re-reads the fort instead of assuming
+    that a previously accepted action has finished.
+    """
+    deps = obs.get("dependencies") or {}
+    resources = deps.get("resources") or {}
+    workshops = deps.get("workshops") or {}
+    jobs = deps.get("jobs") or {}
+    food_chain = deps.get("food_chain") or {}
+    built = workshops.get("built_by_type") or {}
+    pending = workshops.get("pending_by_type") or {}
+    round_index = int(obs.get("round", 0))
+
+    # Do not interpret an old observer as a fort with no supplies. The evaluator marks
+    # missing dependency fields null specifically so this policy can fail safe.
+    if resources.get("wood") is None or food_chain.get("farm_plots") is None:
+        return ADVANCE
+
+    actions = []
+    if round_index == 0:
+        actions.extend([
+            {"command": "set_kitchen_flag", "args": ["SEEDS", False]},
+            {"command": "set_kitchen_flag", "args": ["DRINK", False]},
+            {"command": "set_labor", "args": ["MINE", True]},
+            {"command": "set_labor", "args": ["PLANT", True]},
+            {"command": "set_labor", "args": ["BREWER", True]},
+            {"command": "designate_dig", "args": [80]},
+            {"command": "create_stockpile", "args": [2, "food"]},
+        ])
+
+    # A failed early placement is expected while the soil chamber is still being dug.
+    # Re-asking is idempotent once a plot exists and is evidence-driven before then.
+    if (food_chain.get("farm_plots") or 0) == 0:
+        actions.append({"command": "build_farm_plot", "args": [4, 3, "best"]})
+    else:
+        actions.append({"command": "set_crop", "args": ["best", "all"]})
+
+    materials = sum(resources.get(name) or 0 for name in ("wood", "boulders", "blocks"))
+    if ((built.get("Carpenters") or 0) + (pending.get("Carpenters") or 0) == 0
+            and materials > 0):
+        actions.extend([
+            {"command": "build_workshop", "args": ["Carpenters"]},
+            {"command": "set_labor", "args": ["CARPENTER", True]},
+        ])
+    if ((built.get("Still") or 0) + (pending.get("Still") or 0) == 0
+            and materials > 0):
+        actions.append({"command": "build_workshop", "args": ["Still"]})
+
+    if (resources.get("barrels") or 0) < 2 and (built.get("Carpenters") or 0) > 0:
+        actions.append({"command": "add_workorder", "args": ["MakeBarrel", 3, "wood"]})
+
+    can_brew = ((built.get("Still") or 0) > 0
+                and (resources.get("plant_stacks") or 0) > 0
+                and (resources.get("barrels") or 0) > 0)
+    if can_brew and (jobs.get("brewing") or 0) == 0:
+        actions.append({"command": "brew_drink", "args": [2]})
+
+    return actions or ADVANCE
+
+
 TIERS = {
     "v0_idle": v0_idle,
     "v1_developer": v1_developer,
     "v2_reactive": v2_reactive,
+    "v3_survival": v3_survival,
 }
