@@ -24,6 +24,12 @@ scr(){ run screen-dump 2>/dev/null | grep -aE '\|'; }
 # click_target.txt, so two boots racing between the write and the click clicked each
 # other's menu entries — three simultaneous boots produced two LOADFAIL:savelist.
 click(){ run click-text "$1" >/dev/null 2>&1; }
+click_row(){ run click-row "$1" >/dev/null 2>&1; }
+# screen-dump prints "row|text", so a caller can address one exact line. Trailing
+# blanks are stripped so a pattern may anchor on $ and match a folder name exactly.
+rows(){ scr | sed "s/[[:space:]]*\$//"; }
+rowof(){ rows | grep -aE "$1" | head -1 | cut -d"|" -f1; }
+back(){ run lua 'local gui=require("gui") gui.simulateInput(dfhack.gui.getCurViewscreen(), "LEAVESCREEN")' >/dev/null 2>&1; }
 getnum(){ run lua "print(($1))" | grep -aoE '[-]?[0-9]+' | head -1; }
 click_until(){ for t in $(seq 1 ${3:-10}); do scr | grep -qiE "$2" && return 0; click "$1"; sleep 3; done; scr | grep -qiE "$2"; }
 # Kill ONLY the DF on our own port. Killing every non-supervised dwarfort means
@@ -89,9 +95,25 @@ boot)
   # Patience is doubled instead — with several DF instances loading the same save at
   # once each one renders more slowly, and the failure mode of being one poll short is
   # a dead episode, while the extra tries cost nothing on a boot that succeeds.
-  click_until "Continue active game" "Planets of Dawning" 20 || { echo "LOADFAIL:worldlist"; exit 1; }
-  click_until "The Planets of Dawning" "$SAVE" 20             || { echo "LOADFAIL:savelist"; exit 1; }
-  click "$SAVE"
+  # The world was clicked by name and the save by name, and both are ambiguous.
+  # Two of our worlds are both called Thadar Thran, "The Planets of Dawning", so the
+  # name always selected the first and region3-lab in Kar Kodor, "The Dimensions of
+  # Dawn" could never be reached: the walk died with LOADFAIL:savelist. In the save
+  # list "ourfort16" is a prefix of "ourfort16-lab", so the shorter name clicked the
+  # wrong save. Search every world instead and address both entries by exact row.
+  click_until "Continue active game" "World:" 20 || { echo "LOADFAIL:worldlist"; exit 1; }
+
+  saverow(){ rowof "Folder: ${SAVE}\$"; }
+  found=""
+  for wr in $(rows | grep -aE "World:" | cut -d"|" -f1); do
+    click_row "$wr"; sleep 3
+    for t in 1 2 3 4 5; do [ -n "$(saverow)" ] && break; sleep 2; done
+    if [ -n "$(saverow)" ]; then found="$wr"; break; fi
+    back; sleep 3
+    rows | grep -aqE "World:" || click_until "Continue active game" "World:" 10 || true
+  done
+  [ -n "$found" ] || { echo "LOADFAIL:savelist"; exit 1; }
+  click_row "$(saverow)"
   # A perfectly valid save can sit at tick 0 (the 53.16 full-game audit save does).
   # Readiness is map state, not an arbitrary non-zero calendar value.
   for i in $(seq 1 60); do sleep 2; [ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] && break; done
