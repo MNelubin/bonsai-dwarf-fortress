@@ -142,3 +142,81 @@ def test_api_failure_cannot_receive_a_passing_score():
 
 def test_live_deterministic_controller_passes_api_smoke():
     assert evaluation_outcome(True, True, True) == (1.0, "api_smoke_passed", None)
+
+
+def _suite_env(monkeypatch, value: str | None):
+    monkeypatch.setenv("BONSAI_CONTROL_URL", "http://control.invalid")
+    monkeypatch.setenv("BONSAI_LAB_TOKEN", "token")
+    if value is None:
+        monkeypatch.delenv("BONSAI_SUITE", raising=False)
+    else:
+        monkeypatch.setenv("BONSAI_SUITE", value)
+    return EvaluatorConfig.from_env()
+
+
+def test_suite_defaults_to_the_contract_smoke(monkeypatch):
+    assert _suite_env(monkeypatch, None).suite == "v3"
+
+
+def test_suite_reads_bonsai_suite_and_normalises_it(monkeypatch):
+    # The env var was set on the deployed evaluator for weeks while nothing read it,
+    # so the scorer never actually changed and every score stayed near 1.0. Pin the
+    # wiring: the config must carry the value, case- and whitespace-insensitively.
+    assert _suite_env(monkeypatch, "v4").suite == "v4"
+    assert _suite_env(monkeypatch, " V4 ").suite == "v4"
+
+
+class _RecordingApi:
+    def __init__(self):
+        self.phases = []
+
+    def heartbeat(self, job, details):
+        self.phases.append(details["phase"])
+
+
+def test_run_suite_routes_v4_to_the_gameplay_scorer(monkeypatch):
+    # Guards the cutover itself: with suite=v4 the evaluator must call evaluate_job_v4,
+    # hand it the api so the long K-run eval can heartbeat the lease, and must not fall
+    # through to the smoke.
+    import bonsai_lab_agent.evaluator as evaluator
+    from bonsai_lab_agent import game_evaluate
+
+    seen = {}
+
+    def fake_v4(config, job, api=None):
+        seen["v4"] = {"job": job["id"], "api": api}
+        return {"score": 0.42, "verdict": "gameplay", "metrics": []}
+
+    def fake_smoke(config, job):
+        seen["smoke"] = job["id"]
+        return {"score": 1.0, "verdict": "api_smoke_passed", "metrics": []}
+
+    monkeypatch.setattr(game_evaluate, "evaluate_job_v4", fake_v4)
+    monkeypatch.setattr(evaluator, "evaluate_job", fake_smoke)
+
+    api = _RecordingApi()
+    result = evaluator.run_suite(_suite_env(monkeypatch, "v4"), {"id": "job-1"}, api)
+
+    assert "smoke" not in seen
+    assert seen["v4"] == {"job": "job-1", "api": api}
+    assert api.phases == ["gameplay_episodes"]
+    assert result["verdict"] == "gameplay"
+
+
+def test_run_suite_defaults_to_the_smoke_when_the_flag_is_absent(monkeypatch):
+    import bonsai_lab_agent.evaluator as evaluator
+    from bonsai_lab_agent import game_evaluate
+
+    def explode(*args, **kwargs):
+        raise AssertionError("v4 must not run without BONSAI_SUITE=v4")
+
+    def fake_smoke(config, job):
+        return {"score": 1.0, "verdict": "api_smoke_passed", "metrics": []}
+
+    monkeypatch.setattr(game_evaluate, "evaluate_job_v4", explode)
+    monkeypatch.setattr(evaluator, "evaluate_job", fake_smoke)
+
+    api = _RecordingApi()
+    result = evaluator.run_suite(_suite_env(monkeypatch, None), {"id": "job-2"}, api)
+    assert result["verdict"] == "api_smoke_passed"
+    assert api.phases == ["controller_contract"]

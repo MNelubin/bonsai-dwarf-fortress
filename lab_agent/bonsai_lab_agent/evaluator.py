@@ -28,6 +28,10 @@ class EvaluatorConfig:
     controller_timeout_seconds: int
     probe_bin: str
     dfhack_run: str
+    # Which scoring suite to run. "v3" is the API-contract smoke whose arithmetic
+    # always lands near 1.0; "v4" is the statistical gameplay scorer. The flip is one
+    # env var precisely so it can be reverted by unsetting it.
+    suite: str = "v3"
     worker_id: str = "bonsai-evaluator"
 
     @classmethod
@@ -55,6 +59,7 @@ class EvaluatorConfig:
             dfhack_run=os.environ.get(
                 "BONSAI_DFHACK_RUN", "/srv/df-bonsai/current/dfhack-run"
             ),
+            suite=os.environ.get("BONSAI_SUITE", "v3").strip().lower(),
             worker_id=os.environ.get("BONSAI_EVALUATOR_WORKER_ID", "bonsai-evaluator"),
         )
 
@@ -422,12 +427,37 @@ def install_dfhack_state_script(config: EvaluatorConfig) -> Path:
     return target
 
 
+def run_suite(config: EvaluatorConfig, job: dict[str, Any], api: "EvaluatorApi") -> dict[str, Any]:
+    """Pick the scoring suite for one job.
+
+    BONSAI_SUITE=v4 swaps the degenerate contract smoke — whose arithmetic always lands
+    near 1.0 and which its own summary calls "not a 30-day gameplay score" — for the
+    statistical gameplay scorer. This lived only in a doc for weeks: the env var was set
+    on the deployed evaluator while nothing read it, so nothing changed. It is a function
+    rather than a branch inside the poll loop so the routing can be tested directly.
+
+    evaluate_job_v4 is signature-compatible and additionally takes the api, so the long
+    K-run eval can heartbeat the lease between episodes; a gameplay eval runs for minutes
+    where the smoke took seconds, and a silent lease is a lost job.
+    """
+    if config.suite == "v4":
+        from bonsai_lab_agent import game_evaluate
+
+        api.heartbeat(job, {"phase": "gameplay_episodes", "model": "none"})
+        return game_evaluate.evaluate_job_v4(config, job, api=api)
+    api.heartbeat(job, {"phase": "controller_contract", "model": "none"})
+    return evaluate_job(config, job)
+
+
 def main() -> None:
     config = EvaluatorConfig.from_env()
     config.runs_dir.mkdir(parents=True, exist_ok=True)
     state_script = install_dfhack_state_script(config)
     api = EvaluatorApi(config)
-    print(f"Bonsai external evaluator started; state_script={state_script}", flush=True)
+    print(
+        f"Bonsai external evaluator started; suite={config.suite} state_script={state_script}",
+        flush=True,
+    )
     while True:
         job: dict[str, Any] | None = None
         try:
@@ -437,8 +467,7 @@ def main() -> None:
                 time.sleep(config.poll_seconds)
                 continue
             api.worker_heartbeat("running", str(job["id"]), {"phase": "evaluate"})
-            api.heartbeat(job, {"phase": "controller_contract", "model": "none"})
-            result = evaluate_job(config, job)
+            result = run_suite(config, job, api)
             api.complete(job, result)
             api.worker_heartbeat("idle", details={"last_job_id": str(job["id"])})
             print(
