@@ -68,14 +68,43 @@ function adjacent(x, y, z, groups)
     return false
 end
 
+-- Who ultimately holds this item: the unit carrying it or the building it sits in.
+--
+-- Containment NESTS, and asking only about the direct holder missed that. An embark
+-- seed is inside a BAG and the BAG is inside the wagon, so getHolderUnit and
+-- getHolderBuilding both answered nil for all thirty of them. dfhack.items.getPosition
+-- returns nil for the same reason. Walk the container chain instead.
+function holder(item)
+    local cur, depth = item, 0
+    while cur and depth < 16 do
+        depth = depth + 1
+        local u
+        pcall(function() u = dfhack.items.getHolderUnit(cur) end)
+        if u then return u, nil end
+        local b
+        pcall(function() b = dfhack.items.getHolderBuilding(cur) end)
+        if b then return nil, b end
+        local nxt
+        pcall(function() nxt = dfhack.items.getContainer(cur) end)
+        if not nxt then return nil, nil end
+        cur = nxt
+    end
+    return nil, nil
+end
+
+-- Is this item sitting in our own embark wagon? Its contents are the fort's starting
+-- supplies even though DF still marks them as the parent civilisation's property.
+function in_wagon(item)
+    local _, b = holder(item)
+    return b ~= nil and b:getType() == df.building_type.Wagon
+end
+
 -- Where an item effectively IS. One in a dwarf's pack or inside the wagon is at its
--- holder's feet, not at whatever coordinates the item struct still carries.
+-- holder's feet, not at whatever coordinates the item struct still carries: a contained
+-- item keeps the -30000 sentinel in item.pos.
 function item_pos(item)
-    local u
-    pcall(function() u = dfhack.items.getHolderUnit(item) end)
+    local u, b = holder(item)
     if u then return u.pos.x, u.pos.y, u.pos.z end
-    local b
-    pcall(function() b = dfhack.items.getHolderBuilding(item) end)
     if b then return b.centerx, b.centery, b.z end
     return item.pos.x, item.pos.y, item.pos.z
 end
@@ -89,7 +118,13 @@ function item(item, groups)
     if item.flags.dump then return false, 'marked for dumping' end
     if item.flags.removed or item.flags.garbage_collect then return false, 'removed' end
     if item.flags.in_job then return false, 'already claimed by a job' end
-    if item.flags.foreign then return false, 'another civilisation owns it' end
+    -- Embark supplies stay flagged foreign until a dwarf hauls them out of the wagon, so
+    -- a plain foreign test reported a fresh fort as owning nothing at all: 30 seeds, 15
+    -- barrels and 3 logs each came back "another civilisation owns it". Ownership only
+    -- disqualifies an item that is not in our own wagon.
+    if item.flags.foreign and not in_wagon(item) then
+        return false, 'another civilisation owns it'
+    end
     local x, y, z = item_pos(item)
     if adjacent(x, y, z, groups) or tile(x, y, z, groups) then return true end
     return false, string.format('unreachable at %d,%d,%d', x, y, z)

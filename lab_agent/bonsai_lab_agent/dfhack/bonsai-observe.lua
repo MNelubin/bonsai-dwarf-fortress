@@ -52,20 +52,37 @@ pcall(function()
   for _, it in ipairs(w.items.all) do
     local name = tostring(df.item_type[it:getType()])
     if stock[name] ~= nil and not it.flags.rotten then
+      -- Containment nests: an embark seed is in a BAG and the BAG is in the wagon, so
+      -- getHolderBuilding answers nil for it. Ask the chain, or the wagon exception
+      -- below never fires and a fresh fort reports zero of everything it embarked with.
+      local wagon = false
+      if reach then
+        pcall(function() wagon = reach.in_wagon(it) end)
+      else
+        pcall(function()
+          local h = dfhack.items.getHolderBuilding(it)
+          wagon = h ~= nil and h:getType() == df.building_type.Wagon
+        end)
+      end
       local usable = false
       if reach then
         usable = reach.item(it, reach_groups)
       else
         usable = not (it.flags.in_job or it.flags.forbid or it.flags.dump
-                      or it.flags.construction or it.flags.removed or it.flags.foreign)
+                      or it.flags.construction or it.flags.removed
+                      or (it.flags.foreign and not wagon))
       end
       -- An item already consumed by furniture/workshop construction is reachable but
       -- not stock. The embark wagon is the deliberate exception: its contents are the
       -- fort's starting supplies and the dispatcher can claim them directly.
-      if usable then
-        local holder = nil
-        pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
-        if holder and holder:getType() ~= df.building_type.Wagon then usable = false end
+      if usable and not wagon then
+        local holder_bld = nil
+        if reach then
+          pcall(function() local _, b = reach.holder(it); holder_bld = b end)
+        else
+          pcall(function() holder_bld = dfhack.items.getHolderBuilding(it) end)
+        end
+        if holder_bld then usable = false end
       end
       if usable then stock[name] = stock[name] + 1 end
     end
@@ -101,10 +118,15 @@ pcall(function()
     local job = link.item
     if job then
       njobs = njobs + 1
-      local worker_id, by_manager = -1, false
-      pcall(function() worker_id = job.worker_id or -1 end)
+      -- df.job carries no worker_id field; the worker hangs off a general_ref and is
+      -- read with dfhack.job.getWorker. Touching the absent field threw inside the
+      -- pcall, so worker_id stayed -1 and EVERY job counted as unassigned —
+      -- nunassignedjobs always came out equal to njobs. On the mature fort 73 of the
+      -- 115 jobs actually have a worker.
+      local worker, by_manager = nil, false
+      pcall(function() worker = dfhack.job.getWorker(job) end)
       pcall(function() by_manager = job.flags.by_manager or false end)
-      if worker_id < 0 then nunassignedjobs = nunassignedjobs + 1 end
+      if not worker then nunassignedjobs = nunassignedjobs + 1 end
       if by_manager then nmanagerjobs = nmanagerjobs + 1 end
       if job.job_type == df.job_type.CustomReaction
           and tostring(job.reaction_name) == 'BREW_DRINK_FROM_PLANT' then
