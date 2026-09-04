@@ -57,8 +57,17 @@ class DFSession:
     host before) from surviving a crash.
     """
 
-    def __init__(self, *, port: int = 5001, df_dir: str = DF_DIR,
-                 watchdog_seconds: int = 1800, save: str = "bonsaifort2"):
+    def __init__(self, *, port: int | None = None, df_dir: str = DF_DIR,
+                 watchdog_seconds: int = 1800, save: str | None = None):
+        # Port and save come from the environment when the caller does not name them.
+        # score_submission builds its sessions with no arguments, so a hardcoded save
+        # was the only fort the v4 scorer could ever measure — and "bonsaifort2" is a
+        # 53.15 artefact that does not exist under 53.16 (the worlds directory holds
+        # ourfort16* and region3*), which would have failed every episode on boot.
+        # Making it an env knob is also what lets one evaluation run against the fresh
+        # embark and another against the mature save.
+        port = port if port is not None else int(os.environ.get("BONSAI_EPISODE_PORT", "5001"))
+        save = save if save is not None else os.environ.get("BONSAI_EPISODE_SAVE", "bonsaifort2")
         self.port = port
         self.df_dir = df_dir
         self.watchdog_seconds = watchdog_seconds

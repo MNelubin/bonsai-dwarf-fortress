@@ -186,3 +186,23 @@ def test_regime_key_stable_and_sensitive():
     assert k0 != game_scorer.regime_key(**{**base, "df_version": "54.0"})        # engine
     assert k0 != game_scorer.regime_key(
         **{**base, "weights": {"provisioning": 0.5, "comfort": 0.2, "development": 0.3}})  # weights
+
+
+def test_failed_episodes_report_why_not_just_that(monkeypatch):
+    # A bare `except: pass` turned K boot failures into a flat "episode_failed" with
+    # nothing to act on. The reasons now reach the summary.
+    from bonsai_lab_agent import game_scorer, stepped_episode
+
+    def always_fails(*args, **kwargs):
+        raise RuntimeError("boot failed: LOADFAIL:savelist")
+
+    monkeypatch.setattr(stepped_episode, "run_stepped_episode", always_fails)
+    result = game_scorer.score_submission(
+        lambda obs: [], horizon_ticks=3600, k=2,
+        noop_composite=0.267857, ref_composite=0.344119)
+
+    assert result["verdict"] == "episode_failed"
+    assert result["failure_kind"] == "runtime"
+    errors = result["summary"]["episode_errors"]
+    assert len(errors) == 2
+    assert "LOADFAIL:savelist" in errors[0]

@@ -197,3 +197,38 @@ def test_context_manager_kills_even_when_the_episode_raises(fake):
 def test_ansi_colour_is_stripped(fake):
     fake.replies = ["\x1b[32mOBS nsolid=7\x1b[0m"]
     assert S.DFSession().observe()["nsolid"] == "7"
+
+
+def test_session_takes_port_and_save_from_the_environment(monkeypatch):
+    # score_submission constructs DFSession() with no arguments, so before this the v4
+    # scorer could only ever measure one hardcoded fort — and that fort, "bonsaifort2",
+    # is a 53.15 leftover absent from the 53.16 worlds directory, so every episode would
+    # have died on boot. The env knobs are what let one run score the fresh embark and
+    # another the mature save.
+    from bonsai_lab_agent.session import DFSession
+
+    monkeypatch.setenv("BONSAI_EPISODE_PORT", "5008")
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "ourfort16-final")
+    session = DFSession()
+    assert session.port == 5008
+    assert session.save == "ourfort16-final"
+
+
+def test_explicit_session_arguments_beat_the_environment(monkeypatch):
+    from bonsai_lab_agent.session import DFSession
+
+    monkeypatch.setenv("BONSAI_EPISODE_PORT", "5008")
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "ourfort16-final")
+    session = DFSession(port=5005, save="region3-lab")
+    assert session.port == 5005
+    assert session.save == "region3-lab"
+
+
+def test_session_falls_back_to_the_pinned_defaults(monkeypatch):
+    from bonsai_lab_agent.session import DFSession
+
+    monkeypatch.delenv("BONSAI_EPISODE_PORT", raising=False)
+    monkeypatch.delenv("BONSAI_EPISODE_SAVE", raising=False)
+    session = DFSession()
+    assert session.port == 5001
+    assert session.save == "bonsaifort2"

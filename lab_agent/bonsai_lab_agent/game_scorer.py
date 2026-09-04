@@ -188,6 +188,10 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
 
     pairs = []
     controller_stats = []
+    # Why an episode died matters as much as that it did. This used to be a bare pass,
+    # so K boot failures - a stale pinned save, a wedged runtime - arrived as a flat
+    # "episode_failed" with nothing to act on.
+    episode_errors: list[str] = []
     for _ in range(k):
         episode_controller = controller_fn
         controller_handle = None
@@ -199,8 +203,8 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
                 suppress_wildlife=suppress_wildlife,
                 repeat_schema=controller_factory is None,
                 recorder=recorder_factory(len(pairs)) if recorder_factory else None))
-        except Exception:                       # noqa: BLE001 - one bad episode, not the run
-            pass
+        except Exception as exc:                # noqa: BLE001 - one bad episode, not the run
+            episode_errors.append(f"{type(exc).__name__}: {exc}"[:200])
         finally:
             if controller_handle is not None:
                 try:
@@ -246,6 +250,7 @@ def score_submission(controller_fn: Callable[[dict], list[dict]], *,
             "trustworthy": trustworthy, "all_cohort_survived": survived_all,
             "noop_composite": noop_composite, "ref_composite": ref_composite,
             "controller_processes": controller_stats,
+            "episode_errors": episode_errors,
             "scope": "K-run statistical gameplay score on the deterministic dwarf surface",
         },
         "metrics": [
