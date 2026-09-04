@@ -1,20 +1,43 @@
 from __future__ import annotations
 
+import contextlib
+import difflib
 import hashlib
 import importlib.metadata
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+from .probe_guard import ensure_runtime_ready
+from .quality_gate import evaluate_python_quality
+
+
+class GraphBlockedError(RuntimeError):
+    """A bounded graph reached a terminal node and must not retry the same job."""
+
+
+class CodingEditError(ValueError):
+    """A deterministic edit could not be applied and needs a different proposal."""
+
+
+GUARDED_BASH_PERMISSIONS = {
+    "*": "allow",
+    "*dwarfort*": "deny",
+    "*dfhack-run*": "deny",
+    "*/bonsai-df-probe *": "allow",
+}
 
 
 @dataclass(frozen=True)
@@ -26,11 +49,27 @@ class Config:
     baseline_remote: str
     runs_dir: Path
     outbox_dir: Path
+    wip_dir: Path
     poll_seconds: int
     harness_timeout: int
     opencode_bin: str
     opencode_config: Path
     ollama_url: str
+    model_api_style: str
+    model_api_url: str
+    model_reasoning_effort: str
+    context_rollover_tokens: int
+    phase_timeout: int
+    coding_tool_budget: int
+    max_continuations: int
+    validation_repair_attempts: int
+    worker_id: str = "bonsai-lab-agent"
+
+    def __post_init__(self) -> None:
+        if self.model_api_style not in {"ollama", "openai"}:
+            raise ValueError("BONSAI_MODEL_API_STYLE must be ollama or openai")
+        if self.model_reasoning_effort not in {"low", "medium", "high"}:
+            raise ValueError("BONSAI_MODEL_REASONING_EFFORT must be low, medium, or high")
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -45,6 +84,7 @@ class Config:
             ),
             runs_dir=Path(os.environ.get("BONSAI_RUNS_DIR", "/srv/bonsai-agent/runs")),
             outbox_dir=Path(os.environ.get("BONSAI_OUTBOX_DIR", "/srv/bonsai-agent/outbox")),
+            wip_dir=Path(os.environ.get("BONSAI_WIP_DIR", "/srv/bonsai-agent/wip")),
             poll_seconds=int(os.environ.get("BONSAI_POLL_SECONDS", "10")),
             harness_timeout=int(os.environ.get("BONSAI_HARNESS_TIMEOUT", "3600")),
             opencode_bin=os.environ.get("BONSAI_OPENCODE_BIN", "/usr/local/bin/opencode"),
@@ -52,6 +92,24 @@ class Config:
                 os.environ.get("BONSAI_OPENCODE_CONFIG", "/etc/bonsai-agent/opencode.json")
             ),
             ollama_url=os.environ.get("BONSAI_OLLAMA_URL", "http://100.96.0.4:11434").rstrip("/"),
+            model_api_style=os.environ.get("BONSAI_MODEL_API_STYLE", "ollama").strip().lower(),
+            model_api_url=os.environ.get(
+                "BONSAI_MODEL_API_URL",
+                f"{os.environ.get('BONSAI_OLLAMA_URL', 'http://100.96.0.4:11434').rstrip('/')}/api/chat",
+            ).rstrip("/"),
+            model_reasoning_effort=os.environ.get(
+                "BONSAI_MODEL_REASONING_EFFORT", "high"
+            ).strip().lower(),
+            context_rollover_tokens=int(
+                os.environ.get("BONSAI_CONTEXT_ROLLOVER_TOKENS", "55000")
+            ),
+            phase_timeout=int(os.environ.get("BONSAI_PHASE_TIMEOUT", "420")),
+            coding_tool_budget=int(os.environ.get("BONSAI_CODING_TOOL_BUDGET", "24")),
+            max_continuations=int(os.environ.get("BONSAI_MAX_CONTINUATIONS", "1")),
+            validation_repair_attempts=int(
+                os.environ.get("BONSAI_VALIDATION_REPAIR_ATTEMPTS", "2")
+            ),
+            worker_id=os.environ.get("BONSAI_WORKER_ID", "bonsai-lab-agent"),
         )
 
 
@@ -78,6 +136,7 @@ class Api:
             data=data,
             headers={
                 "X-Bonsai-Lab-Token": self.config.lab_token,
+                "X-Bonsai-Worker-Id": self.config.worker_id,
                 "Content-Type": content_type,
             },
         )
@@ -90,7 +149,9 @@ class Api:
             raise RuntimeError(f"control API {exc.code}: {body[:2000]}") from exc
 
     def lease(self) -> dict[str, Any] | None:
-        status, body = self.request("POST", "/api/v1/jobs/lease")
+        status, body = self.request(
+            "POST", "/api/v1/jobs/lease", query={"capability": "agent"}
+        )
         return None if status == 204 else body
 
     def heartbeat(self, job: dict[str, Any], progress: dict[str, Any]) -> None:
@@ -132,11 +193,11 @@ class Api:
             {"lease_token": job["lease_token"]},
         )
 
-    def fail(self, job: dict[str, Any], error: str) -> None:
+    def fail(self, job: dict[str, Any], error: str, retryable: bool = True) -> None:
         self.request(
             "POST",
             f"/api/v1/jobs/{job['id']}/fail",
-            {"error": error[-20_000:], "retryable": True},
+            {"error": error[-20_000:], "retryable": retryable},
             {"lease_token": job["lease_token"]},
         )
 
@@ -163,9 +224,521 @@ def working_tree_paths(repo: Path) -> set[str]:
         paths.update(
             line
             for line in subprocess.check_output(command, text=True).splitlines()
-            if line
+            if line and not is_generated_runtime_path(line)
         )
     return paths
+
+
+def serializable_working_tree_paths(repo: Path) -> list[str]:
+    """Return stable JSON-safe paths for prompts and API payloads."""
+    return sorted(working_tree_paths(repo))
+
+
+def working_tree_fingerprint(repo: Path, prefixes: tuple[str, ...] = ()) -> str:
+    """Hash the current candidate content so phase watchdogs can detect real edits."""
+    digest = hashlib.sha256()
+    for relative in serializable_working_tree_paths(repo):
+        if prefixes and not relative.startswith(prefixes):
+            continue
+        digest.update(relative.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        target = repo / relative
+        if target.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(target).encode("utf-8", errors="surrogateescape"))
+        elif target.is_file():
+            digest.update(b"file\0")
+            with target.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        else:
+            digest.update(b"missing\0")
+    return digest.hexdigest()
+
+
+def working_tree_diff(repo: Path) -> tuple[str, str]:
+    """Return stat and patch text including untracked files without staging them."""
+    untracked = [
+        path
+        for path in subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
+            text=True,
+        ).splitlines()
+        if path and not is_generated_runtime_path(path)
+    ]
+    if untracked:
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "--intent-to-add", "--", *untracked],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    try:
+        diff_stat = subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--stat", "HEAD"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        diff_excerpt = subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--unified=2", "--no-ext-diff", "HEAD"],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    finally:
+        if untracked:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "--mixed", "HEAD", "--", *untracked],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+    return diff_stat, diff_excerpt
+
+
+GENERATED_RUNTIME_PATHS = frozenset(
+    {"errorlog.txt", "gamelog.txt", "stderr.log", "stdout.log"}
+)
+GENERATED_RUNTIME_DIRS = frozenset({".mypy_cache", ".pytest_cache", ".ruff_cache"})
+DF_RUNTIME_ROOT = Path("/srv/df-bonsai")
+SUPERVISED_DF_UNIT = "bonsai-df-runtime.service"
+
+
+def is_generated_runtime_path(relative: str) -> bool:
+    return relative in GENERATED_RUNTIME_PATHS or any(
+        relative == directory or relative.startswith(f"{directory}/")
+        for directory in GENERATED_RUNTIME_DIRS
+    )
+
+
+def cleanup_generated_runtime_files(repo: Path) -> list[str]:
+    """Remove only known untracked validator/DF artifacts in a disposable run clone."""
+    removed: list[str] = []
+    for relative in sorted(GENERATED_RUNTIME_PATHS):
+        target = repo / relative
+        if not target.is_file() or target.is_symlink():
+            continue
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", relative],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if tracked:
+            continue
+        target.unlink()
+        removed.append(relative)
+    for relative in sorted(GENERATED_RUNTIME_DIRS):
+        target = repo / relative
+        if not target.is_dir() or target.is_symlink():
+            continue
+        tracked_files = subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "--", relative], text=True
+        ).strip()
+        if tracked_files:
+            continue
+        shutil.rmtree(target)
+        removed.append(relative)
+    return removed
+
+
+def df_runtime_process_ids(
+    proc_root: Path = Path("/proc"),
+    runtime_root: Path = DF_RUNTIME_ROOT,
+) -> set[int]:
+    """Return exact dwarfort executables rooted under the managed DF installation."""
+    result: set[int] = set()
+    root_text = runtime_root.resolve().as_posix().rstrip("/") + "/"
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return result
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            executable = Path(os.readlink(entry / "exe"))
+        except (FileNotFoundError, OSError, PermissionError):
+            continue
+        if executable.name == "dwarfort" and executable.as_posix().startswith(root_text):
+            result.add(int(entry.name))
+    return result
+
+
+def supervised_df_runtime_process_ids(
+    proc_root: Path = Path("/proc"),
+    runtime_root: Path = DF_RUNTIME_ROOT,
+    service: str = SUPERVISED_DF_UNIT,
+) -> set[int]:
+    """Return managed dwarfort PIDs owned by the supervised systemd cgroup."""
+    protected: set[int] = set()
+    marker = f"/{service}"
+    for pid in df_runtime_process_ids(proc_root, runtime_root):
+        try:
+            cgroup = (proc_root / str(pid) / "cgroup").read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except (FileNotFoundError, OSError, PermissionError):
+            continue
+        if any(line.rstrip().endswith(marker) for line in cgroup.splitlines()):
+            protected.add(pid)
+    return protected
+
+
+def reap_df_probe_processes(grace_seconds: float = 2.0) -> dict[str, Any]:
+    """Terminate leaked DF probe executables, escalating to SIGKILL when required."""
+    protected = supervised_df_runtime_process_ids()
+    targets = sorted(df_runtime_process_ids() - protected - {os.getpid()})
+    for pid in targets:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGTERM)
+    if targets:
+        time.sleep(grace_seconds)
+    survivors: list[int] = []
+    for pid in targets:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        survivors.append(pid)
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    return {"targets": targets, "sigkill": survivors, "protected": sorted(protected)}
+
+
+WIP_AUTO_PATHS = (
+    "knowledge/",
+    "bridge/",
+    "game_runner/",
+    "player/",
+    "skills/",
+    "curricula/",
+    "evaluator_public/",
+    "tests/",
+    "docs/",
+)
+WIP_PROTECTED_PATHS = (
+    ".github/",
+    "control_plane/",
+    "db/",
+    "evaluator_private/",
+    "infra/",
+    "security/",
+    "lab_agent/",
+)
+WIP_MAX_PATCH_BYTES = 32 * 1024 * 1024
+WIP_MAX_UNCHANGED_REPLAYS = 3
+OBJECTIVE_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _safe_wip_path(path: str, job_type: str) -> bool:
+    if not path or "\\" in path or "\x00" in path:
+        return False
+    normalized = PurePosixPath(path)
+    if normalized.is_absolute() or normalized.as_posix() != path:
+        return False
+    if any(part in {"", ".", ".."} for part in normalized.parts):
+        return False
+    if path.startswith(WIP_PROTECTED_PATHS) or not path.startswith(WIP_AUTO_PATHS):
+        return False
+    if job_type == "discovery_cycle":
+        return path.startswith("knowledge/")
+    return not path.startswith("knowledge/")
+
+
+def _wip_files(config: Config, job: dict[str, Any]) -> tuple[Path, Path] | None:
+    objective_id = str(job.get("objective_id") or "")
+    job_type = str(job.get("job_type") or "")
+    if OBJECTIVE_ID.fullmatch(objective_id) is None or job_type not in {
+        "coding_cycle",
+        "discovery_cycle",
+        "research_cycle",
+    }:
+        return None
+    stem = f"{objective_id}.{job_type}"
+    return config.wip_dir / f"{stem}.patch", config.wip_dir / f"{stem}.json"
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _trace_event(trace_path: Path | None, payload: dict[str, Any]) -> None:
+    if trace_path is None:
+        return
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    with trace_path.open("a", encoding="utf-8") as trace:
+        trace.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def persist_cross_job_wip(
+    config: Config,
+    job: dict[str, Any],
+    repo: Path,
+    base_commit: str,
+    phase: str,
+    reason: str,
+    trace_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Persist a safe objective-scoped patch so a later job can resume it."""
+    targets = _wip_files(config, job)
+    if targets is None or not (repo / ".git").is_dir():
+        return None
+    patch_path, metadata_path = targets
+    changed_paths = sorted(working_tree_paths(repo))
+    safe_paths = [path for path in changed_paths if _safe_wip_path(path, str(job["job_type"]))]
+    skipped_paths = [path for path in changed_paths if path not in safe_paths]
+    if not safe_paths:
+        return None
+
+    untracked = set(
+        subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files", "--others", "--exclude-standard"],
+            text=True,
+        ).splitlines()
+    )
+    intent_paths = [path for path in safe_paths if path in untracked]
+    if intent_paths:
+        subprocess.run(
+            ["git", "-C", str(repo), "add", "--intent-to-add", "--", *intent_paths],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    try:
+        patch = subprocess.check_output(
+            [
+                "git", "-C", str(repo), "diff", "--binary", "--full-index", "HEAD", "--",
+                *safe_paths,
+            ]
+        )
+    finally:
+        if intent_paths:
+            subprocess.run(
+                ["git", "-C", str(repo), "reset", "--mixed", "HEAD", "--", *intent_paths],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+    if not patch:
+        return None
+    if len(patch) > WIP_MAX_PATCH_BYTES:
+        raise RuntimeError(f"cross-job WIP patch exceeds {WIP_MAX_PATCH_BYTES} bytes")
+
+    previous: dict[str, Any] = {}
+    if metadata_path.is_file():
+        try:
+            previous = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            previous = {}
+    digest = hashlib.sha256(patch).hexdigest()
+    metadata = {
+        "schema_version": 1,
+        "objective_id": str(job["objective_id"]),
+        "source_job_id": str(job["id"]),
+        "source_base_commit": base_commit,
+        "job_type": str(job["job_type"]),
+        "changed_paths": safe_paths,
+        "skipped_paths": skipped_paths,
+        "phase": phase,
+        "reason": reason[-2000:],
+        "patch_sha256": digest,
+        "patch_bytes": len(patch),
+        "replay_count": (
+            int(previous.get("replay_count") or 0)
+            if previous.get("patch_sha256") == digest
+            else 0
+        ),
+        "updated_at_unix": time.time(),
+    }
+    config.wip_dir.mkdir(parents=True, exist_ok=True)
+    temporary_patch = patch_path.with_name(f".{patch_path.name}.{os.getpid()}.tmp")
+    temporary_patch.write_bytes(patch)
+    os.replace(temporary_patch, patch_path)
+    _write_json_atomic(metadata_path, metadata)
+    event = {
+        "type": "cross_job_wip_stored",
+        "objective_id": metadata["objective_id"],
+        "source_job_id": metadata["source_job_id"],
+        "changed_paths": safe_paths,
+        "skipped_paths": skipped_paths,
+        "patch_sha256": digest,
+        "patch_bytes": len(patch),
+        "phase": phase,
+        "reason": reason[-500:],
+    }
+    _trace_event(trace_path, event)
+    return event
+
+
+def restore_cross_job_wip(
+    config: Config,
+    job: dict[str, Any],
+    repo: Path,
+    trace_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Restore the latest safe WIP for this objective onto a fresh trusted baseline."""
+    targets = _wip_files(config, job)
+    if targets is None:
+        return None
+    patch_path, metadata_path = targets
+    if not patch_path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"status": "invalid_metadata", "error": repr(exc)[-500:]}
+    patch = patch_path.read_bytes()
+    if hashlib.sha256(patch).hexdigest() != metadata.get("patch_sha256"):
+        return {"status": "digest_mismatch", "source_job_id": metadata.get("source_job_id")}
+    changed_paths = metadata.get("changed_paths") or []
+    if not isinstance(changed_paths, list) or not all(
+        isinstance(path, str) and _safe_wip_path(path, str(metadata.get("job_type") or ""))
+        for path in changed_paths
+    ):
+        return {"status": "unsafe_metadata", "source_job_id": metadata.get("source_job_id")}
+
+    reverse = subprocess.run(
+        ["git", "-C", str(repo), "apply", "--reverse", "--check", str(patch_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if reverse.returncode == 0:
+        patch_path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        event = {
+            "type": "cross_job_wip_cleared",
+            "status": "already_in_baseline",
+            "source_job_id": metadata.get("source_job_id"),
+            "changed_paths": changed_paths,
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    if metadata.get("job_type") != job.get("job_type"):
+        event = {
+            "type": "cross_job_wip_deferred",
+            "status": "job_type_mismatch",
+            "stored_job_type": metadata.get("job_type"),
+            "current_job_type": job.get("job_type"),
+            "source_job_id": metadata.get("source_job_id"),
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    replay_count = int(metadata.get("replay_count") or 0)
+    if replay_count >= WIP_MAX_UNCHANGED_REPLAYS:
+        quarantine_dir = config.wip_dir / "quarantine"
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        digest_prefix = str(metadata.get("patch_sha256") or "unknown")[:12]
+        suffix = f"{int(time.time())}-{digest_prefix}"
+        quarantined_patch = quarantine_dir / f"{patch_path.stem}.{suffix}.patch"
+        quarantined_metadata = quarantine_dir / f"{metadata_path.stem}.{suffix}.json"
+        os.replace(patch_path, quarantined_patch)
+        os.replace(metadata_path, quarantined_metadata)
+        event = {
+            "type": "cross_job_wip_quarantined",
+            "status": "quarantined",
+            "reason": "unchanged_replay_limit",
+            "source_job_id": metadata.get("source_job_id"),
+            "changed_paths": changed_paths,
+            "patch_sha256": metadata.get("patch_sha256"),
+            "replay_count": replay_count,
+            "quarantined_patch": str(quarantined_patch),
+            "quarantined_metadata": str(quarantined_metadata),
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    check = subprocess.run(
+        ["git", "-C", str(repo), "apply", "--check", str(patch_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if check.returncode == 0:
+        applied = subprocess.run(
+            ["git", "-C", str(repo), "apply", str(patch_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    else:
+        applied = subprocess.run(
+            ["git", "-C", str(repo), "apply", "--3way", str(patch_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    if applied.returncode != 0:
+        # prepare_run creates a disposable clean clone, so returning it to HEAD is safe.
+        subprocess.run(
+            ["git", "-C", str(repo), "reset", "--hard", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "clean", "-fd"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        event = {
+            "type": "cross_job_wip_conflict",
+            "status": "apply_failed",
+            "source_job_id": metadata.get("source_job_id"),
+            "changed_paths": changed_paths,
+            "error": applied.stdout[-2000:],
+        }
+        _trace_event(trace_path, event)
+        return event
+
+    subprocess.run(
+        ["git", "-C", str(repo), "reset", "--mixed", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    metadata["replay_count"] = int(metadata.get("replay_count") or 0) + 1
+    metadata["last_restored_job_id"] = str(job["id"])
+    metadata["last_restored_at_unix"] = time.time()
+    _write_json_atomic(metadata_path, metadata)
+    event = {
+        "type": "cross_job_wip_restored",
+        "status": "restored",
+        "source_job_id": metadata.get("source_job_id"),
+        "source_base_commit": metadata.get("source_base_commit"),
+        "changed_paths": sorted(working_tree_paths(repo)),
+        "patch_sha256": metadata.get("patch_sha256"),
+        "replay_count": metadata["replay_count"],
+    }
+    _trace_event(trace_path, event)
+    return event
 
 
 def discovery_needs_synthesis(repo: Path) -> bool:
@@ -190,7 +763,7 @@ def discovery_needs_synthesis(repo: Path) -> bool:
 
 
 def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
-    """Detect an OpenCode turn that produced only an immediate stop token."""
+    """Detect an OpenCode turn that produced only an immediate tiny stop response."""
     if not trace_path.is_file():
         return False
     last_finish: dict[str, Any] | None = None
@@ -209,33 +782,1424 @@ def trace_ended_with_degenerate_stop(trace_path: Path) -> bool:
     return (
         part.get("reason") == "stop"
         and isinstance(output_tokens, int)
-        and output_tokens <= 1
+        and output_tokens <= 4
     )
 
 
-def trace_has_live_game_probe(trace_path: Path) -> bool:
-    """Require an actual bounded interaction with the installed DF runtime."""
+def trace_has_live_game_probe(trace_path: Path, phase: str | None = None) -> bool:
+    """Require a completed trusted-wrapper result, optionally within one phase."""
     if not trace_path.is_file():
         return False
-    runtime_markers = ("/srv/df-bonsai/current", "dfhack-run", "dwarfort")
-    execution_markers = ("dfhack-run", "dwarfort", "probe_dfhack")
+    current_phase = "opencode"
     for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if event.get("type") == "harness_phase":
+            current_phase = str(event.get("phase") or "")
+            continue
+        if phase is not None and current_phase != phase:
             continue
         if event.get("type") != "tool_use":
             continue
         part = event.get("part") or {}
         if part.get("tool") != "bash":
             continue
-        tool_input = ((part.get("state") or {}).get("input") or {})
+        state = part.get("state") or {}
+        if state.get("status") != "completed":
+            continue
+        tool_input = state.get("input") or {}
         command = " ".join(str(value) for value in tool_input.values()).lower()
-        if "timeout " in command and any(marker in command for marker in runtime_markers) and any(
-            marker in command for marker in execution_markers
-        ):
-            return True
+        if "bonsai-df-probe" not in command:
+            continue
+        output = str((state.get("metadata") or {}).get("output") or state.get("output") or "")
+        for output_line in output.splitlines():
+            if not output_line.startswith("BONSAI_PROBE_RESULT "):
+                continue
+            try:
+                result = json.loads(output_line.removeprefix("BONSAI_PROBE_RESULT "))
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(result.get("exit"), int)
+                and isinstance(result.get("timed_out"), bool)
+                and result.get("runtime_ready") is True
+            ):
+                return True
     return False
+
+
+def trace_phase_tool_use_count(trace_path: Path, phase: str) -> int:
+    """Count tools only within one harness phase, not across an appended trace."""
+    if not trace_path.is_file():
+        return 0
+    current_phase = "opencode"
+    count = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "harness_phase":
+            current_phase = str(event.get("phase") or "")
+        elif event.get("type") == "tool_use" and current_phase == phase:
+            count += 1
+    return count
+
+
+def trace_latest_input_tokens(trace_path: Path) -> int:
+    """Return the most recent OpenCode step input size for context rollover."""
+    if not trace_path.is_file():
+        return 0
+    latest = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") != "step_finish":
+            continue
+        tokens = ((event.get("part") or {}).get("tokens") or {})
+        input_tokens = tokens.get("input")
+        if isinstance(input_tokens, int):
+            latest = input_tokens
+    return latest
+
+
+def trace_phase_latest_input_tokens(trace_path: Path, phase: str) -> int:
+    """Return the latest input size from only the requested fresh process phase."""
+    if not trace_path.is_file():
+        return 0
+    current_phase = "opencode"
+    latest = 0
+    for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "harness_phase":
+            current_phase = str(event.get("phase") or "")
+            continue
+        if event.get("type") != "step_finish" or current_phase != phase:
+            continue
+        tokens = ((event.get("part") or {}).get("tokens") or {})
+        input_tokens = tokens.get("input")
+        if isinstance(input_tokens, int):
+            latest = input_tokens
+    return latest
+
+
+def compact_phase_checkpoint(
+    repo: Path,
+    trace_path: Path,
+    phase: str,
+    reason: str,
+    previous_error: str = "",
+) -> dict[str, Any]:
+    """Build a deterministic, tool-free handoff for a fresh OpenCode process."""
+    current_phase = "opencode"
+    phase_events: list[dict[str, Any]] = []
+    if trace_path.is_file():
+        for line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "harness_phase":
+                current_phase = str(event.get("phase") or "")
+                continue
+            if current_phase == phase:
+                phase_events.append(event)
+
+    evidence: list[dict[str, str]] = []
+    todo: Any = None
+    for event in phase_events:
+        if event.get("type") != "tool_use":
+            continue
+        part = event.get("part") or {}
+        state = part.get("state") or {}
+        tool_input = state.get("input") or {}
+        if part.get("tool") == "todowrite":
+            todo = tool_input.get("todos")
+        output = str((state.get("metadata") or {}).get("output") or state.get("output") or "")
+        evidence.append(
+            {
+                "tool": str(part.get("tool") or ""),
+                "input": json.dumps(tool_input, ensure_ascii=False)[:1200],
+                "output": output[-1600:],
+            }
+        )
+
+    changed = serializable_working_tree_paths(repo)
+    diff_stat, diff_excerpt = working_tree_diff(repo)
+    return {
+        "from_phase": phase,
+        "stop_reason": reason,
+        "previous_gate_error": previous_error[-4000:],
+        "changed_paths": changed,
+        "diff_stat": diff_stat[-4000:],
+        "diff_excerpt": diff_excerpt[:14000],
+        "todo": todo,
+        "recent_evidence": evidence[-8:],
+        "live_probe_observed": trace_has_live_game_probe(trace_path),
+        "latest_phase_input_tokens": trace_phase_latest_input_tokens(trace_path, phase),
+    }
+
+
+def store_external_checkpoint(
+    repo: Path,
+    trace_path: Path,
+    phase: str,
+    reason: str,
+    previous_error: str = "",
+) -> dict[str, Any]:
+    checkpoint = compact_phase_checkpoint(repo, trace_path, phase, reason, previous_error)
+    checkpoint_path = repo.parent / f"checkpoint-{phase}.json"
+    checkpoint_path.write_text(
+        json.dumps(checkpoint, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    with trace_path.open("a", encoding="utf-8") as trace:
+        trace.write(
+            json.dumps(
+                {
+                    "type": "external_checkpoint",
+                    "phase": phase,
+                    "path": checkpoint_path.name,
+                    "changed_paths": checkpoint["changed_paths"],
+                    "stop_reason": reason,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+    return checkpoint
+
+
+def normalize_coding_whitespace(repo: Path) -> list[str]:
+    """Remove diff-check-only whitespace defects without spending a model turn.
+
+    ``git diff --check`` ignores untracked files, while the promoter checks the
+    resulting commit. Normalizing bounded source/config files before validation
+    keeps the lab and promoter views consistent without changing program logic.
+    """
+    normalized: list[str] = []
+    suffixes = {".py", ".lua", ".json", ".toml", ".yaml", ".yml"}
+    for relative in serializable_working_tree_paths(repo):
+        target = repo / relative
+        if target.suffix.lower() not in suffixes or not target.is_file():
+            continue
+        data = target.read_bytes()
+        if len(data) > 2 * 1024 * 1024 or b"\0" in data:
+            continue
+        newline = b"\r\n" if b"\r\n" in data and data.count(b"\r\n") == data.count(b"\n") else b"\n"
+        lines = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").split(b"\n")
+        while lines and lines[-1] == b"":
+            lines.pop()
+        updated = newline.join(line.rstrip(b" \t") for line in lines)
+        if lines:
+            updated += newline
+        if updated != data:
+            target.write_bytes(updated)
+            normalized.append(relative)
+    return normalized
+
+
+def validate_coding_candidate(repo: Path) -> dict[str, Any]:
+    """Run harness-owned checks after the model's final edit, so evidence cannot be stale."""
+    commands: list[dict[str, Any]] = []
+
+    normalized = normalize_coding_whitespace(repo)
+    commands.append(
+        {
+            "name": "normalize_coding_whitespace",
+            "exit_code": 0,
+            "output": json.dumps({"normalized_paths": normalized}, ensure_ascii=False),
+        }
+    )
+
+    diff_check = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--check"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
+    )
+    commands.append(
+        {"name": "git_diff_check", "exit_code": diff_check.returncode, "output": diff_check.stdout[-8000:]}
+    )
+
+    changed_python = [
+        str(repo / path)
+        for path in serializable_working_tree_paths(repo)
+        if path.endswith(".py") and (repo / path).is_file()
+    ]
+    if changed_python:
+        compile_check = subprocess.run(
+            [sys.executable, "-m", "py_compile", *changed_python],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=120,
+        )
+        commands.append(
+            {"name": "py_compile", "exit_code": compile_check.returncode, "output": compile_check.stdout[-12000:]}
+        )
+
+    targets = [name for name in ("tests", "evaluator_public") if (repo / name).is_dir()]
+    if targets:
+        public_tests = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", *targets],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=300,
+        )
+        commands.append(
+            {"name": "public_pytest", "exit_code": public_tests.returncode, "output": public_tests.stdout[-20000:]}
+        )
+    else:
+        commands.append({"name": "public_pytest", "exit_code": 2, "output": "no public test directory"})
+
+    quality = evaluate_python_quality(
+        repo,
+        "HEAD",
+        serializable_working_tree_paths(repo),
+    )
+    commands.append(
+        {
+            "name": "python_quality_gate",
+            "exit_code": 0 if quality["ok"] else 1,
+            "output": json.dumps(quality, ensure_ascii=False)[-24000:],
+        }
+    )
+
+    return {
+        "ok": all(command["exit_code"] == 0 for command in commands),
+        "commands": commands,
+        "quality": quality,
+    }
+
+
+CODING_CONTEXT_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])((?:bridge|game_runner|player|skills|curricula|tests|"
+    r"evaluator_public)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\."
+    r"(?:py|lua|md|json|toml|yaml|yml))"
+)
+CODING_CONTEXT_SUFFIXES = frozenset({".py", ".lua", ".md", ".json", ".toml", ".yaml", ".yml"})
+CODING_GRAPH_ROOTS = (
+    "bridge/", "game_runner/", "player/", "skills/", "curricula/", "tests/", "evaluator_public/"
+)
+CODING_CONTEXT_MAX_FILE_CHARS = 18_000
+CODING_CONTEXT_MAX_CHARS = 60_000
+
+
+def _normalized_edit_text(value: str) -> str:
+    return "\n".join(line.strip() for line in value.splitlines() if line.strip())
+
+
+def unique_fuzzy_edit_span(
+    current: str, old: str, new: str, path: str
+) -> tuple[int, int, float] | None:
+    """Resolve the uniquely best same-symbol block while preserving validation gates."""
+    if not path.endswith(".py") or len(old) < 80:
+        return None
+    symbol_pattern = (
+        r"(?m)^[ \t]*(?P<kind>class|(?:async[ \t]+)?def)[ \t]+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\(|:)"
+    )
+    symbol = re.search(symbol_pattern, old)
+    if symbol is None:
+        return None
+    kind = "def" if symbol.group("kind").endswith("def") else "class"
+    name = symbol.group("name")
+    replacement_symbol = re.search(symbol_pattern, new)
+    replacement_kind = (
+        "def"
+        if replacement_symbol is not None and replacement_symbol.group("kind").endswith("def")
+        else "class"
+    )
+    if (
+        replacement_symbol is None
+        or replacement_kind != kind
+        or replacement_symbol.group("name") != name
+    ):
+        return None
+    kind_pattern = r"(?:async[ \t]+)?def" if kind == "def" else "class"
+    definitions = list(
+        re.finditer(
+            rf"(?m)^(?P<indent>[ \t]*){kind_pattern}[ \t]+{re.escape(name)}[ \t]*(?:\(|:)",
+            current,
+        )
+    )
+    if not definitions:
+        return None
+    scored: list[tuple[float, int, int]] = []
+    for definition in definitions:
+        start = definition.start()
+        indent_width = len(definition.group("indent").expandtabs(4))
+        end = len(current)
+        remainder = current[definition.end():]
+        for candidate in re.finditer(
+            r"(?m)^(?P<indent>[ \t]*)(?:class|(?:async[ \t]+)?def)[ \t]+",
+            remainder,
+        ):
+            candidate_indent = len(candidate.group("indent").expandtabs(4))
+            if candidate_indent <= indent_width:
+                end = definition.end() + candidate.start()
+                break
+        actual = current[start:end].rstrip()
+        score = difflib.SequenceMatcher(
+            None,
+            _normalized_edit_text(old),
+            _normalized_edit_text(actual),
+            autojunk=False,
+        ).ratio()
+        scored.append((score, start, start + len(actual)))
+    scored.sort(reverse=True)
+    best = scored[0]
+    if best[0] < 0.45 or (len(scored) > 1 and best[0] - scored[1][0] < 0.08):
+        return None
+    return best[1], best[2], best[0]
+
+
+def objective_relevant_source_excerpt(
+    content: str, objective_text: str, limit: int
+) -> str:
+    """Keep exact source around objective-named symbols instead of blind head/tail slices."""
+    if len(content) <= limit:
+        return content
+    identifiers = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", objective_text))
+    definition_names = sorted(
+        name
+        for name in identifiers
+        if re.search(
+            rf"(?m)^[ \t]*(?:class|(?:async[ \t]+)?def)[ \t]+{re.escape(name)}\b",
+            content,
+        )
+    )
+    referenced_names = sorted(
+        name for name in identifiers if "_" in name and name in content
+    )
+    anchors: list[int] = []
+
+    def add_anchor(position: int) -> None:
+        if position >= 0 and all(abs(position - existing) > 200 for existing in anchors):
+            anchors.append(position)
+
+    for name in definition_names:
+        for match in re.finditer(
+            rf"(?m)^[ \t]*(?:class|(?:async[ \t]+)?def)[ \t]+{re.escape(name)}\b",
+            content,
+        ):
+            add_anchor(match.start())
+    for raw_snippet in re.findall(r"`([^`\r\n]{4,240})`", objective_text):
+        snippet = raw_snippet.replace(r'\"', '"').replace(r"\\", "\\")
+        start = 0
+        while len(anchors) < 24:
+            position = content.find(snippet, start)
+            if position < 0:
+                break
+            add_anchor(position)
+            start = position + max(1, len(snippet))
+    for name in referenced_names:
+        start = 0
+        while len(anchors) < 24:
+            position = content.find(name, start)
+            if position < 0:
+                break
+            add_anchor(position)
+            start = position + len(name)
+
+    if not anchors:
+        half = limit // 2
+        return content[:half] + "\n[... bounded context omitted ...]\n" + content[-half:]
+
+    ranges = [(0, min(2_000, len(content)))]
+    ranges.extend(
+        (max(0, anchor - 1_000), min(len(content), anchor + 3_500))
+        for anchor in sorted(anchors)
+    )
+    merged: list[list[int]] = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1] + 120:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    chunks: list[str] = []
+    used = 0
+    marker = "\n[... non-objective source omitted ...]\n"
+    for start, end in merged:
+        allowance = limit - used - (len(marker) if chunks else 0)
+        if allowance <= 0:
+            break
+        chunk = content[start:end][:allowance]
+        if chunks:
+            chunks.append(marker)
+            used += len(marker)
+        chunks.append(chunk)
+        used += len(chunk)
+    return "".join(chunks)
+
+
+def unique_whitespace_edit_span(current: str, old: str) -> tuple[int, int] | None:
+    """Resolve one exact token sequence while tolerating formatting-only whitespace drift."""
+    if not 12 <= len(old) <= 8_000:
+        return None
+    tokens = re.findall(
+        r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|'''
+        r"[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|==|!=|<=|>=|:=|->|[^\s]",
+        old,
+    )
+    if not tokens:
+        return None
+    pattern = r"\s*".join(re.escape(token) for token in tokens)
+    matches = list(re.finditer(pattern, current))
+    if len(matches) != 1:
+        return None
+    return matches[0].span()
+
+
+def unique_minimal_delta_span(
+    current: str, old: str, new: str
+) -> tuple[int, int, str] | None:
+    """Transplant only a small old/new delta when its local anchors are unique."""
+    prefix_length = 0
+    prefix_limit = min(len(old), len(new))
+    while prefix_length < prefix_limit and old[prefix_length] == new[prefix_length]:
+        prefix_length += 1
+    suffix_length = 0
+    suffix_limit = min(len(old) - prefix_length, len(new) - prefix_length)
+    while (
+        suffix_length < suffix_limit
+        and old[len(old) - suffix_length - 1] == new[len(new) - suffix_length - 1]
+    ):
+        suffix_length += 1
+    if prefix_length < 12 or suffix_length < 12:
+        return None
+    old_end = len(old) - suffix_length
+    new_end = len(new) - suffix_length
+    old_delta = old[prefix_length:old_end]
+    new_delta = new[prefix_length:new_end]
+    if not 1 <= len(old_delta) <= 256 or old_delta == new_delta or len(new_delta) > 256:
+        return None
+    prefix = old[:prefix_length]
+    suffix = old[old_end:]
+    for anchor_size in (160, 120, 80, 60, 40, 28, 20, 12):
+        before = prefix[-anchor_size:]
+        after = suffix[:anchor_size]
+        needle = before + old_delta + after
+        positions = [match.start() for match in re.finditer(re.escape(needle), current)]
+        if len(positions) == 1:
+            start = positions[0] + len(before)
+            return start, start + len(old_delta), new_delta
+    return None
+
+
+def select_coding_context(repo: Path, objective: dict[str, Any]) -> dict[str, str]:
+    """Build a bounded, deterministic source packet for a tool-free coding node."""
+    objective_text = json.dumps(objective, ensure_ascii=False)
+    tracked = set(
+        subprocess.check_output(
+            ["git", "-C", str(repo), "ls-files"], text=True, errors="replace"
+        ).splitlines()
+    )
+    selected: list[str] = []
+
+    def add(path: str) -> None:
+        target = repo / path
+        if (
+            path not in selected
+            and path in tracked | working_tree_paths(repo)
+            and target.is_file()
+            and not target.is_symlink()
+            and target.suffix.lower() in CODING_CONTEXT_SUFFIXES
+        ):
+            selected.append(path)
+
+    for path in serializable_working_tree_paths(repo):
+        add(path)
+    for match in CODING_CONTEXT_PATH.finditer(objective_text):
+        add(match.group(1))
+
+    symbols = set(re.findall(r"`([A-Za-z_][A-Za-z0-9_]{3,})`", objective_text))
+    symbols.update(re.findall(r"\b(_[A-Za-z][A-Za-z0-9_]{3,})\b", objective_text))
+    for symbol in sorted(symbols)[:12]:
+        matches = subprocess.run(
+            ["git", "-C", str(repo), "grep", "-l", "-F", "--", symbol],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        if matches.returncode not in {0, 1}:
+            continue
+        for path in matches.stdout.splitlines()[:6]:
+            if path.startswith(WIP_AUTO_PATHS):
+                add(path)
+
+    # Generic objectives often name a capability ("rules-based player", "failure taxonomy")
+    # instead of a concrete symbol or path. Rank tracked editable files by bounded lexical hits so
+    # the tool-free patch node receives implementation sources, not only the WIP test it invented.
+    stop_words = {
+        "after", "already", "before", "bounded", "coding", "cycle", "description",
+        "including", "objective", "previous", "should", "state", "their", "these",
+        "through", "using", "with", "without",
+    }
+    terms = {
+        term
+        for term in re.findall(r"[a-z][a-z0-9_]{3,}", objective_text.lower())
+        if term not in stop_words
+    }
+    lexical_scores: dict[str, int] = {}
+    for term in sorted(terms, key=lambda value: (-len(value), value))[:16]:
+        matches = subprocess.run(
+            ["git", "-C", str(repo), "grep", "-i", "-l", "-F", "--", term],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+        if matches.returncode not in {0, 1}:
+            continue
+        for path in matches.stdout.splitlines()[:24]:
+            if path.startswith(CODING_GRAPH_ROOTS):
+                lexical_scores[path] = lexical_scores.get(path, 0) + 1
+                if term in path.lower():
+                    lexical_scores[path] += 2
+    for path, _score in sorted(
+        lexical_scores.items(), key=lambda item: (-item[1], item[0])
+    )[:8]:
+        add(path)
+
+    stems = {PurePosixPath(path).stem.removeprefix("test_") for path in selected}
+    for path in sorted(tracked):
+        if not path.startswith(("tests/", "evaluator_public/")):
+            continue
+        if any(stem and stem in PurePosixPath(path).stem for stem in stems):
+            add(path)
+    add("knowledge/INDEX.md")
+
+    packet: dict[str, str] = {}
+    remaining = CODING_CONTEXT_MAX_CHARS
+    for path in selected:
+        if remaining <= 0:
+            break
+        content = (repo / path).read_text(encoding="utf-8", errors="replace")
+        if len(content) > CODING_CONTEXT_MAX_FILE_CHARS:
+            content = objective_relevant_source_excerpt(
+                content, objective_text, CODING_CONTEXT_MAX_FILE_CHARS
+            )
+        content = content[:remaining]
+        if content:
+            packet[path] = content
+            remaining -= len(content)
+    return packet
+
+
+def apply_coding_graph_edits(repo: Path, payload: dict[str, Any]) -> list[str]:
+    """Validate exact replacements first, then atomically materialize the graph proposal."""
+    edits = payload.get("edits")
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 20:
+        raise ValueError("coding graph must return between 1 and 20 exact edits")
+    grouped: dict[str, list[tuple[int, str, str, str, str]]] = {}
+    staged: dict[str, str] = {}
+    changed: set[str] = set()
+    visible_file_sha256 = payload.get("_visible_file_sha256", {})
+    if not isinstance(visible_file_sha256, dict):
+        visible_file_sha256 = {}
+    for index, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise ValueError(f"edit {index} is not an object")
+        path = edit.get("path")
+        old = edit.get("old")
+        new = edit.get("new")
+        operation = edit.get("operation")
+        expected_sha256 = edit.get("expected_sha256", "")
+        if not all(isinstance(value, str) for value in (path, old, new)):
+            raise ValueError(f"edit {index} path/old/new must be strings")
+        if operation is None:
+            operation = "legacy_empty" if old == "" else "replace"
+        if operation not in {"replace", "create", "replace_file", "legacy_empty"}:
+            raise ValueError(f"edit {index} has invalid operation: {operation}")
+        if not isinstance(expected_sha256, str):
+            raise ValueError(f"edit {index} expected_sha256 must be a string")
+        assert isinstance(path, str) and isinstance(old, str) and isinstance(new, str)
+        if (
+            not _safe_wip_path(path, "coding_cycle")
+            or not path.startswith(CODING_GRAPH_ROOTS)
+            or Path(path).suffix.lower() not in CODING_CONTEXT_SUFFIXES
+        ):
+            raise ValueError(f"edit {index} has unsafe path: {path}")
+        target = repo / path
+        if target.is_symlink():
+            raise ValueError(f"edit {index} targets a symlink: {path}")
+        grouped.setdefault(path, []).append(
+            (index, operation, old, new, expected_sha256)
+        )
+
+    for path, file_edits in grouped.items():
+        target = repo / path
+        exists = target.is_file()
+        current = target.read_text(encoding="utf-8") if exists else ""
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", "--", path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if not exists:
+            if (
+                len(file_edits) != 1
+                or file_edits[0][1] not in {"create", "legacy_empty"}
+                or file_edits[0][2] != ""
+            ):
+                raise CodingEditError(f"new file requires exactly one create operation: {path}")
+            updated = file_edits[0][3]
+        elif (
+            not tracked
+            and len(file_edits) == 1
+            and file_edits[0][1] in {"create", "legacy_empty"}
+            and file_edits[0][2] == ""
+        ):
+            # Restored WIP can contain malformed new files whose bytes are impossible for
+            # the model to quote exactly. The explicit create operation is also valid here:
+            # relative to the immutable baseline this path is still a new file. Full replacement
+            # remains safe only while untracked.
+            updated = file_edits[0][3]
+        elif len(file_edits) == 1 and file_edits[0][1] == "replace_file":
+            index, _operation, old, new, expected_sha256 = file_edits[0]
+            if old:
+                raise CodingEditError(f"edit {index} replace_file requires empty old: {path}")
+            current_sha256 = hashlib.sha256(current.encode("utf-8")).hexdigest()
+            if not expected_sha256 or expected_sha256 != current_sha256:
+                raise CodingEditError(
+                    f"edit {index} replace_file SHA-256 mismatch for {path}; "
+                    f"expected_sha256 must equal {current_sha256}"
+                )
+            updated = new
+        elif (
+            len(file_edits) == 1
+            and file_edits[0][1] == "create"
+            and file_edits[0][2] == ""
+            and visible_file_sha256.get(path)
+            == hashlib.sha256(current.encode("utf-8")).hexdigest()
+        ):
+            # The controller, not the model, attests that the complete current tracked file was in
+            # this node's source packet. This is equivalent to optimistic replace_file without
+            # asking a weak model to copy a 64-character digest perfectly.
+            updated = file_edits[0][3]
+        else:
+            replacements: list[tuple[int, int, str, int]] = []
+            for index, operation, old, new, _expected_sha256 in file_edits:
+                if operation != "replace" or old == "":
+                    current_sha256 = hashlib.sha256(current.encode("utf-8")).hexdigest()
+                    raise CodingEditError(
+                        f"edit {index} cannot create over existing file {path}; use exact replace, "
+                        f"or replace_file with expected_sha256={current_sha256}"
+                    )
+                occurrences = current.count(old)
+                if occurrences == 0 and new and current.count(new) == 1:
+                    continue  # Idempotent retry of an edit already present in restored WIP.
+                if occurrences == 0:
+                    whitespace_span = unique_whitespace_edit_span(current, old)
+                    if whitespace_span is not None:
+                        replacements.append((*whitespace_span, new, index))
+                        continue
+                    delta_span = unique_minimal_delta_span(current, old, new)
+                    if delta_span is not None:
+                        start, end, replacement = delta_span
+                        replacements.append((start, end, replacement, index))
+                        continue
+                    fuzzy = unique_fuzzy_edit_span(current, old, new, path)
+                    if fuzzy is not None:
+                        start, end, _score = fuzzy
+                        replacements.append((start, end, new, index))
+                        continue
+                if occurrences != 1:
+                    raise ValueError(
+                        f"edit {index} old text occurs {occurrences} times instead of once: {path}"
+                    )
+                start = current.index(old)
+                replacements.append((start, start + len(old), new, index))
+            ordered = sorted(replacements)
+            for left, right in zip(ordered, ordered[1:]):
+                if left[1] > right[0]:
+                    raise ValueError(
+                        f"edits {left[3]} and {right[3]} overlap in current file: {path}"
+                    )
+            updated = current
+            for start, end, new, _index in reversed(ordered):
+                updated = updated[:start] + new + updated[end:]
+        if len(updated.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValueError(f"edits would exceed the 2 MiB file limit: {path}")
+        staged[path] = updated
+        if updated != current:
+            changed.add(path)
+    if not changed:
+        raise ValueError("coding graph proposal does not change any file")
+    for path, content in staged.items():
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    return sorted(changed)
+
+
+def coding_proposal_repair_diagnostics(
+    repo: Path,
+    proposal: dict[str, Any] | None,
+    error: Exception,
+) -> str:
+    """Return bounded state the next patch attempt can actually use to recover."""
+    details: dict[str, Any] = {
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "instruction": (
+            "Return a materially different proposal. For an existing file, either copy a unique "
+            "old snippet exactly or use operation=replace_file with the supplied current_sha256."
+        ),
+        "files": [],
+    }
+    seen: set[str] = set()
+    edits = proposal.get("edits", []) if isinstance(proposal, dict) else []
+    for edit in edits[:20] if isinstance(edits, list) else []:
+        if not isinstance(edit, dict) or not isinstance(edit.get("path"), str):
+            continue
+        path = edit["path"]
+        if path in seen or not _safe_wip_path(path, "coding_cycle"):
+            continue
+        seen.add(path)
+        target = repo / path
+        if not target.is_file() or target.is_symlink():
+            details["files"].append({"path": path, "exists": False})
+            continue
+        current = target.read_text(encoding="utf-8", errors="replace")
+        file_detail: dict[str, Any] = {
+            "path": path,
+            "exists": True,
+            "current_sha256": hashlib.sha256(current.encode("utf-8")).hexdigest(),
+            "current_chars": len(current),
+        }
+        # The exact current bytes are more useful than another blind retry. Keep the whole
+        # small file; for a large file provide deterministic head/tail context and require
+        # an exact localized replacement.
+        if len(current) <= 16_000 and not details["files"]:
+            file_detail["current_content"] = current
+        else:
+            file_detail["current_head"] = current[:4_000]
+            file_detail["current_tail"] = current[-4_000:]
+        details["files"].append(file_detail)
+    return json.dumps(details, ensure_ascii=False)[-24_000:]
+
+
+def coding_graph_decision(repo: Path, validation: dict[str, Any] | None) -> str:
+    """Route solely from durable artifacts and validator output, never chat wording."""
+    if (
+        has_executable_candidate_change(repo)
+        and has_public_test_change(repo)
+        and validation is not None
+        and validation.get("ok") is True
+    ):
+        return "promote"
+    return "draft" if not working_tree_paths(repo) else "repair"
+
+
+def coding_graph_validation_diagnostics(repo: Path, validation: dict[str, Any]) -> str:
+    """Expose validator and graph-routing requirements to the next repair node."""
+    has_implementation = has_executable_candidate_change(repo)
+    has_public_test = has_public_test_change(repo)
+    missing: list[str] = []
+    if not has_implementation:
+        missing.append("missing_executable_change")
+    if not has_public_test:
+        missing.append("missing_public_test_change")
+    payload = {
+        "validator": validation,
+        "routing": {
+            "validator_ok": validation.get("ok") is True,
+            "has_executable_candidate_change": has_implementation,
+            "has_public_test_change": has_public_test,
+            "missing_requirements": missing,
+            "changed_paths": serializable_working_tree_paths(repo),
+            "implementation_roots": [
+                "bridge/",
+                "game_runner/",
+                "player/",
+                "skills/",
+                "curricula/",
+            ],
+            "public_test_roots": ["tests/", "evaluator_public/"],
+        },
+        "instruction": (
+            "Validator success alone is not promotable. Repair every missing routing requirement "
+            "with the smallest objective-relevant change; do not add placeholders or no-op edits."
+            if missing
+            else "The candidate satisfies validator and routing requirements."
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False)[-24_000:]
+
+
+def _coding_context_markdown(packet: dict[str, str]) -> str:
+    return "\n\n".join(
+        f"--- FILE {path} ---\n{content}\n--- END FILE {path} ---"
+        for path, content in packet.items()
+    )
+
+
+def provider_model_id(config: Config) -> str:
+    """Remove the OpenCode provider prefix while preserving namespaced model IDs."""
+    return config.model.split("/", 1)[1] if "/" in config.model else config.model
+
+
+def structured_model_request(
+    config: Config,
+    messages: list[dict[str, str]],
+    schema: dict[str, Any],
+    *,
+    schema_name: str,
+    ollama_num_ctx: int,
+    ollama_num_predict: int,
+    ollama_think: bool = False,
+    reasoning_effort: str | None = None,
+    openai_json_object: bool = False,
+) -> bytes:
+    """Build a provider-specific structured request without limiting K2 output tokens."""
+    if config.model_api_style == "openai":
+        payload: dict[str, Any] = {
+            "model": provider_model_id(config),
+            "stream": False,
+            "reasoning_effort": reasoning_effort or config.model_reasoning_effort,
+            "messages": messages,
+            "response_format": (
+                {"type": "json_object"}
+                if openai_json_object
+                else {
+                    "type": "json_schema",
+                    "json_schema": {"name": schema_name, "strict": True, "schema": schema},
+                }
+            ),
+        }
+    else:
+        payload = {
+            "model": provider_model_id(config),
+            "stream": False,
+            "think": ollama_think,
+            "messages": messages,
+            "format": schema,
+            "options": {
+                "temperature": 0.1,
+                "num_ctx": ollama_num_ctx,
+                "num_predict": ollama_num_predict,
+            },
+        }
+    return json.dumps(payload).encode("utf-8")
+
+
+def model_response_content(config: Config, response_payload: dict[str, Any]) -> str:
+    """Extract final content from Ollama-native or OpenAI-compatible responses."""
+    if config.model_api_style == "openai":
+        choices = response_payload.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise RuntimeError("OpenAI-compatible response has no choices")
+        choice = choices[0]
+        message = choice.get("message")
+    else:
+        choice = {}
+        message = response_payload.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        reasoning = (
+            message.get("reasoning", message.get("reasoning_content", ""))
+            if isinstance(message, dict)
+            else ""
+        )
+        raise RuntimeError(
+            "model response has no message content; "
+            f"finish_reason={choice.get('finish_reason')!r}; "
+            f"reasoning_chars={len(reasoning) if isinstance(reasoning, str) else 0}; "
+            f"usage={response_payload.get('usage')!r}"
+        )
+    return str(message["content"]).strip()
+
+
+def bounded_ollama_chat(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    run_root: Path,
+    phase: str,
+    request_body: bytes,
+    job_started: float,
+    *,
+    curl_bin: str = "/usr/bin/curl",
+) -> bytes:
+    """Run a model request in a killable process with a real wall-clock deadline."""
+    safe_phase = re.sub(r"[^a-zA-Z0-9_.-]+", "-", phase)[:80] or "ollama"
+    request_path = run_root / f".{safe_phase}.request.json"
+    response_path = run_root / f".{safe_phase}.response.json"
+    stderr_path = run_root / f".{safe_phase}.stderr.log"
+    node_timeout = min(max(120, config.phase_timeout), 900)
+    model_api_url = getattr(config, "model_api_url", None)
+    if not model_api_url:
+        model_api_url = f"{config.ollama_url}/api/chat"
+    request_path.write_bytes(request_body)
+    node_started = time.monotonic()
+    process: subprocess.Popen[str] | None = None
+    try:
+        with response_path.open("wb") as response_file, stderr_path.open("wb") as stderr_file:
+            process = subprocess.Popen(
+                [
+                    curl_bin,
+                    "--fail-with-body",
+                    "--silent",
+                    "--show-error",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    str(node_timeout),
+                    "--header",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    f"@{request_path}",
+                    model_api_url,
+                ],
+                stdout=response_file,
+                stderr=stderr_file,
+                text=True,
+                start_new_session=True,
+            )
+            next_heartbeat = node_started + 25
+            while process.poll() is None:
+                now = time.monotonic()
+                if now - node_started >= node_timeout + 15:
+                    stop_process_group(process)
+                    raise TimeoutError(
+                        f"model {phase} exceeded its {node_timeout}-second process deadline"
+                    )
+                if now >= next_heartbeat:
+                    progress = {
+                        "phase": phase,
+                        "model": config.model,
+                        "elapsed_seconds": round(now - job_started),
+                        "node_elapsed_seconds": round(now - node_started),
+                        "node_deadline_seconds": node_timeout,
+                    }
+                    api.heartbeat(job, progress)
+                    api.worker_heartbeat("running", str(job["id"]), progress)
+                    next_heartbeat = now + 25
+                time.sleep(1)
+        return_code = process.returncode
+        if return_code != 0:
+            stderr = stderr_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            response_excerpt = response_path.read_text(
+                encoding="utf-8", errors="replace"
+            )[-4000:]
+            raise RuntimeError(
+                f"model {phase} request failed with curl exit {return_code}: {stderr}; "
+                f"response={response_excerpt}"
+            )
+        if response_path.stat().st_size > 4 * 1024 * 1024:
+            raise RuntimeError(f"model {phase} response exceeded 4 MiB")
+        return response_path.read_bytes()
+    finally:
+        if process is not None and process.poll() is None:
+            stop_process_group(process)
+        request_path.unlink(missing_ok=True)
+        response_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
+
+
+def request_coding_graph_edits(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    objective: dict[str, Any],
+    diagnostics: str,
+    phase: str,
+    started: float,
+    reasoning_effort: str,
+) -> dict[str, Any]:
+    """Run one tool-free model node whose only output is exact controller-applied edits."""
+    context_packet = select_coding_context(repo, objective)
+    diff_stat, diff_excerpt = working_tree_diff(repo)
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "edits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": ["replace", "create", "replace_file"],
+                        },
+                        "path": {"type": "string"},
+                        "old": {"type": "string"},
+                        "new": {"type": "string"},
+                        "expected_sha256": {"type": "string"},
+                    },
+                    "required": ["operation", "path", "old", "new", "expected_sha256"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["summary", "edits"],
+        "additionalProperties": False,
+    }
+    prompt = f"""
+You are the PATCH node in a deterministic coding graph. You have no tools. Produce the smallest
+correct implementation and deterministic public test for the objective using only the supplied source
+packet, current diff, and validator diagnostics. Return schema-valid JSON only.
+
+Choose an explicit operation for every edit:
+- `replace`: `old` must be copied byte-for-byte from the current file and occur exactly once; `new`
+  replaces it; set expected_sha256="".
+- `create`: for a path absent from the immutable baseline. It may already exist in the current diff
+  as restored cross-job WIP; set old="" and expected_sha256="".
+- `replace_file`: only when validator diagnostics supply current_sha256 for an existing file; set
+  old="" and copy that hash into expected_sha256. This is optimistic concurrency protection, not a
+  shortcut for files whose current content you have not received.
+Multiple edits to one file must be
+independent, non-overlapping replacements against the supplied current version. Paths are limited to
+bridge/, game_runner/, player/, skills/, curricula/, tests/, and
+evaluator_public/. Never edit knowledge/, infrastructure, agent/controller code, or generated files.
+Do not return prose instead of edits. Do not weaken tests, add placeholders, swallow errors, or invent
+DFHack APIs. Preserve existing public interfaces unless the objective explicitly changes them.
+
+Objective:
+{json.dumps(objective, ensure_ascii=False)}
+
+Current diff stat:
+{diff_stat[-4000:] or "(clean)"}
+
+Current diff excerpt:
+{diff_excerpt[:20_000] or "(clean)"}
+
+Validator/application diagnostics:
+{diagnostics[-24_000:] or "No candidate exists yet."}
+
+Bounded source packet:
+{_coding_context_markdown(context_packet)}
+""".strip()
+    request_body = structured_model_request(
+        config,
+        [
+            {
+                "role": "system",
+                "content": "You are a precise software patch generator inside a validated state graph.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema,
+        schema_name="coding_graph_edits",
+        ollama_num_ctx=65536,
+        ollama_num_predict=6144,
+        reasoning_effort=reasoning_effort,
+    )
+    _trace_event(
+        repo.parent / "opencode-trace.jsonl",
+        {
+            "type": "coding_graph_node_started",
+            "phase": phase,
+            "reasoning_effort": reasoning_effort,
+            "context_paths": list(context_packet),
+        },
+    )
+    raw = bounded_ollama_chat(
+        config,
+        api,
+        job,
+        repo.parent,
+        phase,
+        request_body,
+        started,
+    )
+    response_payload = json.loads(raw)
+    content = model_response_content(config, response_payload)
+    payload = json.loads(content)
+    visible_file_sha256: dict[str, str] = {}
+    for path, visible_content in context_packet.items():
+        target = repo / path
+        if not target.is_file() or target.is_symlink():
+            continue
+        current = target.read_text(encoding="utf-8", errors="replace")
+        if current == visible_content:
+            visible_file_sha256[path] = hashlib.sha256(current.encode("utf-8")).hexdigest()
+    payload["_visible_file_sha256"] = visible_file_sha256
+    _trace_event(
+        repo.parent / "opencode-trace.jsonl",
+        {
+            "type": "coding_graph_node_completed",
+            "phase": phase,
+            "summary": str(payload.get("summary") or "")[:1000],
+            "proposed_paths": [
+                edit.get("path") for edit in payload.get("edits", []) if isinstance(edit, dict)
+            ],
+        },
+    )
+    return payload
+
+
+def coding_graph_reasoning_effort(
+    config: Config,
+    decision: str,
+    attempt: int,
+    diagnostics: str,
+) -> str:
+    """Keep K2 v2 from spending its entire response budget on hidden reasoning."""
+    if config.model_api_style == "openai" and "K2-Think-v2" in provider_model_id(config):
+        return "low"
+    if decision == "repair" or attempt > 1 or "finish_reason='length'" in diagnostics:
+        return "medium"
+    return config.model_reasoning_effort
+
+
+def coding_validation_safe_for_handoff(validation: dict[str, Any]) -> bool:
+    """Persist syntax-valid bounded WIP so later jobs can repair tests and typing."""
+    commands = {
+        str(command.get("name")): int(command.get("exit_code", 1))
+        for command in validation.get("commands", [])
+        if isinstance(command, dict)
+    }
+    if commands.get("git_diff_check") != 0 or commands.get("py_compile") != 0:
+        return False
+    quality = validation.get("quality")
+    if not isinstance(quality, dict):
+        return False
+    severe_codes = {
+        str(item.get("code"))
+        for item in quality.get("diagnostics", [])
+        if isinstance(item, dict)
+    }
+    return severe_codes.isdisjoint({"SLOP010", "SLOP011"})
+
+
+def run_coding_graph(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    base_commit: str,
+    objective: dict[str, Any],
+    previous_error: str,
+    trace_path: Path,
+    started: float,
+) -> tuple[str, str]:
+    """Execute bounded draft/apply/validate/repair nodes with durable routing state."""
+    diagnostics = previous_error[-12_000:]
+    validation: dict[str, Any] | None = None
+    if working_tree_paths(repo):
+        validation = validate_coding_candidate(repo)
+        diagnostics = coding_graph_validation_diagnostics(repo, validation)
+    decision = coding_graph_decision(repo, validation)
+    previous_proposal_fingerprint: str | None = None
+    for attempt in range(1, 4):
+        if decision == "promote":
+            return "coding_graph_promote", "validated"
+        phase = f"coding_graph_{decision}_{attempt}"
+        progress = {
+            "phase": phase,
+            "model": config.model,
+            "attempt": attempt,
+            "changed_paths": serializable_working_tree_paths(repo),
+        }
+        api.heartbeat(job, progress)
+        api.worker_heartbeat("running", str(job["id"]), progress)
+        proposal: dict[str, Any] | None = None
+        try:
+            proposal = request_coding_graph_edits(
+                config,
+                api,
+                job,
+                repo,
+                objective,
+                diagnostics,
+                phase,
+                started,
+                coding_graph_reasoning_effort(config, decision, attempt, diagnostics),
+            )
+            proposal_fingerprint = hashlib.sha256(
+                json.dumps(proposal, sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            if proposal_fingerprint == previous_proposal_fingerprint:
+                raise CodingEditError(
+                    "model repeated the identical rejected proposal; use the supplied file state "
+                    "and return a materially different edit"
+                )
+            previous_proposal_fingerprint = proposal_fingerprint
+            applied_paths = apply_coding_graph_edits(repo, proposal)
+            validation = validate_coding_candidate(repo)
+            if coding_validation_safe_for_handoff(validation):
+                persist_cross_job_wip(
+                    config, job, repo, base_commit, phase, "graph_edit_applied", trace_path
+                )
+            else:
+                _trace_event(
+                    trace_path,
+                    {
+                        "type": "cross_job_wip_rejected",
+                        "phase": phase,
+                        "reason": "syntax_or_size_gate_failed",
+                        "changed_paths": serializable_working_tree_paths(repo),
+                    },
+                )
+            diagnostics = coding_graph_validation_diagnostics(repo, validation)
+            decision = coding_graph_decision(repo, validation)
+            state = {
+                "schema_version": 1,
+                "phase": phase,
+                "attempt": attempt,
+                "decision": decision,
+                "applied_paths": applied_paths,
+                "changed_paths": serializable_working_tree_paths(repo),
+                "validation": validation,
+            }
+        except Exception as exc:
+            diagnostics = coding_proposal_repair_diagnostics(repo, proposal, exc)
+            decision = "repair" if working_tree_paths(repo) else "draft"
+            proposal_diagnostics: list[dict[str, Any]] = []
+            if isinstance(proposal, dict) and isinstance(proposal.get("edits"), list):
+                for edit in proposal["edits"][:20]:
+                    if not isinstance(edit, dict):
+                        continue
+                    path = edit.get("path")
+                    old = edit.get("old")
+                    new = edit.get("new")
+                    current = ""
+                    if isinstance(path, str) and (repo / path).is_file():
+                        current = (repo / path).read_text(encoding="utf-8", errors="replace")
+                    proposal_diagnostics.append(
+                        {
+                            "path": path,
+                            "old_chars": len(old) if isinstance(old, str) else None,
+                            "new_chars": len(new) if isinstance(new, str) else None,
+                            "exact_occurrences": current.count(old)
+                            if current and isinstance(old, str)
+                            else None,
+                            "old_excerpt": old[:500] if isinstance(old, str) else None,
+                            "new_excerpt": new[:500] if isinstance(new, str) else None,
+                        }
+                    )
+            state = {
+                "schema_version": 1,
+                "phase": phase,
+                "attempt": attempt,
+                "decision": decision,
+                "changed_paths": serializable_working_tree_paths(repo),
+                "error": diagnostics[-4000:],
+                "proposal_diagnostics": proposal_diagnostics,
+            }
+        checkpoint_path = repo.parent / "checkpoint-coding-graph.json"
+        _write_json_atomic(checkpoint_path, state)
+        _trace_event(trace_path, {"type": "coding_graph_transition", **state})
+        if decision == "promote":
+            return phase, "validated"
+    raise GraphBlockedError(
+        "coding graph reached cooldown after three bounded proposals; last diagnostics: "
+        + diagnostics[-6000:]
+    )
+
+
+def finalize_graph_candidate(
+    config: Config,
+    api: Api,
+    job: dict[str, Any],
+    repo: Path,
+    base_commit: str,
+    branch: str,
+    trace_path: Path,
+    started: float,
+    last_phase: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Commit, bundle, and upload a candidate produced by the deterministic graph."""
+    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
+    status = run("git status --porcelain", repo, 30)["output"].strip()
+    if status:
+        persist_cross_job_wip(
+            config, job, repo, base_commit, last_phase, "candidate_ready", trace_path
+        )
+        subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
+        try:
+            commit_title, commit_body = generate_commit_description(config, job, repo)
+        except Exception as exc:
+            print(f"commit description fallback: {exc}", flush=True)
+            commit_title, commit_body = normalize_commit_description({}, str(job["job_type"]))
+        trailers = f"Bonsai-Job-Type: {job['job_type']}\nBonsai-Job-ID: {job['id']}"
+        subprocess.run(
+            [
+                "git", "-C", str(repo), "commit", "-m", commit_title,
+                "-m", commit_body, "-m", trailers,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    candidate_commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    changed = candidate_commit != base_commit
+    changed_paths = (
+        subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{base_commit}..{candidate_commit}"],
+            text=True,
+        ).splitlines()
+        if changed
+        else []
+    )
+    artifacts: list[str] = []
+    if changed:
+        subprocess.run(
+            ["git", "-C", str(repo), "update-ref", f"refs/heads/{branch}", candidate_commit],
+            check=True,
+        )
+        config.outbox_dir.mkdir(parents=True, exist_ok=True)
+        bundle = config.outbox_dir / f"{job['id']}.bundle"
+        subprocess.run(
+            ["git", "-C", str(repo), "bundle", "create", str(bundle), f"refs/heads/{branch}"],
+            check=True,
+        )
+        artifacts.append(api.upload(str(job["id"]), bundle, "application/x-git-bundle"))
+    checkpoint_files = sorted(repo.parent.glob("checkpoint-*.json"))
+    for checkpoint_file in checkpoint_files:
+        artifacts.append(api.upload(str(job["id"]), checkpoint_file, "application/json"))
+    artifacts.append(api.upload(str(job["id"]), trace_path, "application/x-ndjson"))
+    summary = trace_text[-4000:].strip() or "Coding graph completed without textual summary"
+    return (
+        {
+            "summary": summary,
+            "job_type": job["job_type"],
+            "harness": "coding_graph",
+            "model": config.model,
+            "base_commit": base_commit,
+            "candidate_commit": candidate_commit,
+            "branch": branch,
+            "changed": changed,
+            "changed_paths": changed_paths,
+            "candidate_requested": changed,
+            "external_checkpoints": [path.name for path in checkpoint_files],
+            "duration_seconds": round(time.monotonic() - started, 2),
+        },
+        artifacts,
+    )
 
 
 def trace_has_test_execution(trace_path: Path) -> bool:
@@ -298,6 +2262,12 @@ def has_public_test_change(repo: Path) -> bool:
     )
 
 
+def has_executable_candidate_change(repo: Path) -> bool:
+    """Return true only when a coding candidate changes an implementation area."""
+    implementation_roots = ("bridge/", "game_runner/", "player/", "skills/", "curricula/")
+    return any(path.startswith(implementation_roots) for path in working_tree_paths(repo))
+
+
 def normalize_commit_description(payload: dict[str, Any], job_type: str) -> tuple[str, str]:
     """Validate model-authored commit prose and provide deterministic fallbacks."""
     raw_title = str(payload.get("title") or "").replace("\r", " ").replace("\n", " ")
@@ -355,37 +2325,97 @@ Diff stat:
 Diff excerpt:
 {diff_excerpt}
 """.strip()
-    request_body = json.dumps(
-        {
-            "model": config.model.removeprefix("ollama/"),
-            "stream": False,
-            "think": False,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You write precise Git commit messages from supplied diffs.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "format": schema,
-            "options": {"temperature": 0.1, "num_ctx": 32768, "num_predict": 512},
-        }
-    ).encode("utf-8")
+    request_body = structured_model_request(
+        config,
+        [
+            {
+                "role": "system",
+                "content": "You write precise Git commit messages from supplied diffs.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema,
+        schema_name="commit_description",
+        ollama_num_ctx=32768,
+        ollama_num_predict=512,
+        openai_json_object=True,
+    )
     request = urllib.request.Request(
-        f"{config.ollama_url}/api/chat",
+        config.model_api_url,
         method="POST",
         data=request_body,
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(request, timeout=120) as response:
         response_payload = json.loads(response.read(256 * 1024 + 1))
-    content = response_payload.get("message", {}).get("content")
-    if not isinstance(content, str):
-        raise RuntimeError("commit description response has no message content")
+    content = model_response_content(config, response_payload)
     return normalize_commit_description(json.loads(content), str(job["job_type"]))
 
 
 DISCOVERY_NOTE_PATH = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}\.md$")
+DISCOVERY_TRACE_MAX_CHARS = 24_000
+
+
+def compact_discovery_trace(
+    trace_path: Path, max_chars: int = DISCOVERY_TRACE_MAX_CHARS
+) -> str:
+    """Keep bounded research evidence without duplicated OpenCode tool metadata."""
+    compact_lines: list[str] = []
+    for raw_line in trace_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        compact: dict[str, Any] | None = None
+        if event_type == "tool_use":
+            part = event.get("part")
+            if not isinstance(part, dict):
+                continue
+            state = part.get("state")
+            if not isinstance(state, dict):
+                continue
+            raw_input = state.get("input")
+            input_text = json.dumps(raw_input, ensure_ascii=False, default=str)[:2000]
+            output = state.get("output")
+            compact = {
+                "type": "tool_use",
+                "tool": part.get("tool"),
+                "status": state.get("status"),
+                "input": input_text,
+                "output": str(output or "")[-5000:],
+            }
+        elif event_type == "text":
+            part = event.get("part")
+            text = part.get("text") if isinstance(part, dict) else ""
+            if isinstance(text, str) and text.strip():
+                compact = {"type": "text", "text": text[-3000:]}
+        elif event_type in {
+            "runtime_readiness",
+            "harness_warning",
+            "controlled_stop",
+            "external_compaction",
+        }:
+            compact = dict(event)
+            if isinstance(compact.get("output"), str):
+                compact["output"] = compact["output"][-3000:]
+        if compact is not None:
+            compact_lines.append(json.dumps(compact, ensure_ascii=False, default=str))
+
+    selected: list[str] = []
+    used = 0
+    for line in reversed(compact_lines):
+        line_size = len(line) + 1
+        if selected and used + line_size > max_chars:
+            break
+        if not selected and line_size > max_chars:
+            line = line[-max_chars:]
+            line_size = len(line)
+        selected.append(line)
+        used += line_size
+    return "\n".join(reversed(selected))
 
 
 def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
@@ -405,11 +2435,13 @@ def write_discovery_bundle(repo: Path, payload: dict[str, Any]) -> str:
     relative_target = f"dfhack/{note_path}"
     if relative_target not in index_markdown:
         raise ValueError("structured discovery index does not link the focused note")
+    clean_index = "\n".join(line.rstrip() for line in index_markdown.splitlines()).rstrip() + "\n"
+    clean_note = "\n".join(line.rstrip() for line in note_markdown.splitlines()).rstrip() + "\n"
     knowledge = repo / "knowledge"
     focused = knowledge / "dfhack"
     focused.mkdir(parents=True, exist_ok=True)
-    (knowledge / "INDEX.md").write_text(index_markdown.rstrip() + "\n", encoding="utf-8")
-    (focused / note_path).write_text(note_markdown.rstrip() + "\n", encoding="utf-8")
+    (knowledge / "INDEX.md").write_text(clean_index, encoding="utf-8")
+    (focused / note_path).write_text(clean_note, encoding="utf-8")
     return relative_target
 
 
@@ -421,17 +2453,19 @@ def synthesize_discovery(
     trace_path: Path,
     started: float,
 ) -> str:
-    trace_text = trace_path.read_text(encoding="utf-8", errors="replace")[-80_000:]
+    trace_text = compact_discovery_trace(trace_path)
     index_path = repo / "knowledge" / "INDEX.md"
     existing_index = (
-        index_path.read_text(encoding="utf-8", errors="replace")[:20_000]
+        index_path.read_text(encoding="utf-8", errors="replace")[:10_000]
         if index_path.is_file()
         else "(none)"
     )
     schema = {
         "type": "object",
         "properties": {
-            "note_path": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}\\.md$"},
+            # K2 Think v2's API returns HTTP 500 for the JSON Schema `pattern`
+            # keyword. DISCOVERY_NOTE_PATH still enforces this boundary locally.
+            "note_path": {"type": "string"},
             "index_markdown": {"type": "string"},
             "note_markdown": {"type": "string"},
         },
@@ -464,58 +2498,34 @@ Research trace:
 {trace_text}
 ---
 """.strip()
-    request_body = json.dumps(
-        {
-            "model": config.model.removeprefix("ollama/"),
-            "stream": False,
-            "think": False,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a precise technical archivist. Output only schema-valid JSON.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "format": schema,
-            "options": {"temperature": 0.1, "num_ctx": 65536, "num_predict": 4096},
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"{config.ollama_url}/api/chat",
-        method="POST",
-        data=request_body,
-        headers={"Content-Type": "application/json"},
+    request_body = structured_model_request(
+        config,
+        [
+            {
+                "role": "system",
+                "content": "You are a precise technical archivist. Output only schema-valid JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        schema,
+        schema_name="discovery_bundle",
+        ollama_num_ctx=65536,
+        ollama_num_predict=4096,
+        reasoning_effort="medium",
     )
-
-    def fetch() -> bytes:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            return response.read(2 * 1024 * 1024 + 1)
-
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(fetch)
-        while True:
-            try:
-                raw = future.result(timeout=25)
-                break
-            except FutureTimeout:
-                elapsed = round(time.monotonic() - started)
-                if elapsed > config.harness_timeout:
-                    raise TimeoutError(
-                        f"structured synthesis exceeded {config.harness_timeout} seconds"
-                    )
-                progress = {
-                    "phase": "discovery_structured_synthesis",
-                    "model": config.model,
-                    "elapsed_seconds": elapsed,
-                }
-                api.heartbeat(job, progress)
-                api.worker_heartbeat("running", str(job["id"]), progress)
+    raw = bounded_ollama_chat(
+        config,
+        api,
+        job,
+        repo.parent,
+        "discovery_structured_synthesis",
+        request_body,
+        started,
+    )
     if len(raw) > 2 * 1024 * 1024:
         raise RuntimeError("structured discovery response exceeded 2 MiB")
     response_payload = json.loads(raw)
-    content = response_payload.get("message", {}).get("content")
-    if not isinstance(content, str):
-        raise RuntimeError("Ollama structured discovery response has no message content")
+    content = model_response_content(config, response_payload)
     note_target = write_discovery_bundle(repo, json.loads(content))
     elapsed = round(time.monotonic() - started)
     api.heartbeat(job, {"phase": "discovery_structured_write", "model": config.model, "elapsed_seconds": elapsed})
@@ -552,7 +2562,7 @@ def run(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
     }
 
 
-def harness_environment(config: Config) -> dict[str, str]:
+def harness_environment(config: Config, *, implementation_only: bool = False) -> dict[str, str]:
     sensitive_names = {
         "DATABASE_URL",
         "GITHUB_TOKEN",
@@ -579,6 +2589,23 @@ def harness_environment(config: Config) -> dict[str, str]:
             "GIT_TERMINAL_PROMPT": "0",
         }
     )
+    if implementation_only:
+        # Inline config has higher precedence than the global/project config.  A denied
+        # task permission removes the Task tool from the model's tool description, so a
+        # bounded repair phase cannot spend its entire fresh budget on another research
+        # subagent.  Editing, bounded reads, shell commands, and tests remain available.
+        child_env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+            {
+                "permission": {
+                    "bash": GUARDED_BASH_PERMISSIONS,
+                    "task": "deny",
+                    "webfetch": "deny",
+                    "websearch": "deny",
+                    "skill": "deny",
+                    "question": "deny",
+                }
+            }
+        )
     return child_env
 
 
@@ -656,6 +2683,20 @@ def prepare_run(config: Config, job: dict[str, Any]) -> tuple[Path, str, str]:
 def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     repo, base_commit, branch = prepare_run(config, job)
     trace_path = repo.parent / "opencode-trace.jsonl"
+    cross_job_handoff = restore_cross_job_wip(config, job, repo, trace_path)
+    runtime_progress = {"phase": "ensure_runtime_ready", "model": config.model}
+    api.heartbeat(job, runtime_progress)
+    api.worker_heartbeat("running", str(job["id"]), runtime_progress)
+    runtime_readiness = ensure_runtime_ready()
+    _trace_event(
+        trace_path,
+        {"type": "runtime_readiness", "phase": "ensure_runtime_ready", **runtime_readiness},
+    )
+    if runtime_readiness.get("ready") is not True:
+        raise RuntimeError(
+            "supervised Dwarf Fortress runtime is unavailable before LLM execution: "
+            + str(runtime_readiness.get("error") or runtime_readiness.get("output") or "unknown")[-4000:]
+        )
     raw_payload = job.get("payload", {})
     previous_cycle = raw_payload.get("previous_cycle") or {}
     compact_previous = {
@@ -664,6 +2705,7 @@ def execute_job(config: Config, api: Api, job: dict[str, Any]) -> tuple[dict[str
         if key != "summary_tail"
     }
     compact_previous["summary_tail"] = str(previous_cycle.get("summary_tail") or "")[-800:]
+    previous_error = str(previous_cycle.get("error") or "")
     objective_payload = {
         key: value for key, value in raw_payload.items() if key != "previous_cycle"
     }
@@ -679,8 +2721,14 @@ data, or another observable subsystem. Spend at most two calls reading existing 
 three investigative calls must target actual files or processes under /srv/df-bonsai/current or the
 live DF runtime, not this repository.
 
-Run at least one bounded executable probe with `timeout` against a real DF/DFHack entry point, script,
-raw, save, or runtime API. Capture exact stdout/stderr/exit status and extract actual field names,
+Run at least one bounded executable probe through the trusted wrapper, for example:
+`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help lua`.
+Never execute `dwarfort` or `dfhack-run` directly or through shell `timeout`; the game ignores SIGTERM
+and leaked earlier probes. The wrapper ensures the supervised headless runtime is ready before connecting.
+Never run unfiltered `dfhack-run ls`, `tags`, or bare `help`: their output floods the bounded context.
+Use `help <specific-command>`, a focused source read, or a compact Lua probe instead. Repository paths
+are relative to the current worktree (for example `knowledge/INDEX.md`), never absolute `/knowledge/...`.
+Capture the wrapper's BONSAI_PROBE_RESULT, stdout/stderr, and extract field names,
 enum values, IDs, coordinates, ticks, or state transitions. If a game launch is blocked, the failed
 command and its precise blocker are evidence, but `ls`, `file`, or rereading VERSIONS.txt alone are not.
 
@@ -699,6 +2747,9 @@ them. Use at most 4 external discovery calls before the first write/edit.
 
 Prefer executable progress over abstractions: run one bounded probe against the real installed game,
 then turn its observed fields or failure mode into the smallest reusable bridge/probe/runner change.
+All real-runtime commands must use `/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe`; never launch
+`dwarfort`, `dfhack-run`, or a shell `timeout` around them directly.
+The wrapper starts and checks the supervised headless runtime; do not build ad-hoc launch commands.
 If the previous candidate was rejected, repair its exact promotion error before starting new work.
 Do not satisfy the cycle with documentation alone. You MUST modify executable implementation, add or
 update a deterministic test under tests/ or evaluator_public/, and run it. Do not change knowledge/
@@ -709,7 +2760,8 @@ Work autonomously as the senior agent for Bonsai Dwarf Fortress.
 
 Objective payload: {json.dumps(objective_payload, ensure_ascii=False)}
 Constraints: {json.dumps(job.get('constraints', {}), ensure_ascii=False)}
-Compacted previous-cycle handoff: {json.dumps(compact_previous, ensure_ascii=False)}
+Bounded previous-cycle handoff: {json.dumps(compact_previous, ensure_ascii=False)}
+Cross-job working-tree handoff: {json.dumps(cross_job_handoff, ensure_ascii=False)}
 
 You are root inside an isolated Debian LXC containing Steam Dwarf Fortress 53.15 and DFHack
 53.15-r2 at /srv/df-bonsai/current. This repository clone has no GitHub, PostgreSQL, Steam, or
@@ -723,8 +2775,10 @@ read binary content. Do not modify protected control_plane/, db/, evaluator_priv
 security/, .github/, or lab_agent/. Do not add symlinks, submodules, secrets, generated binaries, or
 files over 2 MiB.
 
-Stay in this OpenCode run while working: its built-in context compaction preserves the active task
-when the context grows. Do not abandon the task merely because a response boundary is reached.
+Keep durable progress in the working tree and todo state. If the context grows too large, the harness
+will stop this OpenCode process and continue from that durable state in a fresh bounded phase.
+If the cross-job handoff status is `restored`, begin with `git diff --stat` and finish or repair that
+existing candidate before starting unrelated work. Do not discard a restored diff merely to start over.
 
 {mode_instructions}
 
@@ -735,19 +2789,40 @@ Execution discipline is mandatory:
    extensions such as .lua, .txt, .md, .json, .proto, .py, or .rst. Never use cat/head on an
    executable, shared object, archive, image, database, or extensionless unknown file.
 3. Check `git status --short` before finishing and summarize exact files and verification evidence.
+4. Treat a running/high-CPU process as a timeout, not successful evidence. Only the wrapper's terminal
+   `BONSAI_PROBE_RESULT` proves a bounded probe completed.
 """.strip()
 
     started = time.monotonic()
     last_heartbeat = 0.0
+    requested_wall_time = int((job.get("constraints") or {}).get("wall_time_seconds", config.harness_timeout))
+    job_wall_time = min(config.harness_timeout, max(300, requested_wall_time))
+    def save_checkpoint(phase: str, reason: str) -> dict[str, Any]:
+        checkpoint = store_external_checkpoint(
+            repo, trace_path, phase, reason, previous_error
+        )
+        checkpoint["cross_job_wip"] = persist_cross_job_wip(
+            config, job, repo, base_commit, phase, reason, trace_path
+        )
+        return checkpoint
+
     def run_harness(
         harness_prompt: str,
         phase: str,
         append: bool,
         max_tool_uses: int | None = None,
-    ) -> None:
+        phase_timeout: int | None = None,
+        implementation_only: bool = False,
+        progress_deadline_tools: int | None = None,
+        progress_prefixes: tuple[str, ...] = (),
+        probe_deadline_tools: int | None = None,
+    ) -> str:
         nonlocal last_heartbeat
         budget_exhausted = False
         controlled_stop_reason: str | None = None
+        phase_started = time.monotonic()
+        effective_phase_timeout = phase_timeout or config.phase_timeout
+        initial_fingerprint = working_tree_fingerprint(repo, progress_prefixes)
         command = [
             config.opencode_bin,
             "run",
@@ -756,16 +2831,44 @@ Execution discipline is mandatory:
             "json",
             "--model",
             config.model,
-            harness_prompt,
         ]
+        if config.model_api_style == "openai":
+            command.extend(["--variant", config.model_reasoning_effort])
+        command.append(harness_prompt)
         with trace_path.open("a" if append else "w", encoding="utf-8") as trace:
             if append:
-                trace.write(json.dumps({"type": "harness_phase", "phase": phase}) + "\n")
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "harness_phase",
+                            "phase": phase,
+                            "tool_profile": (
+                                "implementation_only" if implementation_only else "general"
+                            ),
+                        }
+                    )
+                    + "\n"
+                )
                 trace.flush()
+            pre_reap = reap_df_probe_processes()
+            pre_removed = cleanup_generated_runtime_files(repo)
+            trace.write(
+                json.dumps(
+                    {
+                        "type": "runtime_cleanup",
+                        "phase": phase,
+                        "when": "before",
+                        "processes": pre_reap,
+                        "removed_files": pre_removed,
+                    }
+                )
+                + "\n"
+            )
+            trace.flush()
             process = subprocess.Popen(
                 command,
                 cwd=repo,
-                env=harness_environment(config),
+                env=harness_environment(config, implementation_only=implementation_only),
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -776,38 +2879,54 @@ Execution discipline is mandatory:
             try:
                 while process.poll() is None:
                     elapsed = time.monotonic() - started
-                    if elapsed > config.harness_timeout:
+                    phase_elapsed = time.monotonic() - phase_started
+                    if elapsed > job_wall_time:
+                        budget_exhausted = True
+                        controlled_stop_reason = "job_timeout"
+                        stop_process_group(process)
+                        break
+                    if phase_elapsed > effective_phase_timeout:
+                        budget_exhausted = True
+                        controlled_stop_reason = "phase_timeout"
+                        stop_process_group(process)
+                        break
+                    if (
+                        config.context_rollover_tokens > 0
+                        and trace_phase_latest_input_tokens(trace_path, phase)
+                        >= config.context_rollover_tokens
+                    ):
+                        budget_exhausted = True
+                        controlled_stop_reason = "context_rollover"
+                        stop_process_group(process)
+                        break
+                    if trace_path.exists():
+                        tool_uses = trace_phase_tool_use_count(trace_path, phase)
                         if (
-                            not discovery_mode
-                            and working_tree_paths(repo)
-                            and trace_has_live_game_probe(trace_path)
-                            and trace_has_successful_test(trace_path)
+                            probe_deadline_tools is not None
+                            and tool_uses >= probe_deadline_tools
+                            and not trace_has_live_game_probe(trace_path, phase)
                         ):
                             budget_exhausted = True
-                            controlled_stop_reason = "timeout_with_verified_candidate"
+                            controlled_stop_reason = "probe_deadline"
                             stop_process_group(process)
                             break
-                        raise TimeoutError(f"OpenCode exceeded {config.harness_timeout} seconds")
-                    if not discovery_mode and trace_path.exists():
-                        tool_uses = trace_path.read_text(
-                            encoding="utf-8", errors="replace"
-                        ).count('"type":"tool_use"')
                         if (
-                            tool_uses >= 48
-                            and working_tree_paths(repo)
-                            and trace_has_live_game_probe(trace_path)
-                            and trace_has_successful_test(trace_path)
+                            progress_deadline_tools is not None
+                            and tool_uses >= progress_deadline_tools
+                            and working_tree_fingerprint(repo, progress_prefixes)
+                            == initial_fingerprint
                         ):
                             budget_exhausted = True
-                            controlled_stop_reason = "verified_candidate_ready"
+                            controlled_stop_reason = (
+                                "public_test_deadline"
+                                if progress_prefixes
+                                else "edit_deadline"
+                            )
                             stop_process_group(process)
                             break
-                    if max_tool_uses is not None and trace_path.exists():
-                        tool_uses = trace_path.read_text(
-                            encoding="utf-8", errors="replace"
-                        ).count('"type":"tool_use"')
-                        if tool_uses >= max_tool_uses:
+                        if max_tool_uses is not None and tool_uses >= max_tool_uses:
                             budget_exhausted = True
+                            controlled_stop_reason = "tool_budget"
                             stop_process_group(process)
                             break
                     if elapsed - last_heartbeat >= 35:
@@ -826,6 +2945,21 @@ Execution discipline is mandatory:
                 return_code = process.returncode
             finally:
                 stop_process_group(process)
+                post_reap = reap_df_probe_processes()
+                post_removed = cleanup_generated_runtime_files(repo)
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "runtime_cleanup",
+                            "phase": phase,
+                            "when": "after",
+                            "processes": post_reap,
+                            "removed_files": post_removed,
+                        }
+                    )
+                    + "\n"
+                )
+                trace.flush()
         if budget_exhausted:
             with trace_path.open("a", encoding="utf-8") as trace:
                 trace.write(
@@ -839,109 +2973,214 @@ Execution discipline is mandatory:
                     )
                     + "\n"
                 )
-            return
+            return controlled_stop_reason or "tool_budget"
         if return_code != 0:
             trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
             raise RuntimeError(f"OpenCode exited {return_code}: {trace_text[-6000:]}")
+        return "completed"
+
+    if not discovery_mode:
+        last_phase, _last_reason = run_coding_graph(
+            config,
+            api,
+            job,
+            repo,
+            base_commit,
+            objective_payload,
+            previous_error,
+            trace_path,
+            started,
+        )
+        cleanup_generated_runtime_files(repo)
+        if not has_executable_candidate_change(repo):
+            raise GraphBlockedError("coding graph ended without an executable implementation change")
+        if not has_public_test_change(repo):
+            raise GraphBlockedError("coding graph ended without a public test change")
+        final_validation = validate_coding_candidate(repo)
+        if not final_validation["ok"]:
+            raise GraphBlockedError(
+                "coding graph promotion recheck failed: "
+                + json.dumps(final_validation, ensure_ascii=False)[-6000:]
+            )
+        return finalize_graph_candidate(
+            config,
+            api,
+            job,
+            repo,
+            base_commit,
+            branch,
+            trace_path,
+            started,
+            last_phase,
+        )
 
     discovery_tool_budget = min(
         24,
         max(8, int((job.get("constraints") or {}).get("discovery_tool_budget", 16))),
     )
-    run_harness(
+    last_phase = "opencode"
+    last_reason = run_harness(
         prompt,
         "opencode",
-        append=False,
-        max_tool_uses=discovery_tool_budget if discovery_mode else None,
+        append=trace_path.exists(),
+        max_tool_uses=discovery_tool_budget if discovery_mode else config.coding_tool_budget,
+        progress_deadline_tools=None if discovery_mode else 8,
+        probe_deadline_tools=3,
     )
 
     if not trace_has_live_game_probe(trace_path):
+        checkpoint = save_checkpoint(last_phase, last_reason)
         probe_recovery_prompt = f"""
-{prompt}
+You are a fresh bounded RUNTIME-PROBE phase for Bonsai Dwarf Fortress. Do not restart broad repository
+research. The deterministic checkpoint below is the complete handoff from the previous process.
 
-MANDATORY RUNTIME RECOVERY: the preceding run did not execute a live-game probe. Stop reading repository
-documentation. Your next tool call must use `timeout` with the installed runtime under
-`/srv/df-bonsai/current` (for example dfhack-run/dwarfort or the repository's real DFHack probe). Record
-the exact command, exit status, stdout/stderr, and concrete observed game fields, IDs, coordinates, ticks,
-enums, or state transition. Then turn that evidence into executable code plus a public test in coding mode,
-or a new mechanic-specific evidence note in discovery mode. A version listing or `file` command is not a
-probe. Do not finish until this requirement is satisfied or an exact reproducible runtime blocker is shown.
+Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
+
+Your first tool call must run this exact safe readiness probe:
+`/opt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help`.
+Do not invoke `dwarfort`, `dfhack-run`, or shell `timeout` directly. Preserve BONSAI_PROBE_RESULT,
+stdout/stderr, and any concrete fields or blocker. In coding mode, leave useful evidence in the working
+tree only when it directly supports executable implementation. Do not commit.
 """.strip()
-        run_harness(
+        last_phase = "live_game_probe_recovery"
+        last_reason = run_harness(
             probe_recovery_prompt,
-            "live_game_probe_recovery",
+            last_phase,
             append=True,
-            max_tool_uses=8 if discovery_mode else None,
+            max_tool_uses=1,
+            phase_timeout=min(240, config.phase_timeout),
+            implementation_only=True,
+            probe_deadline_tools=1,
         )
 
     if not trace_has_live_game_probe(trace_path):
-        raise RuntimeError(
-            "agent completed without a bounded live Dwarf Fortress runtime probe"
-        )
+        with trace_path.open("a", encoding="utf-8") as trace:
+            trace.write(
+                json.dumps(
+                    {
+                        "type": "harness_warning",
+                        "warning": "live_game_probe_not_observed",
+                        "policy": "soft_after_bounded_recovery",
+                    }
+                )
+                + "\n"
+            )
 
     if discovery_mode and discovery_needs_synthesis(repo):
         synthesize_discovery(config, api, job, repo, trace_path, started)
 
-    if not discovery_mode and trace_ended_with_degenerate_stop(trace_path):
-        changed = working_tree_paths(repo)
-        diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
-        recovery_prompt = f"""
-Continue the interrupted Bonsai Dwarf Fortress CODING job from the existing working tree.
-The prior model turn returned an empty one-token stop immediately after a tool result. Do not restart
-research and do not reread large files. Preserve and finish the current implementation.
-
-Current changed paths: {json.dumps(changed)}
-Current diff stat:
-{diff_stat or "(clean tree)"}
-
-Inspect the narrow diff, complete any unfinished edit, add or update a deterministic public test under
-tests/ or evaluator_public/, and run the relevant tests without a pipe that can hide their exit code.
-Finish only after `git status --short` shows both implementation and test evidence. Do not commit.
-""".strip()
-        run_harness(recovery_prompt, "empty_stop_recovery", append=True, max_tool_uses=24)
-
-    if not discovery_mode and working_tree_paths(repo) and (
-        not has_public_test_change(repo) or not trace_has_successful_test(trace_path)
+    if not discovery_mode and (
+        last_reason != "completed"
+        or trace_ended_with_degenerate_stop(trace_path)
+        or not working_tree_paths(repo)
     ):
-        changed = working_tree_paths(repo)
-        diff_stat = run("git diff --stat", repo, 30)["output"][-4000:]
-        missing = []
-        if not has_public_test_change(repo):
-            missing.append("no changed public test/evaluation file")
-        if not trace_has_successful_test(trace_path):
-            missing.append("no trustworthy successful test output")
-        test_recovery_prompt = f"""
-You are the TEST-AND-FINISH agent for an interrupted Bonsai Dwarf Fortress coding candidate.
-Do not perform broad research and do not replace the implementation. Review the existing narrow diff,
-write the missing deterministic public regression test, run it, fix only failures caused by this candidate,
-and leave all verified changes in the working tree. Never use `pytest | tail` or another pipeline that can
-mask a failing exit code. Do not commit.
+        for continuation_index in range(config.max_continuations):
+            checkpoint = save_checkpoint(last_phase, last_reason)
+            continuation_phase = f"implementation_continuation_{continuation_index + 1}"
+            continuation_prompt = f"""
+You are a fresh IMPLEMENTATION continuation for Bonsai Dwarf Fortress. The previous process has been
+externally compacted. Treat the JSON checkpoint below as its complete handoff; do not reread broad
+documentation or restart research.
 
-Missing gate evidence: {", ".join(missing)}
-Changed paths: {json.dumps(changed)}
-Diff stat:
-{diff_stat}
+Objective: {json.dumps(objective_payload, ensure_ascii=False)}
+Previous promotion error: {previous_error or "none"}
+Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
 
-Before finishing, run `git status --short` and ensure tests/ or evaluator_public/ is changed and the test
-output explicitly reports passed tests with no failures or errors.
+Continue from the existing working tree. If it is clean, implement the smallest executable improvement
+supported by the recorded evidence now. If it contains a partial diff, finish that diff instead of replacing
+it. Modify executable code and a deterministic public test. Run focused verification, check git status, and
+leave changes uncommitted. Your FIRST tool call must edit or write a candidate file; all required task evidence
+and exact target paths are already present above. Do not spend that call on status, reading, grep, or discovery.
 """.strip()
-        run_harness(test_recovery_prompt, "test_recovery", append=True, max_tool_uses=32)
+            last_phase = continuation_phase
+            last_reason = run_harness(
+                continuation_prompt,
+                continuation_phase,
+                append=True,
+                max_tool_uses=config.coding_tool_budget,
+                phase_timeout=min(240, config.phase_timeout),
+                implementation_only=True,
+                progress_deadline_tools=1,
+            )
+            if (
+                working_tree_paths(repo)
+                and last_reason == "completed"
+                and not trace_ended_with_degenerate_stop(trace_path)
+            ):
+                break
+
+    cleanup_generated_runtime_files(repo)
+    if not discovery_mode and not has_executable_candidate_change(repo):
+        save_checkpoint(last_phase, "terminal_no_implementation")
+        raise RuntimeError(
+            "coding cycle produced no executable implementation change after bounded phases"
+        )
 
     if not discovery_mode and working_tree_paths(repo):
+        validation = validate_coding_candidate(repo)
+        with trace_path.open("a", encoding="utf-8") as trace:
+            trace.write(json.dumps({"type": "harness_validation", **validation}) + "\n")
+
+        repair_attempts = min(3, max(1, config.validation_repair_attempts))
+        for repair_index in range(repair_attempts):
+            if has_public_test_change(repo) and validation["ok"]:
+                break
+            checkpoint = save_checkpoint(last_phase, "validation_failed")
+            validation_output = json.dumps(validation, ensure_ascii=False)[-24000:]
+            repair_prompt = f"""
+You are a fresh TEST-AND-REPAIR phase. Do not research or redesign. Repair the existing candidate using
+the exact harness-owned validation result and compact checkpoint below.
+
+Checkpoint: {json.dumps(checkpoint, ensure_ascii=False)}
+Validation: {validation_output}
+Public test changed: {has_public_test_change(repo)}
+
+Fix syntax or test failures, add/update a deterministic public test if missing, and rerun the relevant
+tests. Your FIRST tool call must edit the candidate or its public test. Do not make unrelated changes and
+do not commit.
+""".strip()
+            last_phase = f"validation_repair_{repair_index + 1}"
+            last_reason = run_harness(
+                repair_prompt,
+                last_phase,
+                append=True,
+                max_tool_uses=config.coding_tool_budget,
+                implementation_only=True,
+                progress_deadline_tools=1,
+                progress_prefixes=("tests/", "evaluator_public/") if not has_public_test_change(repo) else (),
+            )
+            validation = validate_coding_candidate(repo)
+            with trace_path.open("a", encoding="utf-8") as trace:
+                trace.write(
+                    json.dumps(
+                        {
+                            "type": "harness_validation",
+                            "repair_attempt": repair_index + 1,
+                            **validation,
+                        }
+                    )
+                    + "\n"
+                )
+
         missing = []
         if not has_public_test_change(repo):
             missing.append("public test/evaluation change")
-        if not trace_has_successful_test(trace_path):
-            missing.append("successful public test execution")
+        if not validation["ok"]:
+            missing.append("fresh harness-owned validation")
         if missing:
+            save_checkpoint(last_phase, "terminal_validation_failed")
             raise RuntimeError(
-                "coding candidate is incomplete after test recovery: missing " + ", ".join(missing)
+                "coding candidate is incomplete after external compaction: missing "
+                + ", ".join(missing)
             )
 
     trace_text = trace_path.read_text(encoding="utf-8", errors="replace")
 
     status = run("git status --porcelain", repo, 30)["output"].strip()
     if status:
+        persist_cross_job_wip(
+            config, job, repo, base_commit, last_phase, "candidate_ready", trace_path
+        )
         subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True)
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1005,6 +3244,9 @@ output explicitly reports passed tests with no failures or errors.
             check=True,
         )
         artifacts.append(api.upload(str(job["id"]), bundle, "application/x-git-bundle"))
+    checkpoint_files = sorted(repo.parent.glob("checkpoint-*.json"))
+    for checkpoint_file in checkpoint_files:
+        artifacts.append(api.upload(str(job["id"]), checkpoint_file, "application/json"))
     artifacts.append(api.upload(str(job["id"]), trace_path, "application/x-ndjson"))
     summary = trace_text[-4000:].strip() or "OpenCode completed without textual summary"
     return (
@@ -1019,6 +3261,7 @@ output explicitly reports passed tests with no failures or errors.
             "changed": changed,
             "changed_paths": changed_paths,
             "candidate_requested": changed,
+            "external_checkpoints": [path.name for path in checkpoint_files],
             "duration_seconds": round(time.monotonic() - started, 2),
         },
         artifacts,
@@ -1029,8 +3272,13 @@ def main() -> None:
     config = Config.from_env()
     config.runs_dir.mkdir(parents=True, exist_ok=True)
     config.outbox_dir.mkdir(parents=True, exist_ok=True)
+    config.wip_dir.mkdir(parents=True, exist_ok=True)
+    startup_reap = reap_df_probe_processes()
     api = Api(config)
-    print(f"Bonsai lab agent started with {config.model}", flush=True)
+    print(
+        f"Bonsai lab agent started with {config.model}; runtime_cleanup={startup_reap}",
+        flush=True,
+    )
     while True:
         job: dict[str, Any] | None = None
         try:
@@ -1046,7 +3294,43 @@ def main() -> None:
             api.worker_heartbeat("idle", details={"last_job_id": str(job["id"])})
             print(f"completed job {job['id']} artifacts={len(artifacts)}", flush=True)
         except Exception as exc:
+            emergency_reap = reap_df_probe_processes()
+            if emergency_reap["targets"]:
+                print(f"reaped DF probes after worker exception: {emergency_reap}", flush=True)
             print(f"job failed: {exc}", flush=True)
+            if job is not None and OBJECTIVE_ID.fullmatch(str(job.get("objective_id") or "")):
+                run_repositories = sorted(
+                    config.runs_dir.glob(f"{job['id']}-*/repo"),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                if run_repositories:
+                    try:
+                        failed_repo = run_repositories[0]
+                        is_coding = str(job.get("job_type") or "") == "coding_cycle"
+                        failed_validation = (
+                            validate_coding_candidate(failed_repo) if is_coding else None
+                        )
+                        if not is_coding or (
+                            failed_validation is not None
+                            and coding_validation_safe_for_handoff(failed_validation)
+                        ):
+                            persist_cross_job_wip(
+                                config,
+                                job,
+                                failed_repo,
+                                str(job.get("base_commit") or ""),
+                                "worker_exception",
+                                repr(exc),
+                                failed_repo.parent / "opencode-trace.jsonl",
+                            )
+                        else:
+                            print(
+                                "discarded unsafe cross-job WIP after syntax/size failure",
+                                flush=True,
+                            )
+                    except Exception as wip_exc:
+                        print(f"failed to persist cross-job WIP: {wip_exc}", flush=True)
             try:
                 api.worker_heartbeat(
                     "error",
@@ -1057,7 +3341,7 @@ def main() -> None:
                 print(f"failed to report worker status: {heartbeat_exc}", flush=True)
             if job is not None:
                 try:
-                    api.fail(job, repr(exc))
+                    api.fail(job, repr(exc), retryable=not isinstance(exc, GraphBlockedError))
                 except Exception as report_exc:
                     print(f"failed to report error: {report_exc}", flush=True)
             time.sleep(config.poll_seconds)

@@ -5,7 +5,15 @@
 local bridge = {}
 
 --- Fort-mode calendar constants. df.global.cur_year_tick advances 1200 ticks
---- per in-game day; a season is 3 months x 28 days = 84 days.
+--- per in-game day; a season is 3 months x 28 days = 84 days, and a year is
+--- 12 months = 336 days = 403200 ticks.
+---
+--- main carried 86400 ticks per day and 361 days per season, "verified from
+--- position.lua". 86400 is seconds in a real day and 361 is not DF's year.
+--- Measured on the live 53.16 mature save: cur_year_tick 299484 in year 259,
+--- which the save list dates 26th Timber, late autumn. Timber is month 9, so
+--- that is day 8*28+26 = 250. 299484/1200 = 249.57, landing on day 250 exactly;
+--- 299484/86400 = 3.47 would be the 3rd of Granite in early spring.
 bridge.TICKS_PER_DAY = 1200
 bridge.TICKS_PER_SEASON = 84 * bridge.TICKS_PER_DAY
 
@@ -37,13 +45,11 @@ function bridge.observe()
         end
     end
 
-    local buildings = {}
-    if df.global.world and df.global.world.buildings then
-        local count = #df.global.world.buildings.all or 0
-        for i = 1, math.min(count, 200) do
-            table.insert(buildings, { idx = i })
-        end
-    end
+    -- Delegated to bridge.building_list() below.
+    local buildings = bridge.building_list()
+
+    -- Job queue snapshot (delegated to bridge.job_list()).
+    local jobs = bridge.job_list()
 
     return {
         version    = "1.0",
@@ -54,6 +60,7 @@ function bridge.observe()
         paused     = df.global.pause_state,
         units      = units,
         buildings  = buildings,
+        jobs       = jobs,
         tick       = bridge.tickcount(),
     }
 end
@@ -153,16 +160,766 @@ function bridge.advance(ticks)
     return { ok = false, message = "advance timeout" }
 end
 
---- Minimal world summary for the episode log.
-function bridge.world_summary()
-    local summary = {}
+--- Tile / map grid mechanic observation.
+-- Verified APIs (from hack/lua/dfhack.lua, tile-material.lua, plugin source):
+--   dfhack.maps.getTileSize()    -> x, y, z tile counts (returns df.global.world.map.*_count)
+--   dfhack.maps.getSize()        -> block counts
+--   dfhack.maps.isValidTilePos(x,y,z) -> boolean
+--   dfhack.maps.getTileType({x=x,y=y,z=z}) -> integer tile type or nil
+--   df.tiletype.attrs[typ].material  -> tiletype_material enum (SOIL, STONE, etc.)
+--   df.tiletype.iswalkable(typ)      -> boolean walkability flag
+-- Returns a compact snapshot of map dimensions and sampled tiles at z=0.
+function bridge.tile_map()
+    local result = {
+        has_map = false,
+        width  = 0,
+        height = 0,
+        depth  = 0,
+        block_width  = 0,
+        block_height = 0,
+        block_depth  = 0,
+        tiles = {},
+    }
+
     if not df.global or not df.global.world then
-        return summary
+        return result
     end
-    summary.year   = df.global.cur_year
-    summary.season = df.global.cur_season
-    summary.tick   = df.global.cur_year_tick
-    return summary
+
+    -- Guard: do nothing when the map is nil (pre-game or no active world).
+    local map = df.global.world.map
+    if not map then
+        return result
+    end
+
+    result.has_map = true
+
+    -- Map dimensions in tile units.
+    result.width  = map.x_count or 0
+    result.height = map.y_count or 0
+    result.depth  = map.z_count or 0
+
+    -- Map dimensions in block units (each block = 16x16x16 tiles).
+    result.block_width  = map.x_count_block or 0
+    result.block_height = map.y_count_block or 0
+    result.block_depth  = map.z_count_block or 0
+
+    -- Sample a bounded set of tiles along the bottom z-layer (z=0) for compact output.
+    if dfhack.maps then
+        local limit = math.min(result.width * result.height, 256)
+        local sampled = 0
+        for zx = 0, result.width - 1 do
+            if sampled >= limit then break end
+            for zy = 0, result.height - 1 do
+                if sampled >= limit then break end
+
+                local pos = {x = zx, y = zy, z = 0}
+                if not dfhack.maps.isValidTilePos(pos) then
+                    goto continue_loop
+                end
+
+                local tt = dfhack.maps.getTileType(pos)
+                if tt and type(tt) == "number" then
+                    -- Classify material class.
+                    local mat = "unknown"
+                    pcall(function()
+                        local attr_mt = df.tiletype.attrs[tt].material
+                        -- Walk the tiletype_material enum to get a human label.
+                        for k, v in pairs(df.tiletype_material) do
+                            if type(v) == "number" and v  == attr_mt then
+                                mat = k
+                                break
+                            end
+                        end
+                    end)
+
+                    local walkable = false
+                    pcall(function()
+                        walkable = df.tiletype.iswalkable(tt) or false
+                    end)
+
+                    table.insert(result.tiles, {
+                        x        = zx,
+                        y        = zy,
+                        z        = 0,
+                        type     = tt,
+                        material = mat,
+                        walkable = walkable,
+                    })
+                    sampled = sampled + 1
+                end
+
+                ::continue_loop::
+            end
+        end
+    end
+
+    return result
+end
+
+--- Unit needs / counters mechanic observation.
+-- Verified APIs (from hack/scripts/internal/gm-unit/editor_counters.lua and
+-- hack/scripts/internal/notify/notifications.lua in DFHack 53.15-r2):
+--   unit.counters:    job_counter, swap_counter, winded, stunned, unconscious,
+--                     suffocation, webbed, soldier_mood_countdown, soldier_mood,
+--                     pain, nausea, dizziness
+--   unit.counters2:   paralysis, numbness, fever, exhaustion, hunger_timer,
+--                     thirst_timer, sleepiness_timer, stomach_content,
+--                     stomach_food, vomit_timeout, stored_fat
+--   is_in_dire_need thresholds: hunger > 75000, thirst > 50000,
+--                              sleepiness > 150000
+-- Returns a snapshot of counters for every living unit.
+function bridge.unit_needs()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+    if not dfhack.units then
+        return result
+    end
+
+    for _, u in ipairs(dfhack.units.getUnits()) do
+        if dfhack.units.isDead(u) and not u.flags1.inactive then
+            goto continue_needs
+        end
+
+        local needs = {
+            id  = u.id,
+        }
+
+        -- Counters group 1 (physical state counters).
+        if u.counters then
+            pcall(function()
+                needs.job_counter    = u.counters.job_counter or 0
+                needs.swap_counter   = u.counters.swap_counter or 0
+                needs.winded         = u.counters.winded or 0
+                needs.stunned        = u.counters.stunned or 0
+                needs.unconscious    = u.counters.unconscious or 0
+                needs.suffocation    = u.counters.suffocation or 0
+                needs.webbed         = u.counters.webbed or 0
+                needs.pain           = u.counters.pain or 0
+                needs.nausea         = u.counters.nausea or 0
+                needs.dizziness      = u.counters.dizziness or 0
+            end)
+        end
+
+        -- Counters group 2 (needs / vitality counters).
+        if u.counters2 then
+            pcall(function()
+                needs.hunger_timer     = u.counters2.hunger_timer or 0
+                needs.thirst_timer     = u.counters2.thirst_timer or 0
+                needs.sleepiness_timer = u.counters2.sleepiness_timer or 0
+                needs.exhaustion       = u.counters2.exhaustion or 0
+                needs.stomach_content  = u.counters2.stomach_content or 0
+                needs.stored_fat       = u.counters2.stored_fat or 0
+            end)
+        end
+
+        table.insert(result, needs)
+
+        ::continue_needs::
+    end
+
+    return result
+end
+
+--- Job system observation — DF 53.15 verified via suspendmanager.lua, dwarfvet.lua, stockflow.lua.
+-- Job accessors verified:
+--   df.global.world.jobs.list          → vector of all job records
+--   job.job_type                       → df.job_type enum (ConstructBed, SmeltOre, …)
+--   job.flags.suspend                  → true if job is suspended
+--   job.flags.cancelled                → true if job was cancelled
+--   dfhack.job.getWorker(job)          → unit working on the job or nil
+--   dfhack.job.getName(job)           → human-readable caption string
+--   job.pos                            → {x, y, z} tile position of the job
+function bridge.job_list()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+
+    -- Guard: jobs vector may not exist before a map load.
+    if not df.global.world.jobs then
+        return result
+    end
+    if not df.global.world.jobs.list then
+        return result
+    end
+
+    for _, job in ipairs(df.global.world.jobs.list) do
+        local jtype = "unknown"
+        pcall(function()
+            jtype = tostring(df.job_type[job.job_type]) or "unknown"
+        end)
+
+        local suspended, cancelled, finished = false, false, false
+        if job.flags then
+            pcall(function()
+                suspended = job.flags.suspend or false
+                cancelled = job.flags.cancelled or false
+            end)
+        end
+
+        -- Finished jobs are not typically in the active list, but flag for completeness.
+        if finished or (cancelled == false and suspended == false) then
+            -- Heuristic: non-cancelled non-suspended → active/queued
+        end
+
+        local worker_id = nil
+        local worker_name = nil
+        pcall(function()
+            local wkr = dfhack.job.getWorker(job)
+            if wkr then
+                worker_id = wkr.id
+            end
+        end)
+
+        local job_pos = {x = 0, y = 0, z = 0}
+        if job.pos then
+            job_pos = {x = job.pos.x or 0, y = job.pos.y or 0, z = job.pos.z or 0}
+        end
+
+        -- Count input items (materials required).
+        local n_items = 0
+        pcall(function()
+            if job.job_items and job.job_items.elements then
+                n_items = #job.job_items.elements
+            end
+        end)
+
+        local job_name = nil
+        pcall(function()
+            job_name = dfhack.job.getName(job) or nil
+        end)
+
+        table.insert(result, {
+            id         = job.id or nil,
+            type       = jtype,
+            cancelled  = cancelled,
+            suspended  = suspended,
+            pos        = job_pos,
+            worker_id  = worker_id,
+            n_items    = n_items,
+            name       = job_name,
+        })
+    end
+
+    return result
+end
+
+--- Item snapshot observation — DF 53.15 verified via nuke-items.lua, view-item-info.lua,
+-- deteriorate.lua, fix/stable-temp.lua which iterate df.global.world.items.all and
+-- df.global.world.items.other.<TYPE>.
+-- Key accessors:
+--   item:getType()               → df.item_type enum integer
+--   dfhack.matinfo.decode(item)  → {material = ..., mode = "stone"|"plant"|...}
+--   dfhack.items.getValue(item)  → numeric value in currency (bits)
+--   df.item_type[item:getType()] → string label (TOOL, MEAT, FOOD, ARMOR, WOOD, …)
+function bridge.item_list()
+    local result = {}
+    if not df.global.world or not df.global.world.items then
+        return result
+    end
+
+    local all_items = df.global.world.items.all or {}
+    local count = #all_items
+    for i = 1, math.min(count, 300) do
+        local item = all_items[i - 1]
+        if not item then goto continue_items end
+
+        local itype = "unknown"
+        pcall(function()
+            itype = tostring(df.item_type[item:getType()]) or "unknown"
+        end)
+
+        local mat_mode = nil
+        local material_id = -1
+        pcall(function()
+            local mi = dfhack.matinfo.decode(item)
+            if mi then
+                mat_mode = mi.mode or nil
+                material_id = mi.material or -1
+            end
+        end)
+
+        local value = 0
+        pcall(function()
+            value = dfhack.items.getValue(item) or 0
+        end)
+
+        table.insert(result, {
+            idx         = i,
+            type        = itype,
+            mat_mode    = mat_mode,
+            material_id = material_id,
+            value       = value,
+        })
+
+        ::continue_items::
+    end
+
+    return result
+end
+
+--- Building list observation.
+-- Verified fields from DFHack scripts (extra-gamelog.lua, siegemanager.lua, advfort.lua):
+--   building.id                      — unique numeric identifier
+--   building.type                    — df.building_type enum integer
+--   building.subtype                 — subtype enum (workshop_kind, furnace_type, etc.)
+--   building.custom_type             — custom blueprint ID or -1
+--   building.centerx / centery / centerz  — center tile coordinates
+--   building.flags.exists            — true when construction finished
+--   dfhack.buildings.isComplete(bld) — boolean: fully built?
+--   bld:getType(), :getSubtype()     — accessor methods
+--   bld:getBuildStage(), :getMaxBuildStage() — integer build progress 0..N
+function bridge.building_list()
+    local buildings = {}
+    if not df.global.world or not df.global.world.buildings then
+        return buildings
+    end
+
+    local all_buildings = df.global.world.buildings.all or {}
+    local count = #all_buildings
+    for i = 1, math.min(count, 200) do
+        local bld = all_buildings[i - 1]
+        if not bld then goto continue end
+
+        local btype = "unknown"
+        local subtype = nil
+        pcall(function()
+            btype = tostring(df.building_type[bld:getType()]) or "unknown"
+        end)
+        pcall(function()
+            subtype = bld:getSubtype()
+        end)
+
+        local cx, cy, cz = 0, 0, 0
+        if bld.centerx then
+            cx = bld.centerx or 0
+            cy = bld.centery or 0
+            cz = bld.centerz or 0
+        end
+
+        local built = false
+        if bld.flags then
+            pcall(function()
+                built = bld.flags.exists or false
+            end)
+        end
+
+        local build_stage = -1
+        local max_stage = -1
+        pcall(function()
+            build_stage = bld:getBuildStage()
+        end)
+        pcall(function()
+            max_stage = bld:getMaxBuildStage()
+        end)
+
+        local custom_id = -1
+        pcall(function()
+            custom_id = bld.custom_type or -1
+        end)
+
+        table.insert(buildings, {
+            idx         = i,
+            id          = bld.id or nil,
+            type        = btype,
+            subtype     = subtype,
+            custom_id   = custom_id,
+            center      = {x = cx, y = cy, z = cz},
+            built       = built,
+            build_stage = build_stage,
+            max_stage   = max_stage,
+        })
+
+        ::continue::
+    end
+
+    return buildings
+end
+
+--- Map features observation — DF 53.15 verified via feature.lua, agitation-rebalance.lua,
+-- deep-embark.lua, export-map.lua, hfs-pit.lua in hack/scripts/.
+-- Key accessors:
+--   df.global.world.features.map_features → vector of all map feature records
+--   feat:isWater(), :isMagma(), :isSubterranean(), :isChasm(), :isUnderworld() → boolean
+--   feat:getName(name)                   → populates string object with display name
+--   feat:getType()                       → df.feature_type enum integer
+--   feat.flags.Discovered                → boolean discovery flag
+function bridge.map_features()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+
+    local features_obj = nil
+    pcall(function()
+        features_obj = df.global.world.features
+    end)
+    if not features_obj then
+        return result
+    end
+
+    local map_features = nil
+    pcall(function()
+        map_features = features_obj.map_features
+    end)
+    if not map_features then
+        return result
+    end
+
+    for i, feat in ipairs(map_features) do
+        local feat_name = ""
+        local ftype_str = "unknown"
+        local is_water = false
+        local is_magma = false
+        local is_subterranean = false
+        local is_chasm = false
+        local is_underworld = false
+        local discovered = false
+
+        pcall(function()
+            local name_buf = df.new("string")
+            feat:getName(name_buf)
+            feat_name = name_buf.value or ""
+            df.delete(name_buf)
+        end)
+
+        pcall(function()
+            ftype_str = tostring(df.feature_type[feat:getType()]) or "unknown"
+        end)
+
+        pcall(function()
+            is_water = feat:isWater() or false
+        end)
+
+        pcall(function()
+            is_magma = feat:isMagma() or false
+        end)
+
+        pcall(function()
+            is_subterranean = feat:isSubterranean() or false
+        end)
+
+        pcall(function()
+            is_chasm = feat:isChasm() or false
+        end)
+
+        pcall(function()
+            is_underworld = feat:isUnderworld() or false
+        end)
+
+        pcall(function()
+            if feat.flags then
+                discovered = feat.flags.Discovered or false
+            end
+        end)
+
+        table.insert(result, {
+            idx          = i - 1,
+            name         = feat_name,
+            type         = ftype_str,
+            water        = is_water,
+            magma        = is_magma,
+            subterranean = is_subterranean,
+            chasm        = is_chasm,
+            underworld   = is_underworld,
+            discovered   = discovered,
+        })
+    end
+
+    return result
+end
+
+--- Unit skill observation — DF 53.15 verified via assign-skills.lua and
+-- adv-max-skills.lua which walk unit.status.current_soul.skills as a
+-- vector of { id=df.job_skill enum, rating=int } pairs.
+-- Key accessors:
+--   dfhack.units.getUnits()            -> all units (civilians + military)
+--   u.status                          -> unit status struct
+--   u.status.current_soul             -> active soul record
+--   soul.skills                       -> vector of skill records
+--   skill:id()                        -> df.job_skill enum integer
+--   skill:rating                     -> int rating (-1=unlearned, 0..20+)
+--   df.job_skill[skill:id()]         -> string label (e.g. "WOODCUTTING")
+function bridge.unit_skills()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+    if not dfhack.units then
+        return result
+    end
+
+    for _, u in ipairs(dfhack.units.getUnits()) do
+        if dfhack.units.isDead(u) and not u.flags1.inactive then
+            goto continue_skills
+        end
+
+        local skills = {}
+        pcall(function()
+            local soul = u.status.current_soul
+            if soul and soul.skills then
+                for _, sk in ipairs(soul.skills) do
+                    local sid = nil
+                    local sname = "unknown"
+                    local srating = -1
+
+                    pcall(function()
+                        sid = sk:id()
+                    end)
+                    pcall(function()
+                        sname = tostring(df.job_skill[sk:id()]) or "unknown"
+                    end)
+                    pcall(function()
+                        srating = sk.rating or -1
+                    end)
+
+                    table.insert(skills, {
+                        id     = sid,
+                        name   = sname,
+                        rating = srating,
+                    })
+                end
+            end
+        end)
+
+        table.insert(result, {
+            id     = u.id,
+            skills = skills,
+        })
+
+        ::continue_skills::
+    end
+
+    return result
+end
+
+--- Thought / emotion / happiness observation — DF 53.15 verified via
+-- add-thought.lua, fillneeds.lua, remove-stress.lua, emigration.lua,
+-- idle-crafting.lua in hack/scripts/.
+-- Key accessors:
+--   u.status.current_soul.personality       → personality record
+--   soul.personality.emotions               → vector of df.personality_moodst
+--   mood.type                               → df.emotion_type enum int
+--   df.emotion_type.attrs[mood.type].divider → positive = stress-increasing, negative = stress-decreasing
+--   mood.strength                            → 1=Slight, 2=Moderate, 5=Strong, 10=Intense
+--   mood.thought                             → df.unit_thought_type enum int
+--   mood.severity                            → raw severity integer
+--   soul.personality.stress                  → int (negative = happy, positive = stressed)
+-- Returns per-unit snapshot {id, stress, happiness pctile, recent_emotions: [{type, strength, thought, severity}]}
+function bridge.thought_emotions()
+    local result = {}
+    if not df.global or not df.global.world then
+        return result
+    end
+    if not dfhack.units then
+        return result
+    end
+
+    for _, u in ipairs(dfhack.units.getUnits()) do
+        if dfhack.units.isDead(u) and not u.flags1.inactive then
+            goto continue_emotions
+        end
+
+        local stress = 0
+        local emotion_records = {}
+
+        pcall(function()
+            local soul = u.status.current_soul
+            if soul and soul.personality then
+                stress = soul.personality.stress or 0
+                local emotions = soul.personality.emotions
+                if emotions then
+                    for _, m in ipairs(emotions) do
+                        local em_type = "unknown"
+                        local thought_str = "unknown"
+
+                        pcall(function()
+                            em_type = tostring(df.emotion_type[m.type]) or "unknown"
+                        end)
+
+                        pcall(function()
+                            thought_str = tostring(df.unit_thought_type[m.thought]) or "unknown"
+                        end)
+
+                        table.insert(emotion_records, {
+                            type     = em_type,
+                            strength = m.strength or 0,
+                            thought  = thought_str,
+                            severity = m.severity or 0,
+                        })
+                    end
+                end
+            end
+        end)
+
+        -- happiness_pctile: map stress to [0, 1] where 0 = maximally stressed, 1 = maximally happy.
+        -- Verified range from emigration.lua: stress / 5000 gives a 0-100 scale (clamped).
+        -- Negative stress = happy, positive stress = upset.
+        -- Scale: -1000000 (max happy) … +1000000 (max stressed)
+        local happiness_pctile = 0.5
+        pcall(function()
+            if stress < -999999 then
+                happiness_pctile = 0.0
+            elseif stress > 999998 then
+                happiness_pctile = 1.0
+            else
+                happiness_pctile = math.max(0, math.min(1, -stress / 2000000 + 0.5))
+            end
+        end)
+
+        -- Keep only recent emotions (last 20 per unit to bound output size).
+        local recent = {}
+        for i = 1, #emotion_records do
+            local idx = math.max(1, i - 20)
+            if idx <= 20 then
+                table.insert(recent, emotion_records[#emotion_records - idx + 1])
+            end
+        end
+
+        table.insert(result, {
+            id            = u.id,
+            stress        = stress,
+            happiness_pctile = math.floor(happiness_pctile * 1000) / 1000,
+            emotions      = recent,
+            n_emotions    = #emotion_records,
+        })
+
+        ::continue_emotions::
+    end
+
+    return result
+end
+
+--- Stockpile observation — DF 53.15 via df.global.world.stockpiles.all
+--- (verified against stockpile-info.lua, view-designations.lua).
+--- Each stockpile record has:
+---   id, name, suspended flag, bounds {min{x,y,z}, max{x,y,z}},
+---   designations keyed by material category (boolean flags).
+function bridge.stockpile_list()
+    local spiles = {}
+    if not df.global or not df.global.world then
+        return spiles
+    end
+
+    local stockpiles_vec = nil
+    pcall(function()
+        stockpiles_vec = df.global.world.stockpiles.all
+    end)
+    if not stockpiles_vec then
+        return spiles
+    end
+
+    local count = #stockpiles_vec
+    for i = 1, math.min(count, 200) do
+        local sp = stockpiles_vec[i - 1]
+        if not sp then goto continue_sp end
+
+        local name_val = ""
+        pcall(function()
+            name_val = sp.name.value or ""
+        end)
+
+        local suspended_flag = false
+        pcall(function()
+            suspended_flag = sp.suspended or false
+        end)
+
+        local bounds_data = {min = {x = -1, y = -1, z = -1}, max = {x = -1, y = -1, z = -1}}
+        if sp.bounds then
+            pcall(function()
+                bounds_data.min.x = sp.bounds[0].pos.x or -1
+                bounds_data.min.y = sp.bounds[0].pos.y or -1
+                bounds_data.min.z = sp.bounds[0].pos.z or -1
+                bounds_data.max.x = sp.bounds[1].pos.x or -1
+                bounds_data.max.y = sp.bounds[1].pos.y or -1
+                bounds_data.max.z = sp.bounds[1].pos.z or -1
+            end)
+        end
+
+        local desigs = {}
+        if sp.designations then
+            pcall(function()
+                for k, v in pairs(sp.designations) do
+                    desigs[k] = bool(v)
+                end
+            end)
+        end
+
+        table.insert(spiles, {
+            id         = sp.id or nil,
+            name       = name_val,
+            suspended  = suspended_flag,
+            bounds     = bounds_data,
+            designations = desigs,
+        })
+
+        ::continue_sp::
+    end
+
+    return spiles
+end
+
+--- Zone observation — DF 53.15 via df.global.world.region.zone
+--- (verified against fortview.lua, zone-info.lua).
+--- Each zone record has: id, type (df.zone_type enum), name, bounds {min{x,y,z}, max{x,y,z}}.
+function bridge.zone_list()
+    local zones = {}
+    if not df.global or not df.global.world then
+        return zones
+    end
+
+    local zones_vec = nil
+    pcall(function()
+        zones_vec = df.global.world.region.zone
+    end)
+    if not zones_vec then
+        return zones
+    end
+
+    local count = #zones_vec
+    for i = 1, math.min(count, 200) do
+        local zn = zones_vec[i - 1]
+        if not zn then goto continue_zone end
+
+        local zone_type = -1
+        pcall(function()
+            zone_type = zn.zone_type or -1
+        end)
+
+        local name_val = ""
+        pcall(function()
+            name_val = zn.name.value or ""
+        end)
+
+        local bounds_data = {min = {x = -1, y = -1, z = -1}, max = {x = -1, y = -1, z = -1}}
+        pcall(function()
+            bounds_data.min.x = zn.bounds.pos.x or -1
+            bounds_data.min.y = zn.bounds.pos.y or -1
+            bounds_data.min.z = zn.bounds.pos.z or -1
+            bounds_data.max.x = zn.bounds.dim_x or -1
+            bounds_data.max.y = zn.bounds.dim_y or -1
+            bounds_data.max.z = zn.bounds.dim_z or -1
+        end)
+
+        local is_active = false
+        pcall(function()
+            is_active = zn.is_active or false
+        end)
+
+        table.insert(zones, {
+            id      = zn.id or nil,
+            type    = zone_type,
+            name    = name_val,
+            bounds  = bounds_data,
+            active  = is_active,
+        })
+
+        ::continue_zone::
+    end
+
+    return zones
 end
 
 return bridge

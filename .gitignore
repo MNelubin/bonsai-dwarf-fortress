@@ -4,6 +4,10 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+*.egg-info/
 .venv/
 venv/
 *.env
@@ -14,6 +18,10 @@ artifacts/
 backups/
 state/
 logs/
+errorlog.txt
+gamelog.txt
+stderr.log
+stdout.log
 *.save
 *.sav
 *.zip

@@ -16,11 +16,43 @@ def choose_cycle(
     last_job_state: str | None,
     last_job_changed: bool | None,
     promoted_coding_since_discovery: int,
+    consecutive_coding_failures: int,
+    discovery_promotions_since_coding: int,
+    has_unscored_submission: bool = False,
+    last_experiment_failure_kind: str | None = None,
 ) -> CycleDecision:
+    if has_unscored_submission:
+        return CycleDecision(
+            "experiment_cycle", "a promoted controller is waiting for independent measurement"
+        )
     if not has_promoted_discovery:
         return CycleDecision("discovery_cycle", "knowledge library has no promoted discovery yet")
+    if last_job_type == "experiment_cycle" and last_job_state == "completed":
+        if last_experiment_failure_kind in {"game_api", "runtime", "reset"}:
+            return CycleDecision(
+                "discovery_cycle",
+                "evaluator classified a game API failure; gather one bounded live probe",
+            )
+        return CycleDecision(
+            "coding_cycle", "independent score is available; improve the controller from evidence"
+        )
     if last_job_type == "discovery_cycle" and last_job_state == "completed":
         return CycleDecision("coding_cycle", "fresh promoted knowledge is ready for implementation")
+    # Both branches added routing rules here and they answer different questions, so
+    # keep both. The anti-thrash rules run FIRST: a candidate that keeps failing must
+    # send the agent to gather evidence rather than be repaired forever in place.
+    if promoted_coding_since_discovery >= 3:
+        return CycleDecision("discovery_cycle", "periodic knowledge refresh after three promoted code cycles")
+    if consecutive_coding_failures >= 2 and discovery_promotions_since_coding == 0:
+        return CycleDecision(
+            "discovery_cycle",
+            "two coding graphs were blocked; gather targeted evidence before another repair",
+        )
+    if consecutive_coding_failures >= 2:
+        return CycleDecision(
+            "coding_cycle",
+            "targeted discovery already ran in this failure epoch; continue bounded code repair",
+        )
     if (
         last_job_type in {"coding_cycle", "research_cycle"}
         and last_job_state == "rejected"
@@ -33,7 +65,5 @@ def choose_cycle(
     if last_job_type in {"coding_cycle", "research_cycle"} and (
         last_job_state in {"rejected", "failed", "cancelled"} or last_job_changed is False
     ):
-        return CycleDecision("discovery_cycle", "previous coding cycle produced no promotable change")
-    if promoted_coding_since_discovery >= 3:
-        return CycleDecision("discovery_cycle", "periodic knowledge refresh after three promoted code cycles")
+        return CycleDecision("coding_cycle", "retry the unfinished coding objective with its failure handoff")
     return CycleDecision("coding_cycle", "knowledge is current and coding can advance the objective")

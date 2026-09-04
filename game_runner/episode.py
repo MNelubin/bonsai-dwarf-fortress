@@ -1,30 +1,121 @@
 """Episode runner for headless DF episodes via the bridge contract."""
 
+import copy
+import hashlib
 import json
-import subprocess
-import tempfile
 import os
-import time
+import subprocess
 import uuid
+
+from bridge.contracts import EpisodeLogger
 
 # Path to the active DFHack installation.
 DF_DIR = "/srv/df-bonsai/current"
 BRIDGE_LUA = os.path.join(os.path.dirname(__file__), "..", "bridge", "core.lua")
 
+HASHID_BYTES = 8
 
-def _dfhack_run(lua_code, timeout=30):
-    """Execute a Lua snippet via the DFHack CLI runner and return JSON."""
+
+def _deterministic_seed(seed):
+    """Produce a deterministic byte sequence from an integer seed."""
+    return hashlib.sha256(str(seed).encode()).digest()[:HASHID_BYTES]
+
+
+def _simulate_citizens(seed, num_citizens=4):
+    """Create citizen unit dict list deterministically from seed.
+
+    Uses SHA256(bytes) as a primitive RNG: each citizen gets 4 random ints for id, race and civ_id fields.
+    Returns a tuple (list_of_unit_dicts, threshold_for_first_death_ticks).
+    """
+    d = _deterministic_seed(seed)
+    offset = 0
+
+    units = []
+    for i in range(num_citizens):
+        # Simple LCG style from our hash bytes.
+        b_offset = (i * 2 + offset) % HASHID_BYTES
+        raw_id = d[b_offset] if b_offset < len(d) else 0
+        race_id = (raw_id + i) % 5
+        civ_id_val = ((raw_id >> 3) & 31) + 1
+
+        units.append({
+            "id": 200000 + i * 100 + raw_id,
+            "race": race_id,
+            "civ_id": civ_id_val,
+            "killed": False,
+            "pos": [i * 3, i, 0],
+        })
+
+    # Survival ticks based on seed — determines at what tick a stress event occurs.
+    # We use the same seed to compute how many ticks until the first simulated death.
+    survival_hash = _deterministic_seed(seed + 1)
+    first_death_ticks = int.from_bytes(survival_hash, "little") % (86400 * 30) + 86400 * 5
+
+    return units, first_death_ticks
+
+
+def _default_observation():
+    """Fresh observation state matching the contracts.json observe output."""
+    return {
+        "version": "1.0",
+        "gametype": None,
+        "cur_year": 0,
+        "cur_season": 0,
+        "cur_tick": 0,
+        "paused": True,
+        "units": [],
+        "buildings": [],
+        "tick": 0,
+        "source": "stub",
+    }
+
+
+def _dfhack_run(lualine, timeout=30):
+    """Run a single DFHack command and parse JSON from stdout.
+
+    Uses ``dfhack-run lua <source>`` syntax (live-probed on 53.15-r2).
+    The caller is responsible for escaping the Lua expression as valid
+    code; this wrapper passes ``lua`` and ``lualine`` as separate argv elements.
+
+    If the DFHack process exits with a non-zero exit code (e.g., segfault 139
+    when no game process is active), returns a dict with keys ``dfhack_error``,
+    ``exit_code``, and ``stderr`` so that callers can distinguish between
+    "no data" and "runtime unavailable".
+    """
     env = {**os.environ, "HOME": "/srv/df-bonsai/state/home"}
+    dfhack_bin = os.path.join(DF_DIR, "hack", "dfhack-run")
     try:
         proc = subprocess.run(
-            ["python3", "-c", lua_code],
+            [dfhack_bin, "lua", lualine],
             capture_output=True, text=True, timeout=timeout, env=env,
+            cwd=DF_DIR,
         )
-        return json.loads(proc.stdout.strip()) if proc.returncode == 0 else {
-            "error": f"rc={proc.returncode}", "stderr": proc.stderr[:500]
-        }
+        # Non-zero exit code indicates a runtime failure (e.g., segfault when
+        # no DF process is active).  Capture evidence for callers.
+        if proc.returncode != 0:
+            return {
+                "_dfhack_error": True,
+                "exit_code": proc.returncode,
+                "_stderr": proc.stderr.strip()[:200],
+            }
+        raw = proc.stdout.strip()
+        # DFHack wraps output in ANSI reset codes; strip control sequences.
+        import re
+        raw = re.sub(r"\x1b\[[0-9;]*m", "", raw).strip()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_raw": raw}
     except subprocess.TimeoutExpired:
         return {"error": "timeout"}
+    except OSError as exc:
+        return {
+            "_dfhack_error": True,
+            "exit_code": getattr(exc, "errno", 2),
+            "_stderr": str(exc)[:200],
+        }
 
 
 class EpisodeRunner:
@@ -35,47 +126,49 @@ class EpisodeRunner:
       pinned save, recording seed, steps, final_tick, survivors, and outcome.
     """
 
-    def __init__(self, save_id=None, max_steps=100, action_budget=50, seed=42):
+    def __init__(self, save_id=None, max_steps=100, action_budget=50, seed=42, num_citizens=4):
         self.save_id = save_id or str(uuid.uuid4())[:8]
         self.max_steps = max_steps
         self.action_budget = action_budget
         self.seed = seed
+        self.num_citizens = num_citizens
         self.metrics = {}
         self.trace = []
+        self._obs_state = None
+        self.units, self.death_ticks = _simulate_citizens(self.seed, self.num_citizens)
+        self._logger = None
 
     # ------------------------------------------------------------------
     def reset(self):
         """Reset episode state before run."""
         self.metrics = {"seed": self.seed, "steps_taken": 0, "actions_used": 0}
         self.trace = []
+        self.units, self.death_ticks = _simulate_citizens(self.seed, self.num_citizens)
+        self._obs_state = _default_observation()
+        # Units in obs_state reference the same dicts as self.units so
+        # stress event mutations are visible to subsequent observations.
+        self._obs_state["units"] = [dict(u) for u in self.units]
+        self._logger = EpisodeLogger(seed=self.seed, save_id=self.save_id)
         return True
 
     # ------------------------------------------------------------------
     def _stub_observe(self):
-        """Internal observation state shared by advance and the loop."""
-        if not hasattr(self, "_obs_state"):
-            self._obs_state = {
-                "version": "1.0",
-                "gametype": None,
-                "cur_year": 0,
-                "cur_season": 0,
-                "cur_tick": 0,
-                "paused": True,
-                "units": [],
-                "buildings": [],
-                "tick": 0,
-                "source": "stub",
-            }
+        """Internal observation state shared by advance and the loop.
+
+        Units always read from self.units so stress mutations are visible.
+        """
+        if self._obs_state is None:
+            self._obs_state = _default_observation()
+        # Sync citizen state (killed flags, etc.) to internal slot.
+        self._obs_state["units"] = [dict(u) for u in self.units]
         return self._obs_state
 
     # ------------------------------------------------------------------
     def observe(self):
         """Thin wrapper around bridge.observe() — stub for headless use."""
         s = self._stub_observe()
-        # Return a copy so the caller can't mutate internal state.
-        import copy
         result = {**s}
-        result["units"] = list(s["units"])
+        result["units"] = [dict(u) for u in s["units"]]
         result["buildings"] = list(s["buildings"])
         return result
 
@@ -103,13 +196,132 @@ class EpisodeRunner:
             return {"ok": False, "message": f"stub_unknown_cmd:{cmd}"}
 
     # ------------------------------------------------------------------
+    def _process_stress_events(self):
+        """Mark dead citizens whose death threshold has been crossed."""
+        current_tick = self._stub_observe()["cur_tick"]
+        for unit in self.units:
+            if not unit["killed"] and current_tick >= self.death_ticks:
+                # Deterministic death: only kill units whose id's last digit
+                # is <= (current_tick - death_ticks) // (86400 * 3). This spreads deaths.
+                days_past = (current_tick - self.death_ticks) // 86400
+                if unit["id"] % 10 <= min(days_past, 9):
+                    unit["killed"] = True
+
+    # ------------------------------------------------------------------
     def advance(self, ticks=100):
         """Advance N game ticks — stub incrementing internal counter."""
         state = self._stub_observe()
         state["cur_tick"] += ticks
         state["tick"] += 1
         self.metrics["final_tick"] = (self.metrics.get("final_tick") or 0) + ticks
+        self._process_stress_events()
         return {"ok": True, "advanced_ticks": ticks}
+
+    # ------------------------------------------------------------------
+    def get_trace(self):
+        """Return a deep copy of the episode trace for external inspection."""
+        return copy.deepcopy(self.trace)
+
+    # ------------------------------------------------------------------
+    def to_json(self):
+        """Serialize full episode state (metrics + trace) to JSON string."""
+        payload = {
+            "seed": self.seed,
+            "save_id": self.save_id,
+            "metrics": self.metrics,
+            "trace": self.trace,
+        }
+        return json.dumps(payload, indent=2)
+
+    # ------------------------------------------------------------------
+    def save_checkpoint(self, path):
+        """Write a full episode snapshot to *path* for later restoration.
+
+        Parameters:
+            path: filesystem path (file or directory).  If the path is an
+                  existing directory a file named ``<save_id>.checkpoint.json``
+                  will be created inside it.
+        Returns:
+            Normalized absolute path that was written.
+        """
+        payload = self.serialize()
+        if os.path.isdir(path):
+            dest = os.path.join(path, f"{self.save_id}.checkpoint.json")
+        else:
+            dest = path
+
+        # Ensure parent directory exists.
+        parent = os.path.dirname(dest) or "."
+        os.makedirs(parent, exist_ok=True)
+
+        with open(dest, "w") as fp:
+            json.dump(payload, fp, indent=2)
+
+        return os.path.abspath(dest)
+
+    @classmethod
+    def load_checkpoint(cls, path):
+        """Restore an EpisodeRunner from a previously written checkpoint file.
+
+        Parameters:
+            path: filesystem path to a ``.checkpoint.json`` file created by
+                  ``save_checkpoint()``.  May also be a directory in which case
+                  the first ``*.checkpoint.json`` file inside will be used.
+        Returns:
+            Deserialized EpisodeRunner instance at the saved evaluation point.
+        """
+        if os.path.isdir(path):
+            files = [f for f in os.listdir(path) if f.endswith(".checkpoint.json")]
+            if not files:
+                raise FileNotFoundError(
+                    f"No *.checkpoint.json found inside {path}"
+                )
+            path = os.path.join(path, sorted(files)[0])
+
+        with open(path) as fp:
+            payload = json.load(fp)
+
+        return cls.deserialize(payload)
+
+    # ------------------------------------------------------------------
+    def serialize(self):
+        """Return a JSON-serializable dict of the complete episode state.
+
+        Includes runner configuration so that `deserialize()` can
+        reconstruct an identical EpisodeRunner for replay or comparison.
+        """
+        return {
+            "seed": self.seed,
+            "save_id": self.save_id,
+            "max_steps": self.max_steps,
+            "action_budget": self.action_budget,
+            "num_citizens": self.num_citizens,
+            "metrics": copy.deepcopy(self.metrics),
+            "trace": copy.deepcopy(self.trace),
+        }
+
+    @classmethod
+    def deserialize(cls, state_dict):
+        """Reconstruct an EpisodeRunner from a serialized snapshot.
+
+        Returns the runner with metrics and trace restored to the saved
+        point so that `run()` can continue from the checkpoint.
+        """
+        runner = cls(
+            save_id=state_dict["save_id"],
+            max_steps=state_dict["max_steps"],
+            action_budget=state_dict["action_budget"],
+            seed=state_dict["seed"],
+            num_citizens=state_dict.get("num_citizens", 4),
+        )
+        runner.metrics = copy.deepcopy(state_dict["metrics"])
+        runner.trace = copy.deepcopy(state_dict["trace"])
+        runner.units, runner.death_ticks = _simulate_citizens(
+            state_dict["seed"], state_dict.get("num_citizens", 4)
+        )
+        runner._obs_state = _default_observation()
+        runner._obs_state["units"] = [dict(u) for u in runner.units]
+        return runner
 
     # ------------------------------------------------------------------
     def run(self, action_policy):
@@ -119,6 +331,8 @@ class EpisodeRunner:
             action_policy: callable(observation) -> action_dict | None
         """
         self.reset()
+        if callable(getattr(action_policy, '_reset', None)):
+            action_policy._reset()
         outcome = "success"
 
         for step in range(self.max_steps):
@@ -127,6 +341,7 @@ class EpisodeRunner:
                 break
 
             obs = self.observe()
+            self._logger.log_tick(obs["cur_tick"])
             action = action_policy(obs) if callable(action_policy) else None
             if not action:
                 outcome = "success"
@@ -135,12 +350,16 @@ class EpisodeRunner:
             result = self.act(action)
             self.metrics["actions_used"] += 1
             self.trace.append({"step": step, "action": action, "result": result})
+            self._logger.log_action(step, action)
             self.metrics["steps_taken"] += 1
 
         final_tick = self.metrics.get("final_tick", self.observe()["cur_tick"])
-        survivors = len(self.observe().get("units", []))
+        survivors = sum(1 for u in self.units if not u["killed"] and u["civ_id"] is not None)
 
-        result = {
+        self._logger.finalize(outcome, survivors, final_tick)
+        self.metrics["survivors"] = survivors
+        self.metrics["outcome"] = outcome
+        return {
             "seed": self.seed,
             "save_id": self.save_id,
             "steps_taken": self.metrics["steps_taken"],
@@ -149,7 +368,43 @@ class EpisodeRunner:
             "actions_used": self.metrics["actions_used"],
             "outcome": outcome,
         }
-        return result
+
+    # ------------------------------------------------------------------
+    def get_logger(self):
+        """Return the EpisodeLogger for this runner (after a run)."""
+        return self._logger
+
+    def fingerprint(self):
+        """Return the SHA-256 fingerprint of the completed episode."""
+        if self._logger:
+            return self._logger.fingerprint()
+        return None
+
+    def log_json(self):
+        """Return compact JSON bytes of the episode log."""
+        if self._logger:
+            return self._logger.to_json()
+        return b""
+
+    # ------------------------------------------------------------------
+    def run_multiple(self, action_policy, num_runs, seed_start=0):
+        """Execute *num_runs* episodes with incrementing seeds.
+
+        Parameters:
+            action_policy: callable(observation) -> action_dict | None
+            num_runs: number of independent episodes to execute.
+            seed_start: integer; each episode gets seed = seed_start + i.
+
+        Returns:
+            List of metrics dicts (one per run), each conforming to the
+            episode output contract from ``contracts.json``.
+        """
+        results = []
+        for i in range(num_runs):
+            self.seed = seed_start + i
+            m = self.run(action_policy)
+            results.append(m)
+        return results
 
 
 def evaluate_multiple_runs(run_metrics_list):

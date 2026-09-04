@@ -3,7 +3,19 @@ from pathlib import Path
 
 import pytest
 
-from bonsai_control.promoter import GateRejected, inspect_candidate
+from bonsai_control.promoter import (
+    AUTO_COMPLETE_MARKER,
+    GateRejected,
+    inspect_candidate,
+    should_auto_complete_milestone,
+)
+
+
+def test_only_marked_coding_milestone_auto_completes():
+    description = f"Finish the bounded repair. {AUTO_COMPLETE_MARKER}"
+    assert should_auto_complete_milestone("coding_cycle", description) is True
+    assert should_auto_complete_milestone("discovery_cycle", description) is False
+    assert should_auto_complete_milestone("coding_cycle", "ordinary iterative objective") is False
 
 
 def git(repo: Path, *args: str) -> str:
@@ -27,16 +39,19 @@ def candidate_bundle(
     base = git(repo, "rev-parse", "HEAD")
     target = repo / changed_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("def test_candidate():\n    assert True\n", encoding="utf-8")
+    if changed_path.startswith("tests/"):
+        target.write_text("def test_candidate():\n    assert 2 * 3 == 6\n", encoding="utf-8")
+    else:
+        target.write_text("def candidate_value():\n    return 6\n", encoding="utf-8")
     if include_test_evidence and not changed_path.startswith("tests/"):
         (repo / "tests").mkdir(exist_ok=True)
         (repo / "tests" / "test_evidence.py").write_text(
-            "def test_evidence():\n    assert True\n", encoding="utf-8"
+            "def test_evidence():\n    assert 2 * 3 == 6\n", encoding="utf-8"
         )
     git(repo, "add", ".")
     git(repo, "commit", "-m", "candidate")
     candidate = git(repo, "rev-parse", "HEAD")
-    git(repo, "branch", f"agent/test", candidate)
+    git(repo, "branch", "agent/test", candidate)
     bundle = tmp_path / "candidate.bundle"
     git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
     return repo, base, candidate, bundle
@@ -46,8 +61,10 @@ def test_allowed_candidate_passes_static_gate(tmp_path: Path):
     repo, base, candidate, bundle = candidate_bundle(tmp_path, "bridge/bridge.py")
     report = inspect_candidate(repo, bundle, base, candidate, tmp_path / "eval")
     assert report["allowed"] is True
-    assert report["gate_mode"] == "bootstrap_static_v1"
+    assert report["gate_mode"] == "static_quality_v2"
     assert "bridge/bridge.py" in report["checks"]["changed_paths"]
+    assert report["checks"]["trusted_public_pytest"]["exit_code"] == 0
+    assert report["checks"]["python_quality"]["ok"] is True
 
 
 def test_protected_candidate_is_rejected(tmp_path: Path):
@@ -107,3 +124,60 @@ def test_discovery_rejects_code_changes(tmp_path: Path):
             repo, bundle, base, candidate, tmp_path / "eval", job_type="discovery_cycle"
         )
     assert any("only change knowledge" in reason for reason in rejected.value.report["reasons"])
+
+
+def test_trusted_gate_rejects_undefined_name_with_exact_diagnostic(tmp_path: Path):
+    repo, base, candidate, bundle = candidate_bundle(tmp_path, "bridge/bridge.py")
+    (repo / "bridge" / "bridge.py").write_text(
+        "def candidate_value():\n    return undefined_df_value\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "--amend", "--no-edit")
+    candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "-f", "agent/test", candidate)
+    bundle.unlink()
+    git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
+
+    with pytest.raises(GateRejected) as rejected:
+        inspect_candidate(repo, bundle, base, candidate, tmp_path / "eval")
+    assert any("F821" in reason and "undefined_df_value" in reason for reason in rejected.value.report["reasons"])
+
+
+def test_trusted_gate_rejects_literal_true_test(tmp_path: Path):
+    repo, base, candidate, bundle = candidate_bundle(tmp_path, "tests/test_evidence.py")
+    (repo / "tests" / "test_evidence.py").write_text(
+        "def test_placeholder():\n    assert True\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "--amend", "--no-edit")
+    candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "-f", "agent/test", candidate)
+    bundle.unlink()
+    git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
+
+    with pytest.raises(GateRejected) as rejected:
+        inspect_candidate(repo, bundle, base, candidate, tmp_path / "eval")
+    assert any("SLOP002" in reason for reason in rejected.value.report["reasons"])
+
+
+def test_trusted_gate_allows_typing_protocol_declarations(tmp_path: Path):
+    repo, base, candidate, bundle = candidate_bundle(tmp_path, "bridge/backend.py")
+    (repo / "bridge" / "backend.py").write_text(
+        "from typing import Protocol\n\n"
+        "class Backend(Protocol):\n"
+        "    def observe(self) -> dict:\n"
+        "        ...\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "--amend", "--no-edit")
+    candidate = git(repo, "rev-parse", "HEAD")
+    git(repo, "branch", "-f", "agent/test", candidate)
+    bundle.unlink()
+    git(repo, "bundle", "create", str(bundle), "refs/heads/agent/test")
+
+    report = inspect_candidate(repo, bundle, base, candidate, tmp_path / "eval")
+    assert report["allowed"] is True
+    assert report["checks"]["python_quality"]["ok"] is True

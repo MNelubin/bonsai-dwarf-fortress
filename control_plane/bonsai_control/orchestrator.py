@@ -1,5 +1,8 @@
+import hashlib
 import json
+import re
 import time
+from datetime import datetime
 
 from .cycle_policy import choose_cycle
 from .db import close_pool, connection as db_connection, open_pool
@@ -22,6 +25,83 @@ DISCOVERY_CONSTRAINTS = {
     "discovery_tool_budget": 16,
     "promotion_mode": "automatic_if_gated",
 }
+
+EXPERIMENT_CONSTRAINTS = {
+    "wall_time_seconds": 180,
+    "controller_timeout_seconds": 30,
+    "episode_budget": 4,
+    "promotion_mode": "measurement_only",
+}
+
+
+def failure_fingerprint(error: str | None) -> str | None:
+    if not error:
+        return None
+    normalized = error.lower()
+    if any(
+        marker in normalized
+        for marker in (
+            "cannot create over existing file",
+            "coding graph proposal does not change any file",
+            "empty old is only valid",
+            "old text occurs",
+            "replace_file sha-256 mismatch",
+        )
+    ):
+        normalized = "coding_graph:patch_protocol"
+    elif any(
+        marker in normalized
+        for marker in ("missing_executable_change", "missing_public_test_change")
+    ):
+        normalized = "coding_graph:incomplete_promotion_shape"
+    normalized = re.sub(r"[0-9a-f]{8}-[0-9a-f-]{27,}", "<uuid>", normalized)
+    normalized = re.sub(r"\b[0-9a-f]{40,64}\b", "<hash>", normalized)
+    normalized = re.sub(r"/[^\s:'\"]+", "<path>", normalized)
+    normalized = re.sub(r"\b\d+\b", "<n>", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()[-2000:]
+    return hashlib.sha256(normalized.encode()).hexdigest() if normalized else None
+
+
+def submission_hash(git_commit: str, manifest: dict[str, object]) -> str:
+    canonical = json.dumps(
+        {"git_commit": git_commit, "manifest": manifest},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def summary_tail(value: object, limit: int = 2_000) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return text[-limit:]
+
+
+def should_start_cooldown(
+    repeated_fingerprint: str | None,
+    latest_failure_completed_at: datetime | None,
+    evaluation_state_updated_at: datetime | None,
+) -> bool:
+    return bool(
+        repeated_fingerprint
+        and latest_failure_completed_at
+        and (
+            evaluation_state_updated_at is None
+            or latest_failure_completed_at > evaluation_state_updated_at
+        )
+    )
+
+
+def repeated_failure_epoch_count(
+    previous_fingerprint: str | None,
+    previous_count: int,
+    repeated_fingerprint: str,
+) -> int:
+    """Count matching terminal failures across cooldown boundaries."""
+    if previous_fingerprint == repeated_fingerprint:
+        return max(0, previous_count) + 3
+    return 3
 
 
 def tick() -> None:
@@ -60,6 +140,11 @@ def tick() -> None:
             FROM bonsai.objectives o
             WHERE o.status = 'active'
               AND (o.last_job_at IS NULL OR o.last_job_at + make_interval(secs => o.cycle_interval_seconds) <= now())
+              AND COALESCE(
+                    (SELECT cooldown_until FROM bonsai.objective_evaluation_state s
+                     WHERE s.objective_id = o.id),
+                    '-infinity'::timestamptz
+                  ) <= now()
               AND NOT EXISTS (
                   SELECT 1 FROM bonsai.jobs j
                   WHERE j.objective_id = o.id AND j.state IN ('queued', 'leased', 'candidate')
@@ -71,6 +156,228 @@ def tick() -> None:
         ).fetchone()
         if objective is None:
             return
+
+        connection.execute(
+            """
+            INSERT INTO bonsai.objective_evaluation_state (objective_id)
+            VALUES (%s) ON CONFLICT (objective_id) DO NOTHING
+            """,
+            (objective["id"],),
+        )
+
+        recent_terminals = connection.execute(
+            """
+            SELECT id, state, error, completed_at FROM bonsai.jobs
+            WHERE objective_id = %s
+              AND state IN ('completed', 'rejected', 'failed', 'cancelled')
+            ORDER BY completed_at DESC NULLS LAST, created_at DESC LIMIT 3
+            """,
+            (objective["id"],),
+        ).fetchall()
+        fingerprints = [failure_fingerprint(row["error"]) for row in recent_terminals]
+        repeated_fingerprint = (
+            fingerprints[0]
+            if len(fingerprints) == 3
+            and all(row["state"] == "failed" for row in recent_terminals)
+            and fingerprints[0]
+            and len(set(fingerprints)) == 1
+            else None
+        )
+        evaluation_state = connection.execute(
+            "SELECT * FROM bonsai.objective_evaluation_state WHERE objective_id = %s FOR UPDATE",
+            (objective["id"],),
+        ).fetchone()
+        if should_start_cooldown(
+            repeated_fingerprint,
+            recent_terminals[0]["completed_at"] if recent_terminals else None,
+            evaluation_state["updated_at"],
+        ):
+            assert repeated_fingerprint is not None
+            repeated_count = repeated_failure_epoch_count(
+                evaluation_state["last_failure_fingerprint"],
+                evaluation_state["repeated_failure_count"],
+                repeated_fingerprint,
+            )
+            if repeated_count >= 6:
+                connection.execute(
+                    """
+                    UPDATE bonsai.objective_evaluation_state
+                    SET last_failure_fingerprint = %s, repeated_failure_count = %s,
+                        cooldown_until = NULL, updated_at = now()
+                    WHERE objective_id = %s
+                    """,
+                    (repeated_fingerprint, repeated_count, objective["id"]),
+                )
+                connection.execute(
+                    """
+                    UPDATE bonsai.objectives
+                    SET status = 'blocked', last_job_at = now(), updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (objective["id"],),
+                )
+                successor = connection.execute(
+                    """
+                    SELECT id, title FROM bonsai.objectives
+                    WHERE status = 'paused'
+                    ORDER BY (parent_id = %s) DESC, priority DESC, created_at
+                    FOR UPDATE SKIP LOCKED LIMIT 1
+                    """,
+                    (objective["id"],),
+                ).fetchone()
+                if successor is None:
+                    successor = connection.execute(
+                        """
+                        INSERT INTO bonsai.objectives
+                            (parent_id, title, description, priority, status,
+                             cycle_interval_seconds, created_by)
+                        VALUES (%s, %s, %s, %s, 'active', %s, 'orchestrator:failure-escalation')
+                        RETURNING id, title
+                        """,
+                        (
+                            objective["id"],
+                            "Explore the next bounded DF capability",
+                            (
+                                "Choose one verified but unimplemented DFHack mechanic, gather one "
+                                "live probe, then implement the smallest deterministic API and public "
+                                "test. Do not retry the blocked proposal unchanged."
+                            ),
+                            max(1, objective["priority"] - 1),
+                            objective["cycle_interval_seconds"],
+                        ),
+                    ).fetchone()
+                else:
+                    connection.execute(
+                        """
+                        UPDATE bonsai.objectives
+                        SET status = 'active', last_job_at = NULL, updated_at = now()
+                        WHERE id = %s
+                        """,
+                        (successor["id"],),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO bonsai.events
+                        (event_type, actor_type, actor_id, aggregate_type, aggregate_id, payload)
+                    VALUES ('objective.blocked_by_repeated_failure', 'control', 'orchestrator',
+                            'objective', %s, %s)
+                    """,
+                    (
+                        str(objective["id"]),
+                        json.dumps(
+                            {
+                                "failure_fingerprint": repeated_fingerprint,
+                                "repeated_count": repeated_count,
+                                "successor_objective_id": str(successor["id"]),
+                                "successor_title": successor["title"],
+                                "reason": "same terminal failure survived one cooldown recovery epoch",
+                            }
+                        ),
+                    ),
+                )
+                return
+            connection.execute(
+                """
+                UPDATE bonsai.objective_evaluation_state
+                SET last_failure_fingerprint = %s, repeated_failure_count = %s,
+                    cooldown_until = now() + interval '10 minutes', updated_at = now()
+                WHERE objective_id = %s
+                """,
+                (repeated_fingerprint, repeated_count, objective["id"]),
+            )
+            connection.execute(
+                "UPDATE bonsai.objectives SET last_job_at = now(), updated_at = now() WHERE id = %s",
+                (objective["id"],),
+            )
+            connection.execute(
+                """
+                INSERT INTO bonsai.events
+                    (event_type, actor_type, actor_id, aggregate_type, aggregate_id, payload)
+                VALUES ('objective.cooldown_started', 'control', 'orchestrator', 'objective', %s, %s)
+                """,
+                (
+                    str(objective["id"]),
+                    json.dumps(
+                        {
+                            "failure_fingerprint": repeated_fingerprint,
+                            "repeated_count": repeated_count,
+                            "cooldown_seconds": 600,
+                            "reason": "three identical terminal failures",
+                        }
+                    ),
+                ),
+            )
+            return
+
+        default_manifest: dict[str, object] = {
+            "kind": "python_callable",
+            "protocol": "jsonl-v1",
+            "entrypoint": "player.baseline:baseline_policy",
+        }
+        latest_promoted_coding = connection.execute(
+            """
+            SELECT j.id AS job_id, g.candidate_commit
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            WHERE j.objective_id = %s AND j.job_type = 'coding_cycle'
+              AND g.promotion_state = 'promoted' AND g.candidate_commit IS NOT NULL
+            ORDER BY g.promoted_at DESC LIMIT 1
+            """,
+            (objective["id"],),
+        ).fetchone()
+        if latest_promoted_coding is not None:
+            digest = submission_hash(latest_promoted_coding["candidate_commit"], default_manifest)
+            inserted_submission = connection.execute(
+                """
+                INSERT INTO bonsai.controller_submissions
+                    (objective_id, source_job_id, git_commit, content_hash, manifest)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (objective_id, content_hash) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    objective["id"],
+                    latest_promoted_coding["job_id"],
+                    latest_promoted_coding["candidate_commit"],
+                    digest,
+                    json.dumps(default_manifest),
+                ),
+            ).fetchone()
+            if inserted_submission is not None:
+                connection.execute(
+                    """
+                    UPDATE bonsai.objective_evaluation_state
+                    SET submissions_seen = submissions_seen + 1, updated_at = now()
+                    WHERE objective_id = %s
+                    """,
+                    (objective["id"],),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO bonsai.events
+                        (event_type, actor_type, actor_id, aggregate_type, aggregate_id, payload)
+                    VALUES ('submission.admitted', 'control', 'orchestrator', 'submission', %s, %s)
+                    """,
+                    (
+                        str(inserted_submission["id"]),
+                        json.dumps(
+                            {
+                                "automatic": True,
+                                "git_commit": latest_promoted_coding["candidate_commit"],
+                                "source_job_id": str(latest_promoted_coding["job_id"]),
+                            }
+                        ),
+                    ),
+                )
+
+        unscored_submission = connection.execute(
+            """
+            SELECT * FROM bonsai.controller_submissions
+            WHERE objective_id = %s AND state = 'admitted'
+            ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
+            """,
+            (objective["id"],),
+        ).fetchone()
 
         previous = connection.execute(
             """
@@ -92,7 +399,13 @@ def tick() -> None:
                 "model": (previous["result"] or {}).get("model"),
                 "changed": (previous["result"] or {}).get("changed"),
                 "error": previous["error"],
-                "summary_tail": (summary or previous["error"] or "")[-2_000:],
+                # main added the richer handoff fields; scorer-build had taught the
+                # tail to fall back to the previous error so a job that died before
+                # producing a summary still hands its reason forward. Keep both.
+                "summary_tail": summary_tail(summary or previous["error"]),
+                "score": (previous["result"] or {}).get("score"),
+                "verdict": (previous["result"] or {}).get("verdict"),
+                "failure_kind": (previous["result"] or {}).get("failure_kind"),
             }
 
         last_discovery_at = connection.execute(
@@ -120,16 +433,77 @@ def tick() -> None:
                 """,
                 (objective["id"], last_discovery_at),
             ).fetchone()["count"]
+        last_coding_at = connection.execute(
+            """
+            SELECT max(g.promoted_at) AS promoted_at
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            WHERE j.objective_id = %s
+              AND j.job_type = 'coding_cycle'
+              AND g.promotion_state = 'promoted'
+            """,
+            (objective["id"],),
+        ).fetchone()["promoted_at"]
+        discovery_promotions_since_coding = connection.execute(
+            """
+            SELECT count(*) AS count
+            FROM bonsai.git_changes g
+            JOIN bonsai.jobs j ON j.id = g.job_id
+            WHERE j.objective_id = %s
+              AND j.job_type = 'discovery_cycle'
+              AND g.promotion_state = 'promoted'
+              AND g.promoted_at > COALESCE(%s::timestamptz, '-infinity'::timestamptz)
+            """,
+            (objective["id"], last_coding_at),
+        ).fetchone()["count"]
+        recent_coding_states = connection.execute(
+            """
+            SELECT state
+            FROM bonsai.jobs
+            WHERE objective_id = %s
+              AND job_type = 'coding_cycle'
+              AND state IN ('completed', 'rejected', 'failed', 'cancelled')
+            ORDER BY completed_at DESC NULLS LAST, created_at DESC
+            LIMIT 4
+            """,
+            (objective["id"],),
+        ).fetchall()
+        consecutive_coding_failures = 0
+        for recent in recent_coding_states:
+            if recent["state"] not in {"failed", "rejected"}:
+                break
+            consecutive_coding_failures += 1
         decision = choose_cycle(
             has_promoted_discovery=last_discovery_at is not None,
             last_job_type=previous["job_type"] if previous else None,
             last_job_state=previous["state"] if previous else None,
             last_job_changed=(previous["result"] or {}).get("changed") if previous else None,
             promoted_coding_since_discovery=promoted_coding_since_discovery,
+            consecutive_coding_failures=consecutive_coding_failures,
+            discovery_promotions_since_coding=discovery_promotions_since_coding,
+            has_unscored_submission=unscored_submission is not None,
+            last_experiment_failure_kind=(previous["result"] or {}).get("failure_kind")
+            if previous and previous["job_type"] == "experiment_cycle"
+            else None,
         )
-        constraints = (
-            DISCOVERY_CONSTRAINTS if decision.job_type == "discovery_cycle" else CODING_CONSTRAINTS
-        )
+        constraints = {
+            "discovery_cycle": DISCOVERY_CONSTRAINTS,
+            "coding_cycle": CODING_CONSTRAINTS,
+            "experiment_cycle": EXPERIMENT_CONSTRAINTS,
+        }[decision.job_type]
+
+        job_base_commit = system_state["current_baseline_commit"]
+        experiment_payload: dict[str, object] = {}
+        if decision.job_type == "experiment_cycle":
+            if unscored_submission is None:
+                raise RuntimeError("policy selected experiment_cycle without an admitted submission")
+            job_base_commit = unscored_submission["git_commit"]
+            experiment_payload = {
+                "submission_id": str(unscored_submission["id"]),
+                "controller_manifest": unscored_submission["manifest"],
+                "suite_name": "controller_contract_live_smoke",
+                "suite_version": "3",
+            }
 
         job = connection.execute(
             """
@@ -151,13 +525,25 @@ def tick() -> None:
                             "job_type": decision.job_type,
                             "reason": decision.reason,
                             "promoted_coding_since_discovery": promoted_coding_since_discovery,
+                            "consecutive_coding_failures": consecutive_coding_failures,
+                            "discovery_promotions_since_coding": discovery_promotions_since_coding,
+                            "recovery_mode": bool(
+                                evaluation_state["last_failure_fingerprint"]
+                                and evaluation_state["repeated_failure_count"] >= 3
+                            ),
                         },
+                        **experiment_payload,
                     }
                 ),
                 json.dumps(constraints),
-                system_state["current_baseline_commit"],
+                job_base_commit,
             ),
         ).fetchone()
+        if decision.job_type == "experiment_cycle" and unscored_submission is not None:
+            connection.execute(
+                "UPDATE bonsai.controller_submissions SET state = 'queued', updated_at = now() WHERE id = %s",
+                (unscored_submission["id"],),
+            )
         connection.execute(
             "UPDATE bonsai.objectives SET last_job_at = now(), updated_at = now() WHERE id = %s",
             (objective["id"],),
