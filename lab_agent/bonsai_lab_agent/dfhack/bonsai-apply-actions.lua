@@ -2364,13 +2364,11 @@ while QI <= #QUEUE do
                     if placed then break end
                 end
                 if not placed then
-                    if made == 0 then
-                        refuse("place_furniture", "a free " .. tostring(spec.item)
-                               .. " exists but no reachable free floor tile was found for it")
-                    end
+                    refuse("create_stockpile", string.format(
+                        "no free 2x2 site a citizen can reach was found in 48 tries "
+                        .. "(%d of %d placed)", c.create_stockpile, n))
                     break
                 end
-                made = made + 1
             end
         end)
     elseif verb == "build_workshop" then
@@ -2898,7 +2896,14 @@ while QI <= #QUEUE do
                     end
                     if placed then break end
                 end
-                if not placed then break end
+                if not placed then
+                    if made == 0 then
+                        refuse("place_furniture", "a free " .. tostring(spec.item)
+                               .. " exists but no reachable free floor tile was found for it")
+                    end
+                    break
+                end
+                made = made + 1
             end
         end)
     elseif verb == "set_dwarf_labor" then
@@ -3197,7 +3202,12 @@ while QI <= #QUEUE do
                     break
                 end
             end
-            if not still then error('no built Still') end
+            -- level 0: an intentional refusal is a message for the agent, not a stack
+            -- trace. Without it the reason arrives prefixed with the lua file and line,
+            -- which tells the reader about our source and nothing about their fort.
+            if not still then
+                error('the fort has no built Still; build_workshop Still first', 0)
+            end
 
             local reaction, reaction_id = nil, nil
             for i, r in ipairs(w.raws.reactions.reactions) do
@@ -3206,7 +3216,9 @@ while QI <= #QUEUE do
                     break
                 end
             end
-            if not reaction then error('BREW_DRINK_FROM_PLANT raw is absent') end
+            if not reaction then
+                error('the BREW_DRINK_FROM_PLANT reaction is absent from the raws', 0)
+            end
 
             local existing = 0
             for _, job in ipairs(still.jobs) do
