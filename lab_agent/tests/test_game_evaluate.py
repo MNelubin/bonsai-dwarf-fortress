@@ -132,36 +132,51 @@ def test_calibration_is_keyed_by_save_and_horizon():
     assert all(isinstance(k, tuple) and len(k) == 2 for k in CALIBRATION), (
         "endpoints keyed by horizon alone score one fort against another fort's baseline"
     )
-    assert calibration_for("bonsaifort2", 3600) == {"noop": 0.267857, "ref": 0.344119}
-    assert calibration_for("ourfort16-final", 3600) is None
-    assert calibration_for("region3-lab", 3600) is None
+    # Each fort carries its own no-op. region3-lab's is 0.281259, and reading it through
+    # bonsaifort2's 0.267857 is precisely what reported 0.176 for doing nothing.
+    assert calibration_for("bonsaifort2", 3600)["noop"] == 0.267857
+    assert calibration_for("ourfort16-final", 3600)["noop"] == 0.267857
+    assert calibration_for("region3-lab", 3600)["noop"] == 0.281259
+    assert calibration_for("region3-lab", 3600) != calibration_for("bonsaifort2", 3600)
+    # A horizon measured for one fort is not thereby measured for another.
+    assert calibration_for("region3-lab", 12000) is None
+    assert calibration_for("a-fort-nobody-measured", 3600) is None
 
 
-def test_an_uncalibrated_save_refuses_instead_of_scoring(monkeypatch):
-    # Doing nothing on the mature fort read as 0.176 under the pinned save's endpoints.
-    # A number produced against the wrong fort looks exactly like a real score, so the
-    # only safe answer for an unmeasured (save, horizon) pair is to refuse.
+def test_an_unmeasured_save_refuses_instead_of_scoring(monkeypatch):
+    # A number produced against the wrong fort looks exactly like a real score. The only
+    # safe answer for an unmeasured (save, horizon) pair is to refuse.
     from bonsai_lab_agent import game_evaluate
 
-    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "region3-lab")
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "a-fort-nobody-measured")
     result = game_evaluate.evaluate_job_v4(
         object(), {"payload": {"submission_id": "s1", "horizon_ticks": 3600}})
 
     assert result["verdict"] == "uncalibrated_horizon"
     assert result["failure_kind"] == "config"
+    assert result["summary"]["save"] == "a-fort-nobody-measured"
+    assert "a-fort-nobody-measured" in result["summary"]["reason"]
+
+
+def test_a_calibrated_save_at_an_unmeasured_horizon_also_refuses(monkeypatch):
+    from bonsai_lab_agent import game_evaluate
+
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "region3-lab")
+    result = game_evaluate.evaluate_job_v4(
+        object(), {"payload": {"submission_id": "s1", "horizon_ticks": 12000}})
+    assert result["verdict"] == "uncalibrated_horizon"
     assert result["summary"]["save"] == "region3-lab"
-    assert "region3-lab" in result["summary"]["reason"]
 
 
 def test_the_scenario_id_in_the_payload_wins_over_the_environment(monkeypatch):
     from bonsai_lab_agent import game_evaluate
 
-    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "ourfort16-final")
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "region3-lab")
     result = game_evaluate.evaluate_job_v4(
         object(),
         {"payload": {"submission_id": "s1", "horizon_ticks": 3600,
-                     "scenario_id": "region3-lab"}})
-    assert result["summary"]["save"] == "region3-lab"
+                     "scenario_id": "a-fort-nobody-measured"}})
+    assert result["summary"]["save"] == "a-fort-nobody-measured"
 
 
 def test_episode_save_falls_back_to_the_pinned_default(monkeypatch):
