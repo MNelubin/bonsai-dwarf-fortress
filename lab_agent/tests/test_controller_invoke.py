@@ -80,3 +80,78 @@ def test_end_to_end_with_scorer(tmp_path, monkeypatch):
                                        noop_composite=0.26786, ref_composite=ref)
     assert [a["command"] for a in seen["actions"]] == ["set_labor", "designate_dig"]
     assert res["score"] == 1.0 and res["summary"]["trustworthy"]
+
+
+def test_controller_host_accepts_a_list_of_actions():
+    # It accepted one dict or null only, so every stepped policy - all four reference
+    # tiers return lists - got {"error": "TypeError: ..."} back on every round. The fort
+    # was never told to do anything and the episode scored the no-op floor, silently.
+    import io
+    import json
+
+    from bonsai_lab_agent import controller_host
+
+    observation = json.dumps({"type": "observation", "observation": {"round": 0}})
+
+    def multi(obs):
+        return [{"command": "set_labor", "args": ["MINE", True]},
+                {"command": "designate_dig", "args": [80]}]
+
+    out = io.StringIO()
+    old_stdin, old_stdout = controller_host.sys.stdin, controller_host.sys.stdout
+    controller_host.sys.stdin = io.StringIO(observation + "\n")
+    controller_host.sys.stdout = out
+    try:
+        controller_host.serve(multi)
+    finally:
+        controller_host.sys.stdin, controller_host.sys.stdout = old_stdin, old_stdout
+
+    response = json.loads(out.getvalue().strip())
+    assert "error" not in response, response
+    assert isinstance(response["action"], list)
+    assert len(response["action"]) == 2
+    assert response["action"][0]["command"] == "set_labor"
+
+
+def test_controller_host_still_takes_one_action_or_null():
+    import io
+    import json
+
+    from bonsai_lab_agent import controller_host
+
+    lines = "\n".join(
+        json.dumps({"type": "observation", "observation": {"round": r}}) for r in (0, 1)
+    ) + "\n"
+    answers = iter([{"command": "advance"}, None])
+
+    out = io.StringIO()
+    old_stdin, old_stdout = controller_host.sys.stdin, controller_host.sys.stdout
+    controller_host.sys.stdin = io.StringIO(lines)
+    controller_host.sys.stdout = out
+    try:
+        controller_host.serve(lambda obs: next(answers))
+    finally:
+        controller_host.sys.stdin, controller_host.sys.stdout = old_stdin, old_stdout
+
+    first, second = [json.loads(line) for line in out.getvalue().strip().splitlines()]
+    assert first["action"] == {"command": "advance"}
+    assert second["action"] is None
+
+
+def test_controller_host_rejects_a_list_of_non_objects():
+    import io
+    import json
+
+    from bonsai_lab_agent import controller_host
+
+    out = io.StringIO()
+    old_stdin, old_stdout = controller_host.sys.stdin, controller_host.sys.stdout
+    controller_host.sys.stdin = io.StringIO(
+        json.dumps({"type": "observation", "observation": {}}) + "\n")
+    controller_host.sys.stdout = out
+    try:
+        controller_host.serve(lambda obs: ["advance", 7])
+    finally:
+        controller_host.sys.stdin, controller_host.sys.stdout = old_stdin, old_stdout
+
+    assert "error" in json.loads(out.getvalue().strip())
