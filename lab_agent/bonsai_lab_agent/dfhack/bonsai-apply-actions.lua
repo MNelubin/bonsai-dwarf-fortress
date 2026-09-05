@@ -2740,7 +2740,37 @@ while QI <= #QUEUE do
                 job = jname, amount = tonumber(a[3]) or 10,
                 material = a[4] or "", freq = "OneTime", cond = nil,
             }
-            c.add_workorder = c.add_workorder + dispatch_orders()
+            -- The counter has always been what DISPATCHED, not what was placed, so an
+            -- order that lands in the ledger and waits for a workshop reported zero and
+            -- said nothing. That reads as a broken verb and is not one: measured on a
+            -- fresh embark, ConstructBed sat correctly in the ledger while every
+            -- workshop kept being deleted for want of a legal reagent.
+            local sent = dispatch_orders()
+            c.add_workorder = c.add_workorder + sent
+            if sent == 0 then
+                -- spec_for returns the VARIANTS of a job, each naming the workshop that
+                -- can do it, so report all of them rather than guessing at the first.
+                local shops, seen = {}, {}
+                for _, variant in ipairs(spec_for(jname) or {}) do
+                    if variant.shop and not seen[variant.shop] then
+                        seen[variant.shop] = true
+                        shops[#shops + 1] = variant.shop
+                    end
+                end
+                local have = 0
+                for _, b in ipairs(w.buildings.all) do
+                    if df.building_workshopst:is_instance(b) and built(b)
+                        and seen[tostring(df.workshop_type[b.type])] then
+                        have = have + 1
+                    end
+                end
+                refuse("add_workorder", string.format(
+                    "%s is queued in the ledger but nothing can work it yet: it needs a "
+                    .. "built %s and the fort has %d",
+                    tostring(jname),
+                    #shops > 0 and table.concat(shops, " or ") or "workshop",
+                    have))
+            end
         end)
     elseif verb == "add_workorder_conditional" then
         -- AUTOMATION: watch a stock level and refill it without being asked again.
