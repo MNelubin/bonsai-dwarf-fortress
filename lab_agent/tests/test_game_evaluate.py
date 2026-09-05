@@ -132,15 +132,16 @@ def test_calibration_is_keyed_by_save_and_horizon():
     assert all(isinstance(k, tuple) and len(k) == 2 for k in CALIBRATION), (
         "endpoints keyed by horizon alone score one fort against another fort's baseline"
     )
-    # Each fort carries its own no-op. region3-lab's is 0.281259, and reading it through
-    # bonsaifort2's 0.267857 is precisely what reported 0.176 for doing nothing.
     assert calibration_for("bonsaifort2", 3600)["noop"] == 0.267857
-    assert calibration_for("ourfort16-final", 3600)["noop"] == 0.267857
-    assert calibration_for("region3-lab", 3600)["noop"] == 0.281259
-    assert calibration_for("region3-lab", 3600) != calibration_for("bonsaifort2", 3600)
     # A horizon measured for one fort is not thereby measured for another.
-    assert calibration_for("region3-lab", 12000) is None
+    assert calibration_for("bonsaifort2", 99) is None
     assert calibration_for("a-fort-nobody-measured", 3600) is None
+    # ourfort16-final and region3-lab were measured on 2026-09-05 and WITHDRAWN on
+    # 2026-09-06: the comfort term was arithmetically zero at the time, so a fifth of the
+    # metric's weight was structurally absent from every one of those composites. They
+    # refuse until re-measured, which is the whole reason the lookup can refuse at all.
+    assert calibration_for("ourfort16-final", 3600) is None
+    assert calibration_for("region3-lab", 3600) is None
 
 
 def test_an_unmeasured_save_refuses_instead_of_scoring(monkeypatch):

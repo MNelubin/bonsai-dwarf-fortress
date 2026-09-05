@@ -87,8 +87,18 @@ CALIBRATION = {
     # also carries real variance (sigma 0.0044) where the fresh embark has none, and its
     # cohort never fully survives three days - it starts with 13 hostiles and 101
     # injured, so the survival gate is already pressed in both endpoints alike.
-    ("ourfort16-final", 3600): {"noop": 0.267857, "ref": 0.297285},  # 0.029   sigma 0
-    ("region3-lab", 3600):     {"noop": 0.281259, "ref": 0.332826},  # 0.052   sigma 0.0044
+    # WITHDRAWN 2026-09-06. These were measured while the comfort term was
+    # arithmetically zero — _sat divided the hunger timer by the episode horizon, which
+    # is the same quantity — so every composite below carried a structural 0 for a fifth
+    # of the metric's weight. Now that comfort is normalised against measured fort
+    # behaviour the endpoints are wrong, and scoring against them would produce numbers
+    # that look real and are not. An unmeasured pair refuses; that is the point.
+    #
+    # The withdrawn values, for the re-measurement to diff against:
+    #   ("ourfort16-final", 3600): noop 0.267857  ref 0.297285   gap 0.029
+    #   ("region3-lab",     3600): noop 0.281259  ref 0.332826   gap 0.052
+    #
+    # Re-measure with calibrate.py at k=5 per (save, tier) before any scoring run.
 }
 
 DEFAULT_SAVE = "bonsaifort2"
@@ -124,17 +134,38 @@ class EpisodeObs:
     workorders_done: int       # manager order units completed since T0 (development)
 
 
-def _sat(timer_sum: int, cohort_size: int, horizon_ticks: int) -> float:
+# What a dwarf's hunger and thirst timers look like on a fort that is FINE. Measured
+# 2026-09-06 on region3-lab, 136 citizens, none in any distress:
+#
+#     hunger   min 0   p50 21190   p90 42005   max 64021
+#     thirst   min 0   p50 12775   p90 22068   max 35167
+#
+# These are the observed ceilings of a functioning fort, not DF's internal hunger
+# threshold, which this build of DFHack does not expose (there is no isHungry,
+# isThirsty, isStarving or isDehydrated) and which has not been measured. Naming them
+# for what they are rather than as a threshold, because guessing a threshold from
+# folklore is exactly how this file came to carry "TICKS_PER_DAY = 86400 (verified
+# against position.lua)".
+COMFORT_HUNGER_CEILING = 64_021
+COMFORT_THIRST_CEILING = 35_167
+
+
+def _sat(timer_sum: int, cohort_size: int, ceiling: int) -> float:
     """Provisioning-comfort satisfaction in [0,1]: 1.0 = perfectly fed/watered.
 
-    hunger/thirst timers climb when a need is unmet. Normalize the per-dwarf mean
-    timer against the horizon length (the worst case is a dwarf hungry the whole
-    episode). Higher timer -> lower satisfaction.
+    The timers count TICKS SINCE THE DWARF LAST ATE OR DRANK. This used to divide the
+    per-dwarf mean by the EPISODE HORIZON, which is the same quantity for anyone who did
+    not happen to eat during the episode: measured on ourfort16-final at horizon 3600,
+    hunger_sum went 0 -> 25200 across 7 citizens, a mean of exactly 3600, so satisfaction
+    was exactly 1 - 3600/3600 = 0. The term was arithmetically zero rather than
+    conditionally zero, and it carries 20% of the metric's weight.
+
+    Normalise against what a working fort actually shows instead.
     """
-    if cohort_size <= 0 or horizon_ticks <= 0:
+    if cohort_size <= 0 or ceiling <= 0:
         return 0.0
     mean_timer = timer_sum / cohort_size
-    return max(0.0, 1.0 - mean_timer / horizon_ticks)
+    return max(0.0, 1.0 - mean_timer / ceiling)
 
 
 def raw_components(obs: EpisodeObs, t0: EpisodeObs, horizon_ticks: int,
@@ -158,8 +189,8 @@ def raw_components(obs: EpisodeObs, t0: EpisodeObs, horizon_ticks: int,
     provisioning = 0.5 * (food_adeq + drink_adeq)
 
     # --- comfort: dwarves kept fed/watered (low hunger/thirst) ---
-    comfort = 0.5 * (_sat(obs.hunger_sum, t0.cohort_size, horizon_ticks)
-                     + _sat(obs.thirst_sum, t0.cohort_size, horizon_ticks))
+    comfort = 0.5 * (_sat(obs.hunger_sum, t0.cohort_size, COMFORT_HUNGER_CEILING)
+                     + _sat(obs.thirst_sum, t0.cohort_size, COMFORT_THIRST_CEILING))
     # a dwarf in the stress danger band zeroes comfort credit for that dwarf
     if t0.cohort_size > 0:
         comfort *= max(0.0, 1.0 - obs.stress_danger / t0.cohort_size)
