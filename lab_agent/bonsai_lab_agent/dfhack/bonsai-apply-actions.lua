@@ -2999,6 +2999,15 @@ while QI <= #QUEUE do
                 end
                 if marked >= n then break end
             end
+            if marked == 0 then
+                local trees = 0
+                for _, plant in ipairs(w.plants.all) do
+                    if plant.tree_info then trees = trees + 1 end
+                end
+                refuse("chop_trees", string.format(
+                    "the map has %d trees but none stood on a tile a citizen can reach "
+                    .. "from where they are", trees))
+            end
             if marked > 0 then
                 pcall(function() df.global.process_dig = true end)
                 c.chop_trees = c.chop_trees + marked
@@ -3073,7 +3082,14 @@ while QI <= #QUEUE do
                     end
                     if placed then break end
                 end
-                if not placed then break end
+                if not placed then
+                    if c.build_construction == 0 then
+                        refuse("build_construction", string.format(
+                            "found material but no reachable free tile to build a %s on "
+                            .. "in 12 tries", tostring(a[2])))
+                    end
+                    break
+                end
             end
         end)
     elseif verb == "set_standing_order" then
@@ -3328,9 +3344,27 @@ while QI <= #QUEUE do
                 refuse("set_kitchen_flag", "no such item type: " .. tostring(a[2]))
                 return
             end
+            -- exc_types is vector<kitchen_exc_type> and holds TYPED values. Inserting
+            -- the integer 0 raises "incompatible object type", and so does the enum
+            -- member. Measured on the mature save, which has 210 exclusions:
+            --   integer 0        -> incompatible object type
+            --   kitchen_exc_type -> incompatible object type
+            --   copy of exc_types[0] -> accepted
+            -- dfhack.kitchen does expose addExclusion/findExclusion/removeExclusion, but
+            -- every argument order tried against this build answered "Cannot write field
+            -- (global).findExclusion()", so the module is not usable from lua here.
+            -- Copy an element the vector already holds; fall back to the plain value on a
+            -- fort that has no exclusions yet, which is the case the fresh embark proved
+            -- works. This was invisible until the mature fort exercised it.
             local k = df.global.plotinfo.kitchen
+            local function push_exc()
+                if #k.exc_types > 0 then
+                    k.exc_types:insert('#', k.exc_types[0])
+                else
+                    k.exc_types:insert('#', 0)
+                end
+            end
             local changed, reached = 0, 0
-            -- one exclusion per (item type, material) the fort actually holds
             local seen = {}
             for _, it in ipairs(w.items.all) do
                 if it:getType() == itype then
@@ -3356,7 +3390,7 @@ while QI <= #QUEUE do
                             k.item_subtypes:insert('#', it:getSubtype())
                             k.mat_types:insert('#', mt)
                             k.mat_indices:insert('#', mi)
-                            k.exc_types:insert('#', 0)   -- 0 = cookery
+                            push_exc()
                             changed = changed + 1
                         end
                     end
@@ -3367,6 +3401,9 @@ while QI <= #QUEUE do
             -- false` looked like a failed verb.
             if changed > 0 or reached > 0 then
                 c.set_kitchen_flag = c.set_kitchen_flag + 1
+            else
+                refuse("set_kitchen_flag", string.format(
+                    "the fort holds no %s to allow or forbid", tostring(a[2])))
             end
         end)
     end
