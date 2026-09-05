@@ -2714,6 +2714,41 @@ while QI <= #QUEUE do
             end
             if u and assign_noble(code, u) then
                 c.assign_noble = c.assign_noble + 1
+            elseif not u then
+                refuse("assign_noble", string.format(
+                    "no citizen could be picked for %s out of %d", tostring(code), #cits))
+            else
+                -- assign_noble() has four ways to answer false and they mean different
+                -- things to a caller. Silent on the fresh embark because the seat was
+                -- empty; silent on the mature fort because it is already filled, which
+                -- reads as a broken verb rather than as "nothing to do".
+                local ent = df.global.plotinfo.main.fortress_entity
+                local pos, holder = nil, nil
+                if ent then
+                    for _, pp in ipairs(ent.positions.own) do
+                        if pp.code == code then pos = pp break end
+                    end
+                    if pos then
+                        for _, asg in ipairs(ent.positions.assignments) do
+                            if asg.position_id == pos.id and asg.histfig ~= -1 then
+                                holder = df.historical_figure.find(asg.histfig)
+                                break
+                            end
+                        end
+                    end
+                end
+                if not pos then
+                    refuse("assign_noble", string.format(
+                        "this fortress has no %s position", tostring(code)))
+                elseif holder then
+                    refuse("assign_noble", string.format(
+                        "%s is already held by %s", tostring(code),
+                        tostring(dfhack.df2console(dfhack.units.getReadableName(holder)
+                                 or "someone"))))
+                else
+                    refuse("assign_noble", string.format(
+                        "DF refused the %s seat for the chosen dwarf", tostring(code)))
+                end
             end
         end)
     elseif verb == "add_workorder" then
