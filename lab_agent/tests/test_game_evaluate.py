@@ -124,3 +124,49 @@ def test_evaluate_job_v4_keepalive_thread_renews_lease(monkeypatch):
         FakeConfig(), {"payload": {"submission_id": "s", "horizon_ticks": 36000}},
         api=FakeApi())
     assert sum(1 for b in beats if b.get("keepalive")) >= 1
+
+
+def test_calibration_is_keyed_by_save_and_horizon():
+    from bonsai_lab_agent.scoring import CALIBRATION, calibration_for
+
+    assert all(isinstance(k, tuple) and len(k) == 2 for k in CALIBRATION), (
+        "endpoints keyed by horizon alone score one fort against another fort's baseline"
+    )
+    assert calibration_for("bonsaifort2", 3600) == {"noop": 0.267857, "ref": 0.344119}
+    assert calibration_for("ourfort16-final", 3600) is None
+    assert calibration_for("region3-lab", 3600) is None
+
+
+def test_an_uncalibrated_save_refuses_instead_of_scoring(monkeypatch):
+    # Doing nothing on the mature fort read as 0.176 under the pinned save's endpoints.
+    # A number produced against the wrong fort looks exactly like a real score, so the
+    # only safe answer for an unmeasured (save, horizon) pair is to refuse.
+    from bonsai_lab_agent import game_evaluate
+
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "region3-lab")
+    result = game_evaluate.evaluate_job_v4(
+        object(), {"payload": {"submission_id": "s1", "horizon_ticks": 3600}})
+
+    assert result["verdict"] == "uncalibrated_horizon"
+    assert result["failure_kind"] == "config"
+    assert result["summary"]["save"] == "region3-lab"
+    assert "region3-lab" in result["summary"]["reason"]
+
+
+def test_the_scenario_id_in_the_payload_wins_over_the_environment(monkeypatch):
+    from bonsai_lab_agent import game_evaluate
+
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "ourfort16-final")
+    result = game_evaluate.evaluate_job_v4(
+        object(),
+        {"payload": {"submission_id": "s1", "horizon_ticks": 3600,
+                     "scenario_id": "region3-lab"}})
+    assert result["summary"]["save"] == "region3-lab"
+
+
+def test_episode_save_falls_back_to_the_pinned_default(monkeypatch):
+    from bonsai_lab_agent import game_evaluate
+    from bonsai_lab_agent.scoring import DEFAULT_SAVE
+
+    monkeypatch.delenv("BONSAI_EPISODE_SAVE", raising=False)
+    assert game_evaluate.episode_save() == DEFAULT_SAVE

@@ -22,7 +22,7 @@ from typing import Any
 
 from bonsai_lab_agent import game_scorer
 from bonsai_lab_agent.persistent_controller import make_persistent_controller_fn
-from bonsai_lab_agent.scoring import CALIBRATION
+from bonsai_lab_agent.scoring import DEFAULT_SAVE, calibration_for
 
 DEFAULT_HORIZON = int(os.environ.get("BONSAI_SCORE_HORIZON", "3600"))
 DEFAULT_K = int(os.environ.get("BONSAI_SCORE_K", "5"))
@@ -34,13 +34,22 @@ DFHACK_VERSION = os.environ.get("BONSAI_DFHACK_VERSION", "53.15-r2")
 HEARTBEAT_INTERVAL = int(os.environ.get("BONSAI_HEARTBEAT_SECONDS", "45"))
 
 
-def _uncalibrated(submission_id, horizon: int) -> dict[str, Any]:
+def episode_save() -> str:
+    """Which fort an episode will actually load.
+
+    One definition, shared with DFSession, so the endpoints a run is scored against and
+    the save it actually plays can never drift apart.
+    """
+    return os.environ.get("BONSAI_EPISODE_SAVE") or DEFAULT_SAVE
+
+
+def _uncalibrated(submission_id, horizon: int, save: str) -> dict[str, Any]:
     return {
         "submission_id": submission_id,
         "suite_name": game_scorer.SUITE_NAME, "suite_version": game_scorer.SUITE_VERSION,
         "score": 0.0, "verdict": "uncalibrated_horizon", "failure_kind": "config",
-        "summary": {"horizon_ticks": horizon,
-                    "reason": "no live CALIBRATION endpoints for this horizon"},
+        "summary": {"horizon_ticks": horizon, "save": save,
+                    "reason": f"no live endpoints for save {save!r} at horizon {horizon}"},
         "metrics": [],
     }
 
@@ -59,9 +68,13 @@ def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
     horizon = int(payload.get("horizon_ticks") or DEFAULT_HORIZON)
     k = int(payload.get("k") or DEFAULT_K)
 
-    cal = CALIBRATION.get(horizon)
+    # Endpoints belong to a (save, horizon) pair. Scoring a fort against another fort's
+    # baseline produces something that looks exactly like a score and is not one: doing
+    # nothing on the mature save read as 0.176 under the pinned save's numbers.
+    save = payload.get("scenario_id") or episode_save()
+    cal = calibration_for(save, horizon)
     if not cal or cal.get("noop") is None or cal.get("ref") is None:
-        return _uncalibrated(submission_id, horizon)
+        return _uncalibrated(submission_id, horizon, save)
 
     repo = prepare_checkout(config, job)
     command = controller_command(repo, manifest)
@@ -104,7 +117,7 @@ def evaluate_job_v4(config, job: dict[str, Any], api=None) -> dict[str, Any]:
 
     result["submission_id"] = submission_id
     result["regime_key"] = game_scorer.regime_key(
-        scenario_id=payload.get("scenario_id", "bonsaifort2"),
+        scenario_id=save,
         save_sha256=payload.get("save_sha256"),
         df_version=DF_VERSION, dfhack_version=DFHACK_VERSION,
         plugin_set_hash=payload.get("plugin_set_hash"),

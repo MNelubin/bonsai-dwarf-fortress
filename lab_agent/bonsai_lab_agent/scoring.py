@@ -44,23 +44,41 @@ STRESS_DANGER_THRESHOLD = 100_000
 # scores 1). Measured LIVE (full format, wildlife ON) via live_episode.calibrate_*.
 # no-op is σ≈0 across episodes (scored surface is deterministic); ref is filled once
 # the reference policy (action verbs) exists. Horizons are fort-days*1200 ticks.
+# Endpoints are keyed by (SAVE, horizon), not by horizon alone. A fort's no-op composite
+# is a property of that fort: measured live on 2026-09-05, doing nothing on the mature
+# region3-lab scored 0.176 against these pinned-save endpoints, because a mature fort
+# keeps working without being told to. Scoring one save against another save's endpoints
+# measures the wrong world - and regime_key already recorded scenario and save_sha256
+# while the lookup ignored both.
 CALIBRATION = {
     # Re-measured 2026-07-30 under the STEPPED driver (interaction model B) with the
-    # development signals working. The previous table was taken under the one-shot
-    # driver against a metric whose development term was structurally 0 for every
-    # agent, so its endpoints were measuring provisioning drift and nothing else —
-    # every rung had the same +0.055 gap regardless of horizon, which is exactly the
-    # fingerprint of a dead component.
+    # development signals working, on the pinned bonsaifort2 save under DF 53.15. The
+    # previous table was taken under the one-shot driver against a metric whose
+    # development term was structurally 0 for every agent, so its endpoints were
+    # measuring provisioning drift and nothing else - every rung had the same +0.055 gap
+    # regardless of horizon, which is exactly the fingerprint of a dead component.
     #
     # The gap now GROWS with the horizon, as it should: more time is more fort to
     # build. Reference is a plain competent policy (mine steadily, keep stockpiles,
     # staff the labours), deliberately not an optimal one, so 1.0 stays reachable.
     #
-    #        no-op      reference   gap     ref dug/buildings
-    3600:  {"noop": 0.267857, "ref": 0.344119},   # 0.076   18 / 7
-    12000: {"noop": 0.278571, "ref": 0.381475},   # 0.103   64 / 7
-    36000: {"noop": 0.337346, "ref": 0.456135},   # 0.119   86 / 8
+    #                          no-op      reference   gap     ref dug/buildings
+    ("bonsaifort2", 3600):  {"noop": 0.267857, "ref": 0.344119},   # 0.076   18 / 7
+    ("bonsaifort2", 12000): {"noop": 0.278571, "ref": 0.381475},   # 0.103   64 / 7
+    ("bonsaifort2", 36000): {"noop": 0.337346, "ref": 0.456135},   # 0.119   86 / 8
 }
+
+DEFAULT_SAVE = "bonsaifort2"
+
+
+def calibration_for(save, horizon_ticks):
+    """Endpoints for one fort at one horizon, or None if that pair was never measured.
+
+    Refusing is the point. An uncalibrated pair must yield `uncalibrated_horizon` rather
+    than a number computed against another fort's baseline, because such a number looks
+    exactly like a real score and is not one.
+    """
+    return CALIBRATION.get((save or DEFAULT_SAVE, int(horizon_ticks)))
 
 
 @dataclass(frozen=True)
