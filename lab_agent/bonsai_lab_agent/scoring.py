@@ -24,7 +24,10 @@ import math
 
 # Fort mode runs ~1200 ticks per in-game day (empirically confirmed: cur_year_tick
 # advances 1:1 with world.frame_counter). NOTE: bridge/core.lua + player/*.py carry
-# a legacy TICKS_PER_DAY=86400 bug being fixed in a separate task; do not import it.
+# The 86400 split is closed: bridge/calendar.py is the measured source of truth for
+# the repo-root code, and tests/test_bridge_contract.py asserts every definition in
+# the tree agrees. The lab agent is a separate installed package and cannot import
+# bridge, so it keeps its own literal - that test is what keeps them honest.
 TICKS_PER_DAY = 1200
 
 # Development is the discriminating axis (7 dwarves don't starve in 30 days, so

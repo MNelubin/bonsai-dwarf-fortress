@@ -6,17 +6,19 @@ Fields verified in bridge/core.lua and live-probed on installed runtime:
   df.global.cur_season     — current season index 0-3 (integer)
   df.global.cur_year_tick  — ticks elapsed within the current year (integer)
   df.global.pause_state    — is game paused (boolean)
-  TICKS_PER_DAY            = 86400  (verified against position.lua in hack tree)
-  TICKS_PER_SEASON         = 361 * 86400  (361 days per season)
+  TICKS_PER_DAY / TICKS_PER_SEASON — from bridge.calendar, measured against the
+  live 53.16 save rather than assumed; this file used to claim 86400 and 361.
 
 probe_time() returns a dict or None on transport failure.
 """
 
 from game_runner.episode import _dfhack_run
 
-TICKS_PER_DAY = 86400
-TICKS_PER_SEASON = 361 * TICKS_PER_DAY
-SEASONS_PER_YEAR = 4
+# Single source of truth. This file previously defined 86400 ticks per day and 361
+# days per season while player/ and the lab agent used 1200 — half the tree measured
+# time in a calendar the game does not have.
+from bridge.calendar import (SEASONS_PER_YEAR, TICKS_PER_DAY,  # noqa: F401
+                             TICKS_PER_SEASON)
 
 # Known season identifiers from DF source (verified by community data).
 SEASON_NAMES = [

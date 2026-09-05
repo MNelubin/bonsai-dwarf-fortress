@@ -13,9 +13,10 @@ from bridge.contracts import CONTRACT_SCHEMA, validate_episode_metrics
 # ---------------------------------------------------------------------------
 # Constants — match the 30-day survival target
 # ---------------------------------------------------------------------------
-TICKS_PER_DAY      = 86400
-DAYS_PER_SEASON    = 361
-SEASONS_PER_YEAR   = 4
+# From bridge.calendar: 86400 is seconds in a real day and 361 is not DF's year.
+# See that module for the live measurement that settles it.
+from bridge.calendar import (DAYS_PER_SEASON, SEASONS_PER_YEAR,  # noqa: F401
+                            TICKS_PER_DAY)
 TARGET_DAYS        = 30
 TARGET_TICKS       = TICKS_PER_DAY * TARGET_DAYS
 
@@ -244,7 +245,7 @@ def benchmark_inference_latency(*policies, sample_obs=None, n_warmup=5, n_bench=
             "version": "1.0",
             "gametype": "df.game_type.DWARF_FORTRESS",
             "cur_year": 1, "cur_season": 1,
-            "cur_tick": 86400 * 5,
+            "cur_tick": TICKS_PER_DAY * 5,
             "paused": False,
             "units": [
                 {"id": i, "race": 0, "civ_id": 1, "killed": False, "pos": [0, 0, 0]}

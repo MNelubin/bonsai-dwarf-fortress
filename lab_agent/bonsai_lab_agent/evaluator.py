@@ -226,23 +226,28 @@ def controller_command(repo: Path, manifest: dict[str, Any]) -> list[str]:
 
 
 def fixture_observations() -> list[dict[str, Any]]:
+    # These ticks were 86400 and 30*86400 - seconds in a real day, not DF ticks - so the
+    # fixture described a fort seventy-two times older than it claimed. A fixture that
+    # lies about the tick scale teaches a controller the wrong one.
+    from bonsai_lab_agent.scoring import TICKS_PER_DAY
+
     return [
         {"gametype": None, "cur_tick": 0, "paused": True, "units": []},
         {
             "gametype": "DWARF_FORTRESS",
-            "cur_tick": 86400,
+            "cur_tick": TICKS_PER_DAY,
             "paused": False,
             "units": [{"id": 1, "civ_id": 1, "killed": False}],
         },
         {
             "gametype": "DWARF_FORTRESS",
-            "cur_tick": 30 * 86400,
+            "cur_tick": 30 * TICKS_PER_DAY,
             "paused": True,
             "units": [{"id": 1, "civ_id": 1, "killed": False}],
         },
         {
             "gametype": "DWARF_FORTRESS",
-            "cur_tick": 86400,
+            "cur_tick": TICKS_PER_DAY,
             "paused": False,
             "units": [{"id": 1, "civ_id": 1, "killed": False}],
         },

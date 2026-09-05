@@ -7,6 +7,10 @@ import os
 import subprocess
 import uuid
 
+# The synthetic episode runner used 86400 as a day, which is seconds in a real
+# day, not DF ticks. bridge.calendar carries the measured value.
+from bridge.calendar import TICKS_PER_DAY
+
 from bridge.contracts import EpisodeLogger
 
 # Path to the active DFHack installation.
@@ -49,7 +53,8 @@ def _simulate_citizens(seed, num_citizens=4):
     # Survival ticks based on seed — determines at what tick a stress event occurs.
     # We use the same seed to compute how many ticks until the first simulated death.
     survival_hash = _deterministic_seed(seed + 1)
-    first_death_ticks = int.from_bytes(survival_hash, "little") % (86400 * 30) + 86400 * 5
+    first_death_ticks = (int.from_bytes(survival_hash, "little")
+                         % (TICKS_PER_DAY * 30) + TICKS_PER_DAY * 5)
 
     return units, first_death_ticks
 
@@ -202,8 +207,8 @@ class EpisodeRunner:
         for unit in self.units:
             if not unit["killed"] and current_tick >= self.death_ticks:
                 # Deterministic death: only kill units whose id's last digit
-                # is <= (current_tick - death_ticks) // (86400 * 3). This spreads deaths.
-                days_past = (current_tick - self.death_ticks) // 86400
+                # is <= (current_tick - death_ticks) // (TICKS_PER_DAY * 3).
+                days_past = (current_tick - self.death_ticks) // TICKS_PER_DAY
                 if unit["id"] % 10 <= min(days_past, 9):
                     unit["killed"] = True
 

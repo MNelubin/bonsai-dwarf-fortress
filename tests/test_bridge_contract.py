@@ -4,6 +4,7 @@ These tests exercise the Python-side stubs (no live DF required) and
 validate that all data shapes match bridge/contracts.json.
 """
 
+from bridge.calendar import DAYS_PER_SEASON, TICKS_PER_DAY, TICKS_PER_SEASON
 import contextlib
 import json
 import os
@@ -887,10 +888,10 @@ class TestCitizenSimulation:
         """When ticks cross the death threshold, some units become killed."""
         runner = EpisodeRunner(seed=0, max_steps=100, action_budget=50)
         # The death threshold is at least 5 days; advance past it.
-        runner.advance(86400 * 6)
+        runner.advance(TICKS_PER_DAY * 6)
         alive_count_before = sum(1 for u in runner.units if not u["killed"])
         # Advance many more days to trigger further deaths.
-        runner.advance(86400 * 25)
+        runner.advance(TICKS_PER_DAY * 25)
         alive_after = sum(1 for u in runner.units if not u["killed"])
         assert alive_after <= alive_count_before
 
@@ -1211,7 +1212,7 @@ class TestGradualAdvance:
 
     def test_smaller_late_chunk(self):
         skill = GradualAdvance()
-        near_end = TARGET_TICKS - 86400
+        near_end = TARGET_TICKS - TICKS_PER_DAY
         result = skill.steps({"cur_tick": near_end})
         assert result is not None
         assert result[0]["command"] == "advance"
@@ -1247,7 +1248,7 @@ class TestResourceMonitor:
             {"killed": True, "civ_id": 2},
         ]
         obs = {
-            "cur_tick": 86400 * 10,
+            "cur_tick": TICKS_PER_DAY * 10,
             "units": units,
         }
         result = skill.steps(obs)
@@ -1539,18 +1540,18 @@ class TestTimeProbeHelper:
     def test_total_ticks_after_first_season(self):
         # year=0, season=1, tick=0 → 1 * TICKS_PER_SEASON
         t = total_ticks(0, 1, 0)
-        assert t == 1 * 86400 * 361
+        assert t == 1 * TICKS_PER_SEASON
 
     def test_total_ticks_nonzero_year(self):
         # year=1, season=0, tick=0 is two full years worth of seasons.
         t = total_ticks(1, 0, 0)
-        expected = (1 * 4 + 0) * 361 * 86400
+        expected = (1 * 4 + 0) * TICKS_PER_SEASON
         assert t == expected
 
     def test_total_ticks_with_partial_tick(self):
-        # year=0, season=2 (autumn), 5 days in → base + 5*86400
-        t = total_ticks(0, 2, 5 * 86400)
-        expected = 2 * 361 * 86400 + 5 * 86400
+        # year=0, season=2 (autumn), 5 days in
+        t = total_ticks(0, 2, 5 * TICKS_PER_DAY)
+        expected = 2 * TICKS_PER_SEASON + 5 * TICKS_PER_DAY
         assert t == expected
 
     def test_total_ticks_null_fields(self):
@@ -1567,8 +1568,9 @@ class TestTimeProbeHelper:
     def test_days_elapsed_30_day_survival(self):
         from bridge.probe import TICKS_PER_DAY
         # Start at end of season 0, advance to day 30 in season 1.
+        # One full season behind us plus 30 days into the next: 84 + 30.
         d = days_elapsed(0, 1, 30 * TICKS_PER_DAY)
-        assert d == (0 * 4 + 1) * 361 + 30
+        assert d == (0 * 4 + 1) * DAYS_PER_SEASON + 30
 
     def test_days_elapsed_zero(self):
         assert days_elapsed(0, 0, 0) == 0
@@ -1588,22 +1590,38 @@ class TestTimeProbeHelper:
     def test_season_name_none(self):
         assert season_name(None) is None
 
-    def test_constants_match_contracts(self):
-        """TICKS_PER_DAY in probe matches baseline and contract code."""
-        from bridge.probe import TICKS_PER_DAY
-        from player.baseline import TICKS_PER_DAY as BTPD
-        assert TICKS_PER_DAY == BTPD == 86400
+    def test_every_calendar_in_the_tree_agrees(self):
+        """One calendar, everywhere.
+
+        The tree held six definitions of TICKS_PER_DAY split three against three:
+        bridge/probe.py and evaluator_public said 86400 with 361-day seasons, while
+        player/ and the lab agent said 1200. This test asserted the wrong pair, which
+        is why the split survived every review - it was pinned in place.
+        """
+        from bridge.calendar import TICKS_PER_DAY as TRUTH
+        from bridge.probe import TICKS_PER_DAY as PROBE
+        from evaluator_public import TICKS_PER_DAY as EVAL
+        from player.baseline import TICKS_PER_DAY as BASELINE
+        from player.cpu_policy import TICKS_PER_DAY as CPU
+        assert TRUTH == PROBE == EVAL == BASELINE == CPU == 1200
+
+    def test_the_calendar_reproduces_a_date_the_game_printed(self):
+        """Measured, not asserted: DF 53.16 region3-lab reported cur_year_tick 299484
+        in year 259, and its own save list dates that 26th Timber, late autumn."""
+        from bridge.calendar import date, day_of_year
+        assert date(299484) == (26, "Timber")
+        assert day_of_year(299484) == 250
 
     def test_ticks_per_season_consistency(self):
-        """TICKS_PER_SEASON across probe, baseline, and evaluator all equal 361 * 86400."""
+        """A season is three 28-day months: 84 days, 100800 ticks."""
         from bridge.probe import TICKS_PER_SEASON as PROBE_TPS
         from player.baseline import DAYS_PER_SEASON as BASELINES_DPS
         from player.baseline import TICKS_PER_DAY as BASELINE_TPD
         from evaluator_public import DAYS_PER_SEASON as EVAL_DPS
-        expected = 361 * 86400
+        expected = 84 * 1200
         assert expected == PROBE_TPS
         assert expected == BASELINES_DPS * BASELINE_TPD
-        assert EVAL_DPS == 361
+        assert EVAL_DPS == DAYS_PER_SEASON == 84
 
     def test_lua_time_snapshot_is_string(self):
         """The Lua expression builder returns valid code."""
