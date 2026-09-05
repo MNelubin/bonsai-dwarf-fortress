@@ -131,6 +131,17 @@ local function refuse(verb, why)
     print(string.format('REFUSED %s: %s', verb, tostring(why)))
 end
 
+-- Every verb body runs inside pcall and the error was thrown away, so a failure
+-- in the BODY looked exactly like a verb that chose to do nothing: zero counter,
+-- no refusal, no trace. set_standing_order passed both of its preconditions and
+-- still reported nothing, because the assignment underneath raised and vanished.
+-- Keep the isolation - one bad verb must not abort the batch - but say what broke.
+local function attempt(verb, fn)
+    local ok, err = pcall(fn)
+    if not ok then refuse(verb, err) end
+    return ok
+end
+
 local function free_material(...)
     local wants = { ... }
     if #wants == 0 then wants = { df.item_type.WOOD, df.item_type.BOULDER } end
@@ -1930,7 +1941,7 @@ while QI <= #QUEUE do
     local a = split(line)
     local verb = a[1]
     if verb == "set_labor" then
-        pcall(function()
+        attempt("set_labor", function()
             local lid = df.unit_labor[a[2]]
             if lid then
                 local on = (a[3] ~= "False" and a[3] ~= "false" and a[3] ~= "0")
@@ -1947,7 +1958,7 @@ while QI <= #QUEUE do
         --
         -- So designate what a player would: a staircase down from the dwarf, then a room
         -- carved off each landing. Every tile is connected to the one above it.
-        pcall(function()
+        attempt("designate_dig", function()
             local n = tonumber(a[2]) or 25
             if not u1 then return end
             -- Pin the shaft head for the whole FORT, not the whole process. Citizen[1]
@@ -2133,7 +2144,7 @@ while QI <= #QUEUE do
     elseif verb == "build_room" then
         -- One idempotent, resumable request. All coordinates and requirements reaching
         -- this point were expanded by the trusted Python gate from the archived design.
-        pcall(function()
+        attempt("build_room", function()
             local r = room_from_args(a)
             advance_room(r)
             save_rooms()
@@ -2160,7 +2171,7 @@ while QI <= #QUEUE do
         -- #notes help section, so running the file printed a walkthrough and stamped
         -- nothing; library/tombs/Mini_Saracen.csv worked only because its first section
         -- happens to be #dig. Anything else must be named as -n /<label>.
-        pcall(function()
+        attempt("apply_template", function()
             local name = a[2]
             local bw, bh = tonumber(a[3]), tonumber(a[4])
             local sx, sy = tonumber(a[6]) or 1, tonumber(a[7]) or 1
@@ -2315,7 +2326,7 @@ while QI <= #QUEUE do
             end
         end)
     elseif verb == "create_stockpile" then
-        pcall(function()
+        attempt("create_stockpile", function()
             local n = tonumber(a[2]) or 1
             -- A pile is placed WITH a type in DF's own UI — you pick from a menu. Ours
             -- placed an untyped one, which accepts nothing, so the catalog's claim that
@@ -2352,13 +2363,20 @@ while QI <= #QUEUE do
                     end
                     if placed then break end
                 end
-                if not placed then break end
+                if not placed then
+                    if made == 0 then
+                        refuse("place_furniture", "a free " .. tostring(spec.item)
+                               .. " exists but no reachable free floor tile was found for it")
+                    end
+                    break
+                end
+                made = made + 1
             end
         end)
     elseif verb == "build_workshop" then
         -- Without a workshop no manager order can ever be worked, so `workorders_done`
         -- was structurally pinned at 0 and half the development weight was unearnable.
-        pcall(function()
+        attempt("build_workshop", function()
             local name = a[2] or "Carpenters"
             local deferred = a[3] == "deferred"
             local sub = df.workshop_type[name]
@@ -2474,7 +2492,7 @@ while QI <= #QUEUE do
         --   a[3] members, "W:Carpenters,W:Still" — W for workshop, F for furnace
         --   a[4] stockpile categories, "food,wood,furniture"
         --   a[5] width  a[6] height of the whole row
-        pcall(function()
+        attempt("build_workshop_cluster", function()
             local name = a[2]
             if not name or name == '' then
                 refuse("build_workshop_cluster", "no cluster name given")
@@ -2673,7 +2691,7 @@ while QI <= #QUEUE do
                                        staffed = staffed }
         end)
     elseif verb == "assign_noble" then
-        pcall(function()
+        attempt("assign_noble", function()
             local code = a[2]
             if not code or #code == 0 then return end
             local who = a[3]
@@ -2703,7 +2721,7 @@ while QI <= #QUEUE do
         -- request step over five arguments it does not use.
         --
         --   add_workorder  ConstructBed  20  wood
-        pcall(function()
+        attempt("add_workorder", function()
             -- Refuse a job we have no workshop-and-reagent rule for. This used to read
             -- `... and a[2] or "ConstructBed"`, which silently turned a request for
             -- anything unknown into beds — measured: `add_workorder NoSuchJobType 5`
@@ -2727,7 +2745,7 @@ while QI <= #QUEUE do
         -- go quiet once the shelf is full.
         --
         --   add_workorder_conditional  ConstructBarrel  BARREL  5  10  LessThan  ""  Daily
-        pcall(function()
+        attempt("add_workorder_conditional", function()
             local jname = a[2]
             if not (jname and spec_for(jname)) then return end
             local item = a[3] or ""
@@ -2748,7 +2766,7 @@ while QI <= #QUEUE do
         end)
     elseif verb == "create_zone" then
         -- Paint a zone. A dug room is not a bedroom until something says so.
-        pcall(function()
+        attempt("create_zone", function()
             local kind = a[2]
             if not (kind and ZONE_KINDS[kind]) then
                 refuse("create_zone", "no such zone kind: " .. tostring(kind))
@@ -2778,7 +2796,7 @@ while QI <= #QUEUE do
         -- expands into felling, workshops and orders, spliced in ahead of the rest of this
         -- request. Separate from apply_template so it can be asked for on its own — and so
         -- it can be tested without stamping a blueprint to test it.
-        pcall(function()
+        attempt("ensure_furniture", function()
             local before = #RESOLVE_LOG
             resolve_pieces(a[2])
             if #RESOLVE_LOG > before then
@@ -2787,7 +2805,7 @@ while QI <= #QUEUE do
         end)
     elseif verb == "assign_room" then
         -- Give a room to somebody. An unowned bedroom is furniture in a hole.
-        pcall(function()
+        attempt("assign_room", function()
             local kind = a[2]
             local want = kind and ZONE_KINDS[kind] and df.civzone_type[ZONE_KINDS[kind]]
             local unit = pick_citizen(a[3], true)
@@ -2805,16 +2823,28 @@ while QI <= #QUEUE do
     elseif verb == "place_furniture" then
         -- Install something already made. The item has to exist first: this verb does
         -- not build a bed, it puts one down.
-        pcall(function()
+        attempt("place_furniture", function()
             local spec = FURNITURE[a[2] or ""]
             if not spec then
                 refuse("place_furniture", "no placement rule for " .. tostring(a[2]))
                 return
             end
             local count = math.max(1, math.min(tonumber(a[3]) or 1, 10))
+            local made = 0
             for _ = 1, count do
+                -- This verb installs furniture, it does not make it. On a fresh embark
+                -- nothing has been built yet, so the honest answer is that there is no
+                -- such item to place - which used to be a bare break, indistinguishable
+                -- from a broken verb.
                 local item = free_furniture(spec.item)
-                if not item then break end
+                if not item then
+                    if made == 0 then
+                        refuse("place_furniture", "no free " .. tostring(spec.item)
+                               .. " to install; make one first (add_workorder Construct"
+                               .. tostring(spec.building) .. ")")
+                    end
+                    break
+                end
                 local placed = false
                 for _ = 1, 12 do
                     local x, y, z = site(P.furn or 0, 3)
@@ -2839,7 +2869,7 @@ while QI <= #QUEUE do
         end)
     elseif verb == "set_dwarf_labor" then
         -- One dwarf, one labour. set_labor is a fort-wide switch; a player specialises.
-        pcall(function()
+        attempt("set_dwarf_labor", function()
             local unit = pick_citizen(a[2], false)
             local lid = df.unit_labor[a[3] or ""]
             if not (unit and lid) then return end
@@ -2849,7 +2879,7 @@ while QI <= #QUEUE do
         end)
     elseif verb == "cancel_dwarf_job" then
         -- Free a dwarf who is doing something less important than what is needed now.
-        pcall(function()
+        attempt("cancel_dwarf_job", function()
             local unit = pick_citizen(a[2], false)
             if not (unit and unit.job.current_job) then
                 refuse("cancel_dwarf_job", unit and "that dwarf has no job to cancel"
@@ -2870,7 +2900,7 @@ while QI <= #QUEUE do
         -- touched `settings.flags` at all — measured on three configured piles, every
         -- flag was still false and every material vector still empty. It reported success
         -- the whole time.
-        pcall(function()
+        attempt("configure_stockpile", function()
             local which = tonumber(a[2]) or 0
             local cat = pile_category(a[3])
             if not cat then return end          -- refuse an unknown category
@@ -2906,7 +2936,7 @@ while QI <= #QUEUE do
     elseif verb == "chop_trees" then
         -- Wood is the fort's first material and it runs out. Felling uses the same
         -- designation field as digging, set on a tile whose material is TREE.
-        pcall(function()
+        attempt("chop_trees", function()
             local n = math.max(1, math.min(tonumber(a[2]) or 10, 100))
             if not u1 then return end
             local marked = 0
@@ -2938,7 +2968,7 @@ while QI <= #QUEUE do
     elseif verb == "smooth" then
         -- Smoothing raises a room's value and is the step before engraving. It applies
         -- to dug stone, so it needs a fort that has dug some.
-        pcall(function()
+        attempt("smooth", function()
             local n = math.max(1, math.min(tonumber(a[2]) or 20, 200))
             if not u1 then return end
             local marked = 0
@@ -2977,7 +3007,7 @@ while QI <= #QUEUE do
     elseif verb == "build_construction" then
         -- Walls, floors, ramps and stairs built out of stored material: how a fort makes
         -- space it did not dig, and how it seals what it did.
-        pcall(function()
+        attempt("build_construction", function()
             local kindname = a[2] or "Floor"
             local sub = df.construction_type[kindname]
             if sub == nil then
@@ -3011,15 +3041,34 @@ while QI <= #QUEUE do
         -- Fort-wide policy. Fifty of these exist as df.global.standing_orders_*, and the
         -- guide singles out refuse collection: leave it on and dwarves haul rotting
         -- vermin indoors, turn it off and the surface stays a rubbish tip.
-        pcall(function()
+        attempt("set_standing_order", function()
             local name = a[2]
             if not name or name == "" then
                 refuse("set_standing_order", "no order name given")
                 return
             end
             local key = "standing_orders_" .. name
-            if df.global[key] == nil then
-                refuse("set_standing_order", "DF has no standing order named " .. tostring(name))
+            -- Indexing a field DF does not have RAISES, it does not return nil, so this
+            -- guard never guarded anything: the error fell into the enclosing pcall and
+            -- the verb reported zero with no reason. Measured on DF 53.16 -
+            -- standing_orders_automelt does not exist and reading it throws
+            -- "Cannot read field global.standing_orders_automelt: not found", while
+            -- standing_orders_gather_refuse reads back 1. There are fifty of these.
+            local readable = pcall(function() return df.global[key] end)
+            if not readable then
+                local known = {}
+                pcall(function()
+                    for k, _ in pairs(df.global) do
+                        if type(k) == "string" and k:sub(1, 16) == "standing_orders_" then
+                            known[#known + 1] = k:sub(17)
+                        end
+                    end
+                end)
+                table.sort(known)
+                refuse("set_standing_order", string.format(
+                    "DF has no standing order named %s; it has %d, for example %s",
+                    tostring(name), #known,
+                    table.concat({ known[1], known[2], known[3] }, ", ")))
                 return
             end
             local on = not (a[3] == "False" or a[3] == "false" or a[3] == "0")
@@ -3031,7 +3080,7 @@ while QI <= #QUEUE do
         -- the mechanic did not exist on this build. It lives in a block_square_event of
         -- type designation_priority, indexed by pos % 16 and stored as priority * 1000 вЂ”
         -- read out of DFHack's own quickfort/dig.lua rather than guessed at.
-        pcall(function()
+        attempt("set_dig_priority", function()
             local want = math.max(1, math.min(tonumber(a[2]) or 4, 7))
             if not u1 then return end
             local P2 = P.dig or { u1.pos.x, u1.pos.y, u1.pos.z }
@@ -3075,7 +3124,7 @@ while QI <= #QUEUE do
         -- no material, so the failure mode is not a missing reagent but a plot on the
         -- wrong ground: subterranean crops grow nothing in the sun and the plot still
         -- looks built.
-        pcall(function()
+        attempt("build_farm_plot", function()
             local pw = math.max(1, math.min(tonumber(a[2]) or 3, 10))
             local ph = math.max(1, math.min(tonumber(a[3]) or pw, 10))
             local want_plant = a[4] or ""       -- name the crop, or let it choose
@@ -3180,7 +3229,7 @@ while QI <= #QUEUE do
         -- Which crop, in which season, PER PLOT: a surface plot and a dug-out one want
         -- different plants, and sowing the wrong one is invisible — the plot reads as
         -- planted and grows nothing.
-        pcall(function()
+        attempt("set_crop", function()
             local want = a[2]
             local season = a[3]
             local n = 0
@@ -3225,7 +3274,7 @@ while QI <= #QUEUE do
     elseif verb == "set_kitchen_flag" then
         -- The two clicks that decide a second year: cooking seeds destroys next year's
         -- crop, and cooking drink turns the beer supply into meals.
-        pcall(function()
+        attempt("set_kitchen_flag", function()
             local item = a[2]                       -- SEEDS or DRINK
             local allowed = (a[3] == "true" or a[3] == "True" or a[3] == "1")
             local itype = df.item_type[item]
