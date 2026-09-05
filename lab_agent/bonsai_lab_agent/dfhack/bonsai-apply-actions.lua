@@ -2500,9 +2500,13 @@ while QI <= #QUEUE do
             end
             -- A refusal nobody can read is a refusal nobody can act on, and this verb has
             -- five separate ways to decline.
+            -- "A refusal nobody can read is a refusal nobody can act on" is what the
+            -- comment above says, and then this stored the reason in a global and never
+            -- printed it. Five ways to decline, all of them silent. Print it too.
             local function decline(why)
                 _G.BONSAI_LAST_CLUSTER = nil
                 _G.BONSAI_CLUSTER_REASON = why
+                refuse("build_workshop_cluster", why)
             end
             _G.BONSAI_CLUSTER_REASON = nil
             local members = {}
