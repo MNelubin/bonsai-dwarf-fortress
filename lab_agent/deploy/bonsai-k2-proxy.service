@@ -20,5 +20,13 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6
 
+# systemd-journald does not run in these unprivileged containers - it exits
+# 243/CREDENTIALS - so StandardOutput=journal discarded everything these three
+# services ever said. The 38-day outage and the promoter's ten-second retry
+# storm both had to be reconstructed from the database event ledger because of
+# it. Log to a file the container can actually write.
+StandardOutput=append:/srv/bonsai-agent/logs/bonsai-k2-proxy.log
+StandardError=append:/srv/bonsai-agent/logs/bonsai-k2-proxy.log
+
 [Install]
 WantedBy=multi-user.target

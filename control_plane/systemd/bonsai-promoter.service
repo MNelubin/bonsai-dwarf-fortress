@@ -16,7 +16,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/srv/bonsai-control
+ReadWritePaths=/srv/bonsai-control /srv/bonsai-control/logs
+
+# systemd-journald does not run in these unprivileged containers - it exits
+# 243/CREDENTIALS - so StandardOutput=journal discarded everything these three
+# services ever said. The 38-day outage and the promoter's ten-second retry
+# storm both had to be reconstructed from the database event ledger because of
+# it. Log to a file the container can actually write.
+StandardOutput=append:/srv/bonsai-control/logs/bonsai-promoter.log
+StandardError=append:/srv/bonsai-control/logs/bonsai-promoter.log
 
 [Install]
 WantedBy=multi-user.target

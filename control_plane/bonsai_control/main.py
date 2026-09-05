@@ -155,11 +155,52 @@ def _verify_lease(connection: Connection, job_id: UUID, token: str, worker_id: s
     return row
 
 
+# A loop that has not moved in this long, while autonomy says it is running, is stalled.
+# Generous on purpose: a long coding cycle plus its evaluation is tens of minutes, so the
+# threshold must not cry wolf. The failure it exists to catch lasted thirty-eight days.
+STALL_THRESHOLD_SECONDS = int(os.environ.get("BONSAI_STALL_THRESHOLD_SECONDS", "5400"))
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
+    """Liveness AND progress.
+
+    Every unit reported active throughout the 2026-07-24 outage, the mode said running,
+    and this endpoint said ok — while the newest job transition was thirty-eight days
+    old. "The process is up" and "the system is doing anything" are different questions
+    and only the second one matters. Answer both.
+    """
     with db_connection() as connection:
-        now = connection.execute("SELECT now() AS now").fetchone()["now"]
-    return {"status": "ok", "database": "ok", "time": now}
+        row = connection.execute(
+            """
+            SELECT now() AS now,
+                   (SELECT mode FROM bonsai.system_state WHERE singleton = true) AS mode,
+                   (SELECT max(updated_at) FROM bonsai.jobs) AS last_transition,
+                   (SELECT count(*) FROM bonsai.jobs
+                     WHERE state IN ('queued', 'leased')) AS open_jobs
+            """
+        ).fetchone()
+
+    last = row["last_transition"]
+    idle_seconds = (row["now"] - last).total_seconds() if last else None
+    # Paused is not stalled: nothing is supposed to move. Only a loop that claims to be
+    # running owes us progress.
+    stalled = bool(
+        row["mode"] == "running"
+        and idle_seconds is not None
+        and idle_seconds > STALL_THRESHOLD_SECONDS
+    )
+    return {
+        "status": "stalled" if stalled else "ok",
+        "database": "ok",
+        "time": row["now"],
+        "mode": row["mode"],
+        "last_job_transition": last,
+        "seconds_since_last_transition": None if idle_seconds is None else int(idle_seconds),
+        "stall_threshold_seconds": STALL_THRESHOLD_SECONDS,
+        "open_jobs": row["open_jobs"],
+        "stalled": stalled,
+    }
 
 
 @app.get("/api/v1/system")
