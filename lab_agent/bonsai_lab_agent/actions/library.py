@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sys
 import re
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -635,7 +636,12 @@ ARCHIVE = Path(__file__).resolve().parents[1] / "design" / "archive.json"
 
 
 def _generated() -> tuple[Template, ...]:
+    # Returning an empty tuple silently is how a missing archive turned into
+    # SchemaError("template: enum needs choices") thrown from a dataclass three modules
+    # away, with nothing naming the file that was absent. Say which file, once.
     if not ARCHIVE.is_file():
+        print(f"bonsai: no generated-room archive at {ARCHIVE}; "
+              f"build_room will be unavailable", file=sys.stderr)
         return ()
     try:
         rows = json.loads(ARCHIVE.read_text(encoding="utf-8"))

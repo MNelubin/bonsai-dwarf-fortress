@@ -25,7 +25,12 @@ test = ["pytest>=8.3,<9"]
 include = ["bonsai_lab_agent*"]
 
 [tool.setuptools.package-data]
-bonsai_lab_agent = ["dfhack/*.lua"]
+# design/archive.json was missing from the wheel, so ROOM_TEMPLATE_NAMES came back
+# empty in every deployed install and building the action catalog raised
+# SchemaError("template: enum needs choices") at import. That made the whole
+# gameplay action system unimportable in production while every test passed from
+# the source tree, where the file is present.
+bonsai_lab_agent = ["dfhack/*.lua", "design/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
