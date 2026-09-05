@@ -9,7 +9,15 @@ User=bonsai
 Group=bonsai
 WorkingDirectory=/opt/bonsai-control/current
 EnvironmentFile=/etc/bonsai-control/app.env
-ExecStart=/opt/bonsai-control/current/venv/bin/uvicorn bonsai_control.main:app --host ${BONSAI_BIND_HOST} --port ${BONSAI_BIND_PORT}
+# python -m uvicorn, not the uvicorn console script. deploy_control.sh builds a release
+# venv by copying the seed venv, and a copy does not rewrite shebangs, so the release's
+# bin/uvicorn still began with #!/opt/bonsai-control/venv/bin/python - the SEED python.
+# uvicorn therefore imported bonsai_control from the seed venv, which the deploy never
+# updates, and every control deploy silently left the API running the old code while the
+# symlink and DEPLOYED_COMMIT both said otherwise. Caught 2026-09-05 when a redeployed
+# /health kept answering in its previous shape. Invoking the module makes the
+# interpreter, and therefore the import path, follow `current`.
+ExecStart=/opt/bonsai-control/current/venv/bin/python -m uvicorn bonsai_control.main:app --host ${BONSAI_BIND_HOST} --port ${BONSAI_BIND_PORT}
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
