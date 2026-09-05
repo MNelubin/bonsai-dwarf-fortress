@@ -145,13 +145,37 @@ local function free_material(...)
                     -- A workshop is MADE of its log, and handing that same log to a job
                     -- destroys the workshop — observed live, shops went 1 to 0 the moment
                     -- a bed job claimed a reagent. But `in_building` alone is far too
-                    -- broad: at embark every supply sits inside the WAGON, which is also
-                    -- a building, so excluding it left the fort unable to build anything.
-                    -- Ask who holds the item instead.
-                    local holder = nil
-                    pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
-                    if not holder or holder:getType() == df.building_type.Wagon then
-                        return it
+                    -- broad, so ask who holds the item instead.
+                    --
+                    -- The wagon is NOT the exception it was written as. Counting its
+                    -- contents as stock is right — the fort does own its embark supplies
+                    -- — but handing one to a construction job is not: DF refuses it while
+                    -- it is still the parent civilisation's property, and it refuses it
+                    -- by cancelling the job and DELETING the building, after the verb has
+                    -- already reported success. Measured on ourfort16-final, where the
+                    -- only wood was the three logs in the wagon:
+                    --     Construct building: Needs building material non-economic item.
+                    --     The dwarves were unable to complete the Carpenter's Workshop.
+                    -- and world.buildings.all held no workshop at all a few hundred ticks
+                    -- later. Once trees were felled and eight logs lay on the ground, the
+                    -- identical call built and kept its workshop.
+                    --
+                    -- So: reachable-for-stock and usable-as-a-reagent are two questions,
+                    -- and this one wants the second. Returning nil lets the verb refuse
+                    -- with a reason instead of building something DF will silently drop.
+                    local in_wagon = false
+                    if reach then
+                        pcall(function() in_wagon = reach.in_wagon(it) end)
+                    else
+                        pcall(function()
+                            local h = dfhack.items.getHolderBuilding(it)
+                            in_wagon = h ~= nil and h:getType() == df.building_type.Wagon
+                        end)
+                    end
+                    if not in_wagon then
+                        local holder = nil
+                        pcall(function() holder = dfhack.items.getHolderBuilding(it) end)
+                        if not holder then return it end
                     end
                 end
             end
@@ -864,6 +888,16 @@ local function can_supply(f, groups)
             local n = 0
             pcall(function() n = #dfhack.items.getContainedItems(it) end)
             if n > 0 then match = false end
+        end
+        -- Same distinction free_material draws: an item still inside the embark wagon
+        -- counts as the fort's stock but DF will not accept it as a building material
+        -- while it remains the parent civilisation's property. Counting it here made
+        -- build_workshop believe it had wood, place the building, and lose it to
+        -- "Needs building material non-economic item" a few hundred ticks later.
+        if match and reach then
+            local wag = false
+            pcall(function() wag = reach.in_wagon(it) end)
+            if wag then match = false end
         end
         if match and (not reach or reach.item(it, groups)) then
             found = found + 1
@@ -2312,12 +2346,17 @@ while QI <= #QUEUE do
             local name = a[2] or "Carpenters"
             local deferred = a[3] == "deferred"
             local sub = df.workshop_type[name]
+            -- Silent returns are how this verb reported 0 with no reason at all in the
+            -- coverage audit. Say which precondition failed.
             -- Refuse an unknown kind rather than substituting. This used to read
             -- `if sub == nil then sub = df.workshop_type.Carpenters end`, the same
             -- silent-substitution shape that turned `add_workorder NoSuchJobType 5`
             -- into five beds: the agent asks for a Still, gets a carpenter, and the
             -- brewing it was planning quietly never happens.
-            if sub == nil then return end
+            if sub == nil then
+                print('REFUSED build_workshop: no such workshop kind ' .. tostring(name))
+                return
+            end
             -- ASK DF WHAT THIS WORKSHOP IS MADE OF. It used to hand every kind a log
             -- (or a boulder for the stone shops), which is right for the fifteen shops
             -- whose filter is "any building material" and a lie for the rest. Read live
@@ -2341,15 +2380,25 @@ while QI <= #QUEUE do
                 filters = dfhack.buildings.getFiltersByType({}, df.building_type.Workshop,
                                                             sub, -1) or {}
             end)
-            if not got then return end
+            if not got then
+                print('REFUSED build_workshop: DF gave no filters for ' .. tostring(name))
+                return
+            end
             local want = #filters
             -- A direct request still refuses an impossible workshop. A resolver-created
             -- request is different: its earlier queue entries have already designated
             -- the tree or rock that will supply this filter, so register it with
             -- buildingplan and let the game fulfil it when that material appears.
-            for _, f in ipairs(filters) do
-                local okmat = can_supply(f, REACH_GROUPS)
-                if not okmat and not deferred then return end
+            for fi, f in ipairs(filters) do
+                local okmat, have = can_supply(f, REACH_GROUPS)
+                if not okmat and not deferred then
+                    print(string.format(
+                        'REFUSED build_workshop: %s needs filter %d of %d and the fort has '
+                        .. '%d usable item(s) for it (wagon contents do not count: DF '
+                        .. 'refuses them as building material)',
+                        tostring(name), fi, want, have or 0))
+                    return
+                end
             end
             -- Try many spots before giving up. One attempt was enough on an empty
             -- embark and silently did nothing once the ring filled: measured first on a
