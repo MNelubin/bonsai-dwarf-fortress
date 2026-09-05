@@ -1244,39 +1244,91 @@ end
 -- The search runs DOWN from the citizen's level as well as across it: dug-out soil is
 -- under the embark, and an earlier pass scanned only the dwarf's own z and found nothing
 -- while 165 usable tiles sat a few levels below.
+-- Returns x, y, z, crop_id — or nils plus a REASON. A silent nil here used to mean the
+-- fort simply never got a farm and nobody could say why, which on a fresh embark is the
+-- normal case rather than a rare one.
 local function farm_site(pw, ph, want_plant)
-    if not u1 then return nil end
+    if not u1 then return nil, nil, nil, nil, 'no citizen to search around' end
 
     local candidates = {}
     if want_plant and want_plant ~= '' and want_plant ~= 'best' then
         local idx, p = plant_index(want_plant)
-        if not idx then return nil end          -- asked for a crop that does not exist
+        if not idx then
+            return nil, nil, nil, nil, 'no such crop: ' .. tostring(want_plant)
+        end
         candidates[1] = { id = want_plant, under = subterranean(p) }
     else
         candidates = crops_by_preference()
     end
-    if #candidates == 0 then return nil end     -- no seed at all: nothing to plant
+    if #candidates == 0 then
+        return nil, nil, nil, nil, 'no seeds the fort can reach'
+    end
+
+    -- This search hung DF outright on a fresh embark - fifteen minutes without finishing
+    -- one round, the game deaf to RPC. Three compounding costs, and the fresh fort hits
+    -- the worst case every time: most dwarven crops are subterranean, an undug surface
+    -- embark has no indoor soil at all, so nothing ever matches and the whole space is
+    -- always exhausted. The mature fort finds a plot immediately and never showed it.
+    --
+    --   1. `r` re-scanned the entire square from -r to r at every radius, so radius 30
+    --      re-tested everything it had already rejected twenty-nine times. It walks the
+    --      ring now: sum (2r+1)^2 = ~37800 positions becomes sum 8r = ~3700.
+    --   2. Overlapping candidate rectangles asked about the same tile up to pw*ph times,
+    --      and plantable() is three or four DFHack round trips each (getTileType,
+    --      findAtTile, reach.tile, sometimes getTileFlags). Memoised per tile.
+    --   3. Every crop restarted the whole scan. Crops differ only in `under`, so the
+    --      cache collapses that to two passes however many crops there are - which keeps
+    --      crop-preference order intact rather than trading it for proximity.
+    --
+    -- The budget is the part that matters most: it is a hard ceiling on tile queries, so
+    -- no map can ever hang the game here again. A full legitimate search over 11 levels
+    -- costs about 92000 lookups, so the default leaves real headroom before refusing.
+    local budget = tonumber(os.getenv('BONSAI_FARM_SITE_BUDGET') or '') or 120000
+    local cache, exhausted, queried = {}, false, 0
+    local function tile_ok(x, y, z, indoors)
+        local key = (indoors and 'i' or 'o') .. x .. ',' .. y .. ',' .. z
+        local hit = cache[key]
+        if hit == nil then
+            if budget <= 0 then exhausted = true; return false end
+            budget, queried = budget - 1, queried + 1
+            hit = plantable(x, y, z, indoors)
+            cache[key] = hit
+        end
+        return hit
+    end
+    local function fits(x0, y0, z, indoors)
+        for x = x0, x0 + pw - 1 do
+            for y = y0, y0 + ph - 1 do
+                if not tile_ok(x, y, z, indoors) then return false end
+            end
+        end
+        return true
+    end
 
     for _, crop in ipairs(candidates) do
         for dz = 0, -10, -1 do
             local z = u1.pos.z + dz
-            for r = 1, 30 do
+            for r = 0, 30 do
                 for dx = -r, r do
                     for dy = -r, r do
-                        local x0, y0 = u1.pos.x + dx, u1.pos.y + dy
-                        local all = true
-                        for x = x0, x0 + pw - 1 do
-                            for y = y0, y0 + ph - 1 do
-                                if not plantable(x, y, z, crop.under) then all = false end
+                        if r == 0 or math.abs(dx) == r or math.abs(dy) == r then
+                            local x0, y0 = u1.pos.x + dx, u1.pos.y + dy
+                            if fits(x0, y0, z, crop.under) then
+                                return x0, y0, z, crop.id
                             end
                         end
-                        if all then return x0, y0, z, crop.id end
+                        if exhausted then
+                            return nil, nil, nil, nil, string.format(
+                                'search budget exhausted after %d tile lookups', queried)
+                        end
                     end
                 end
             end
         end
     end
-    return nil
+    return nil, nil, nil, nil, string.format(
+        '%d crop(s), %d tiles checked, no %dx%d plantable site within 30 tiles across 11 levels',
+        #candidates, queried, pw, ph)
 end
 
 
@@ -2930,8 +2982,11 @@ while QI <= #QUEUE do
             local pw = math.max(1, math.min(tonumber(a[2]) or 3, 10))
             local ph = math.max(1, math.min(tonumber(a[3]) or pw, 10))
             local want_plant = a[4] or ""       -- name the crop, or let it choose
-            local x, y, z, crop = farm_site(pw, ph, want_plant)
-            if not x then return end
+            local x, y, z, crop, why = farm_site(pw, ph, want_plant)
+            if not x then
+                print('REFUSED build_farm_plot: ' .. tostring(why))
+                return
+            end
             local b = dfhack.buildings.constructBuilding {
                 type = df.building_type.FarmPlot,
                 pos = xyz2pos(x, y, z), width = pw, height = ph,
