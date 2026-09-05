@@ -123,6 +123,14 @@ end
 -- be a prefer_stone boolean that always allowed both wood and stone, which meant a bed
 -- job could be handed a boulder once the logs ran out — DF cancels that job and the
 -- order's amount_left has already been spent on it.
+-- Say why, once, in the shape the rest of the file already uses. Nine of the twenty-four
+-- verbs measured in the coverage audit returned zero with no counter and no reason: a
+-- failed precondition simply fell out of the pcall and the caller saw a successful apply
+-- with nothing in it. A verb that declines must name the condition it could not meet.
+local function refuse(verb, why)
+    print(string.format('REFUSED %s: %s', verb, tostring(why)))
+end
+
 local function free_material(...)
     local wants = { ... }
     if #wants == 0 then wants = { df.item_type.WOOD, df.item_type.BOULDER } end
@@ -2156,7 +2164,11 @@ while QI <= #QUEUE do
             local name = a[2]
             local bw, bh = tonumber(a[3]), tonumber(a[4])
             local sx, sy = tonumber(a[6]) or 1, tonumber(a[7]) or 1
-            if not (name and name ~= '' and bw and bh) then return end
+            if not (name and name ~= '' and bw and bh) then
+                refuse("apply_template", "unknown template " .. tostring(name)
+                       .. " or its footprint could not be read")
+                return
+            end
 
             -- Find somewhere it actually fits. reach.site checks every tile is a floor a
             -- citizen can stand on and nothing is already there, which is the difference
@@ -2195,7 +2207,11 @@ while QI <= #QUEUE do
                 x0, y0, z0 = remembered[1], remembered[2], remembered[3]
             else
                 x0, y0, z0 = find_site(bw, bh, 6, P.tmpl, 48, digs)
-                if not x0 then return end        -- refuse rather than stamp nowhere
+                if not x0 then
+                    refuse("apply_template", "no site fits " .. tostring(name)
+                           .. " (" .. tostring(bw) .. "x" .. tostring(bh) .. ")")
+                    return
+                end
                 P.tmpl = P.tmpl + 1
                 if digs then
                     local all = stamps()
@@ -2460,7 +2476,10 @@ while QI <= #QUEUE do
         --   a[5] width  a[6] height of the whole row
         pcall(function()
             local name = a[2]
-            if not name or name == '' then return end
+            if not name or name == '' then
+                refuse("build_workshop_cluster", "no cluster name given")
+                return
+            end
             -- A refusal nobody can read is a refusal nobody can act on, and this verb has
             -- five separate ways to decline.
             local function decline(why)
@@ -2483,7 +2502,10 @@ while QI <= #QUEUE do
                 end
                 members[#members + 1] = { btype = btype, sub = sub, what = what }
             end
-            if #members == 0 then return end
+            if #members == 0 then
+                refuse("build_workshop_cluster", "no such cluster: " .. tostring(name))
+                return
+            end
 
             -- ALL OR NOTHING. The declared observable is "every workshop in the cluster
             -- exists and is reachable", so half a cluster is a failure that looks like a
@@ -2687,7 +2709,11 @@ while QI <= #QUEUE do
             -- anything unknown into beds — measured: `add_workorder NoSuchJobType 5`
             -- queued five ConstructBed jobs.
             local jname = a[2]
-            if not (jname and spec_for(jname)) then return end
+            if not (jname and spec_for(jname)) then
+                refuse("add_workorder", "no workshop-and-reagent rule for job "
+                       .. tostring(jname))
+                return
+            end
             place_order {
                 job = jname, amount = tonumber(a[3]) or 10,
                 material = a[4] or "", freq = "OneTime", cond = nil,
@@ -2724,7 +2750,10 @@ while QI <= #QUEUE do
         -- Paint a zone. A dug room is not a bedroom until something says so.
         pcall(function()
             local kind = a[2]
-            if not (kind and ZONE_KINDS[kind]) then return end
+            if not (kind and ZONE_KINDS[kind]) then
+                refuse("create_zone", "no such zone kind: " .. tostring(kind))
+                return
+            end
             local width = math.max(1, math.min(tonumber(a[3]) or 6, 20))
             local height = math.max(1, math.min(tonumber(a[4]) or width, 20))
             local x, y, z
@@ -2736,7 +2765,10 @@ while QI <= #QUEUE do
                     break
                 end
             end
-            if not x then return end
+            if not x then
+                refuse("create_zone", "no reachable site for a " .. tostring(kind) .. " zone")
+                return
+            end
             if make_zone(kind, x, y, z, width, height) then
                 c.create_zone = c.create_zone + 1
             end
@@ -2775,7 +2807,10 @@ while QI <= #QUEUE do
         -- not build a bed, it puts one down.
         pcall(function()
             local spec = FURNITURE[a[2] or ""]
-            if not spec then return end
+            if not spec then
+                refuse("place_furniture", "no placement rule for " .. tostring(a[2]))
+                return
+            end
             local count = math.max(1, math.min(tonumber(a[3]) or 1, 10))
             for _ = 1, count do
                 local item = free_furniture(spec.item)
@@ -2816,7 +2851,11 @@ while QI <= #QUEUE do
         -- Free a dwarf who is doing something less important than what is needed now.
         pcall(function()
             local unit = pick_citizen(a[2], false)
-            if not (unit and unit.job.current_job) then return end
+            if not (unit and unit.job.current_job) then
+                refuse("cancel_dwarf_job", unit and "that dwarf has no job to cancel"
+                       or ("no dwarf matched " .. tostring(a[2])))
+                return
+            end
             local job = unit.job.current_job
             if pcall(function() dfhack.job.removeJob(job) end) then
                 c.cancel_dwarf_job = c.cancel_dwarf_job + 1
@@ -2941,7 +2980,10 @@ while QI <= #QUEUE do
         pcall(function()
             local kindname = a[2] or "Floor"
             local sub = df.construction_type[kindname]
-            if sub == nil then return end
+            if sub == nil then
+                refuse("build_construction", "no such construction kind: " .. tostring(a[2]))
+                return
+            end
             local count = math.max(1, math.min(tonumber(a[3]) or 1, 20))
             for _ = 1, count do
                 local item = free_material(df.item_type.BOULDER, df.item_type.WOOD)
@@ -2971,9 +3013,15 @@ while QI <= #QUEUE do
         -- vermin indoors, turn it off and the surface stays a rubbish tip.
         pcall(function()
             local name = a[2]
-            if not name or name == "" then return end
+            if not name or name == "" then
+                refuse("set_standing_order", "no order name given")
+                return
+            end
             local key = "standing_orders_" .. name
-            if df.global[key] == nil then return end
+            if df.global[key] == nil then
+                refuse("set_standing_order", "DF has no standing order named " .. tostring(name))
+                return
+            end
             local on = not (a[3] == "False" or a[3] == "false" or a[3] == "0")
             df.global[key] = on and 1 or 0
             c.set_standing_order = c.set_standing_order + 1
@@ -3156,7 +3204,23 @@ while QI <= #QUEUE do
                     end
                 end
             end
-            if n > 0 then c.set_crop = c.set_crop + 1 end
+            -- Sowing nothing is the normal case before a plot exists, and it used to be
+            -- indistinguishable from a broken verb: zero counter, no reason.
+            if n > 0 then
+                c.set_crop = c.set_crop + 1
+            else
+                local plots = 0
+                for _, b in ipairs(w.buildings.all) do
+                    if b:getType() == df.building_type.FarmPlot then plots = plots + 1 end
+                end
+                if plots == 0 then
+                    refuse("set_crop", "the fort has no farm plot to sow")
+                else
+                    refuse("set_crop", string.format(
+                        "%d plot(s) but no seed for %s that will grow there",
+                        plots, tostring(want)))
+                end
+            end
         end)
     elseif verb == "set_kitchen_flag" then
         -- The two clicks that decide a second year: cooking seeds destroys next year's
@@ -3165,7 +3229,10 @@ while QI <= #QUEUE do
             local item = a[2]                       -- SEEDS or DRINK
             local allowed = (a[3] == "true" or a[3] == "True" or a[3] == "1")
             local itype = df.item_type[item]
-            if itype == nil then return end
+            if itype == nil then
+                refuse("set_kitchen_flag", "no such item type: " .. tostring(a[2]))
+                return
+            end
             local k = df.global.plotinfo.kitchen
             local changed, reached = 0, 0
             -- one exclusion per (item type, material) the fort actually holds

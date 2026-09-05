@@ -291,8 +291,13 @@ CATALOG: tuple[Verb, ...] = (
             "dug room.",
         observable="a building of that furniture type exists at the position",
         args=(
+            # These are keys into the FURNITURE table in bonsai-apply-actions.lua and
+            # they are matched exactly, so the schema has to spell them the way the
+            # implementation does. It advertised them capitalised, offered "Hatch",
+            # which has no entry at all, and omitted "coffin", which does — so an agent
+            # picking a legal-looking value from its own schema got a refusal.
             Arg("kind", "enum", "what to install",
-                choices=("Bed", "Table", "Chair", "Door", "Cabinet", "Coffer", "Hatch")),
+                choices=("bed", "table", "chair", "door", "cabinet", "coffer", "coffin")),
             Arg("count", "int", "how many", lo=1, hi=20, required=False, default=1),
         ),
         guide="21:59",

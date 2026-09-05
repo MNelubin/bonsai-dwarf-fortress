@@ -416,3 +416,31 @@ def test_the_toolbook_records_a_refusal_for_every_verb_that_has_one():
     sections = {s.splitlines()[0]: s for s in book.split("\n## ")[1:]}
     silent = sorted(v for v in verbs if "refuse" not in sections.get(v, "").lower())
     assert silent == [], f"toolbook sections with no refusal note: {silent}"
+
+
+def test_furniture_choices_are_the_keys_the_lua_actually_looks_up():
+    """The schema is a promise to the agent and it was not kept.
+
+    place_furniture advertised Bed/Table/.../Hatch capitalised, while
+    bonsai-apply-actions.lua indexes a FURNITURE table whose keys are lowercase and
+    include coffin but not hatch. An agent picking a legal value from its own schema got
+    a refusal. Read the keys out of the lua rather than restating them here, so the two
+    cannot drift apart again.
+    """
+    import re
+    from pathlib import Path
+
+    from bonsai_lab_agent.actions.catalog import CATALOG
+
+    lua = (Path(__file__).resolve().parents[1]
+           / "bonsai_lab_agent" / "dfhack" / "bonsai-apply-actions.lua").read_text(
+               encoding="utf-8")
+    block = re.search(r"local FURNITURE = \{(.*?)\n\}", lua, re.S)
+    assert block, "FURNITURE table not found in bonsai-apply-actions.lua"
+    keys = set(re.findall(r"^\s*(\w+)\s*=", block.group(1), re.M))
+    keys |= set(re.findall(r"^FURNITURE\.(\w+)\s*=", lua, re.M))
+    keys.discard("table_")  # an alias for "table", which the lua adds explicitly
+
+    verb = next(v for v in CATALOG if v.name == "place_furniture")
+    declared = set(next(a for a in verb.args if a.name == "kind").choices)
+    assert declared <= keys, f"schema offers what the lua cannot look up: {declared - keys}"
