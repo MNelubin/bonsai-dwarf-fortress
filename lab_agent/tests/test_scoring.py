@@ -97,39 +97,46 @@ def test_comfort_is_not_a_quantity_divided_by_itself():
     metric's weight was arithmetically zero rather than conditionally zero, on a fort
     where every dwarf was perfectly fed.
     """
-    from bonsai_lab_agent.scoring import (COMFORT_HUNGER_CEILING, COMFORT_THIRST_CEILING,
+    from bonsai_lab_agent.scoring import (COMFORT_HUNGER_SATED, COMFORT_HUNGER_UNMET,
                                           _sat)
 
-    # The exact episode that exposed it must now score as the healthy fort it was.
-    assert _sat(25200, 7, COMFORT_HUNGER_CEILING) > 0.9
-
-    # Measured on region3-lab: 136 citizens, none in distress, hunger p50 21190.
-    assert 0.5 < _sat(3104826, 136, COMFORT_HUNGER_CEILING) < 0.8
-
-    # Monotone, and floored at the worst a working fort was ever seen to show.
-    assert _sat(0, 7, COMFORT_HUNGER_CEILING) == 1.0
-    assert _sat(COMFORT_HUNGER_CEILING * 7, 7, COMFORT_HUNGER_CEILING) == 0.0
-    assert _sat(COMFORT_HUNGER_CEILING * 70, 7, COMFORT_HUNGER_CEILING) == 0.0
-    assert (_sat(10_000, 7, COMFORT_HUNGER_CEILING)
-            > _sat(20_000, 7, COMFORT_HUNGER_CEILING))
-
-    # Thirst is a tighter ceiling than hunger, as the measurement showed.
-    assert COMFORT_THIRST_CEILING < COMFORT_HUNGER_CEILING
+    S, U = COMFORT_HUNGER_SATED, COMFORT_HUNGER_UNMET
+    # The exact episode that exposed it: a fed fort must score as a fed fort.
+    assert _sat(25200, 7, S, U) == 1.0
+    # region3-lab, 136 citizens, median dwarf at 21190 — between meals, not in distress.
+    assert _sat(3104826, 136, S, U) == 1.0
+    # A fort that cannot feed itself is the only thing this term should punish.
+    assert _sat(U * 7, 7, S, U) == 0.0
+    assert _sat(U * 2 * 7, 7, S, U) == 0.0
+    # Monotone in between, and full credit right up to the point a dwarf would act.
+    assert _sat(S * 7, 7, S, U) == 1.0
+    mid = (S + U) // 2
+    assert 0.0 < _sat(mid * 7, 7, S, U) < 1.0
+    assert _sat(mid * 7, 7, S, U) > _sat((mid + 5000) * 7, 7, S, U)
 
 
-def test_comfort_ceilings_are_measured_not_guessed():
-    """These are observed ceilings of a functioning fort, not DF's internal threshold.
+def test_comfort_bounds_come_from_watching_dwarves_eat():
+    """Measured, not taken from folklore.
 
     This build of DFHack exposes no isHungry/isThirsty/isStarving/isDehydrated, so the
-    real threshold is unmeasured. The constants are named for what they are; guessing a
-    threshold from folklore is how this file came to carry TICKS_PER_DAY = 86400
+    threshold was observed instead: the timers reset when a dwarf eats, so the value just
+    before a reset is the point the need was acted on. Sampled every 500 ticks over 30000
+    ticks on region3-lab, 136 citizens: hunger reset n=111, p10 40317, median 42521, max
+    65723; thirst reset n=202, p10 20014, median 22004, max 36076.
+
+    Guessing instead of measuring is how this file came to carry TICKS_PER_DAY = 86400
     "verified against position.lua".
     """
     import inspect
 
     from bonsai_lab_agent import scoring
 
-    assert scoring.COMFORT_HUNGER_CEILING == 64_021   # max seen on a fort in no distress
-    assert scoring.COMFORT_THIRST_CEILING == 35_167
+    assert scoring.COMFORT_HUNGER_SATED == 40_317
+    assert scoring.COMFORT_HUNGER_UNMET == 65_723
+    assert scoring.COMFORT_THIRST_SATED == 20_014
+    assert scoring.COMFORT_THIRST_UNMET == 36_076
+    # Thirst bites sooner than hunger, as the measurement showed.
+    assert scoring.COMFORT_THIRST_SATED < scoring.COMFORT_HUNGER_SATED
+    assert scoring.COMFORT_THIRST_UNMET < scoring.COMFORT_HUNGER_UNMET
     source = inspect.getsource(scoring)
     assert "region3-lab" in source, "the measurement's provenance must stay in the file"
