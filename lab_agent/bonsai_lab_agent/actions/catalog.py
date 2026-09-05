@@ -395,8 +395,16 @@ CATALOG: tuple[Verb, ...] = (
         doc="Build a wall, floor, ramp or staircase out of stored material.",
         observable="the tiletype at the position becomes a construction",
         args=(
+            # bonsai-apply-actions.lua resolves this with df.construction_type[name],
+            # so the value must be spelled the way DF spells it. The schema offered
+            # wall/floor/ramp/stair in lowercase, and "stair" is not a construction type
+            # at all — DF has UpStair, DownStair and UpDownStair separately. Every one of
+            # the four advertised values resolved to nil, so the verb could not work for
+            # any input its own contract allowed. Read live from DF 53.16:
+            #   0 Fortification  1 Wall  2 Floor  3 UpStair  4 DownStair
+            #   5 UpDownStair    6 Ramp  7+ TrackN, TrackS, ...
             Arg("kind", "enum", "what to build",
-                choices=("wall", "floor", "ramp", "stair")),
+                choices=("Wall", "Floor", "Ramp", "UpStair", "DownStair")),
             Arg("count", "int", "how many tiles", lo=1, hi=40,
                 required=False, default=4),
         ),

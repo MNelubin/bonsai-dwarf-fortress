@@ -381,12 +381,20 @@ def test_the_schema_stays_small_enough_to_ship_every_round():
                                 dig/rooms stage
 
       +build_room              one high-level resumable workflow with four bounded args
+      +26 bytes, correction    build_construction and place_furniture were spelling their
+                               choices in ways neither DF nor the lua accepts, so every
+                               value they advertised resolved to nil. Wall/Floor/Ramp/
+                               UpStair/DownStair replace wall/floor/ramp/stair, and the
+                               furniture keys are lowercase with coffin in place of the
+                               invented hatch. The old schema was cheaper only because it
+                               did not work; the ceiling moves to 9700 to pay for values
+                               the game will actually accept.
 
     So 25 verbs in 9.5 KB. The increase buys one request that replaces repeated model
     turns for dig/wait/zone/build/assign and therefore lowers episode context overall.
     """
     import json
-    assert len(json.dumps(available_actions())) < 9600
+    assert len(json.dumps(available_actions())) < 9700
 
 
 def test_every_live_verb_has_a_toolbook_entry():
@@ -444,3 +452,27 @@ def test_furniture_choices_are_the_keys_the_lua_actually_looks_up():
     verb = next(v for v in CATALOG if v.name == "place_furniture")
     declared = set(next(a for a in verb.args if a.name == "kind").choices)
     assert declared <= keys, f"schema offers what the lua cannot look up: {declared - keys}"
+
+
+def test_construction_kinds_are_spelled_the_way_df_spells_them():
+    """bonsai-apply-actions.lua does df.construction_type[name], so a value that DF does
+    not define resolves to nil and the verb cannot act.
+
+    The schema used to offer wall/floor/ramp/stair in lowercase. All four were invalid:
+    DF capitalises, and it has no "stair" at all — UpStair, DownStair and UpDownStair are
+    separate types. Enumerated live from DF 53.16:
+      0 Fortification, 1 Wall, 2 Floor, 3 UpStair, 4 DownStair, 5 UpDownStair, 6 Ramp,
+      then the Track* variants.
+    """
+    from bonsai_lab_agent.actions.catalog import CATALOG
+
+    df_construction_types = {
+        "Fortification", "Wall", "Floor", "UpStair", "DownStair", "UpDownStair", "Ramp",
+        "TrackN", "TrackS", "TrackE", "TrackW", "TrackNS", "TrackNE", "TrackNW",
+        "TrackSE", "TrackSW",
+    }
+    verb = next(v for v in CATALOG if v.name == "build_construction")
+    declared = set(next(a for a in verb.args if a.name == "kind").choices)
+    assert declared, "the verb must offer something"
+    assert declared <= df_construction_types, (
+        f"schema offers values DF does not define: {declared - df_construction_types}")
