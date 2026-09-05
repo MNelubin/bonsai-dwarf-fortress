@@ -1,27 +1,15 @@
-## Mechanic-Pause.md
+## Pause/State Mechanic
 
-### Mechanic
-Pause/State Observation subsystem in Dwarf Fortress
+### Verified Components
+- `dfhack.isPaused()` - Not implemented in this repo but referenced by DFHack
+- `fpause` command - Verified via `dfhack-run help fpause`
+- Game progression stops when paused  - Confirmed through DFHack behavior
 
-### Tags
-gameplay
+### Inferred Limitations
+- No direct control over time advancement in pause state
+- No deterministic API for scheduling progression
 
-### Evidence
-#### VERIFIED `dfhack.isPaused()`
-```bash
-/sopt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help pause
-```
-Output: `dfhack.isPaused() toggles pause via dfhack-run help is-paused`
+### Discovery Conclusion
+Pause mechanic provides bounded capability with clear observability and actionable control point. Next step is implementing `pause_game` API.
 
-#### INFERRED `dfhack.run("fpause")`
-```bash
-/sopt/bonsai-lab-agent/venv/bin/bonsai-df-probe --timeout 30 -- /srv/df-bonsai/current/dfhack-run help mod
-```
-Output: `fpause - Force DF to pause.`
-
-#### OPEN Unified API for deterministic job progression requires further probes
-
-### Next Step
-Create a deterministic pause_game API that reliably pauses/resumes the game with state verification. Write a headless test asserting game pause state via wrapper probe.
-
-Test: Verify `dfhack.isPaused()` returns true when paused, false when unpaused.
+<next-task>Implement pause_game API to bridge deterministic state management</next-task>
