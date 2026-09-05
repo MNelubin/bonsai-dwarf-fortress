@@ -66,6 +66,26 @@ CALIBRATION = {
     ("bonsaifort2", 3600):  {"noop": 0.267857, "ref": 0.344119},   # 0.076   18 / 7
     ("bonsaifort2", 12000): {"noop": 0.278571, "ref": 0.381475},   # 0.103   64 / 7
     ("bonsaifort2", 36000): {"noop": 0.337346, "ref": 0.456135},   # 0.119   86 / 8
+
+    # Measured live 2026-09-05 on DF 53.16, k=5 each, stepped driver, v0_idle for the
+    # no-op and v3_survival for the reference. Both forts, because an endpoint measured
+    # on one says nothing about the other - which is the whole reason this table is
+    # keyed by save now.
+    #
+    # ourfort16-final is perfectly deterministic (sigma 0.0 on both tiers) and its whole
+    # cohort survives. Its gap is narrow, 0.029 against the pinned save's 0.076: three
+    # in-game days on a fresh embark is simply less fort to build, and the reference
+    # cannot dig, farm and brew its way far in that time.
+    #
+    # region3-lab is a different world. Its no-op composite is 0.281259, and scoring it
+    # against bonsaifort2's 0.267857 is exactly what produced the bogus 0.176 for doing
+    # nothing: (0.281259 - 0.267857) / 0.076262 = 0.1757, matching the observed
+    # 0.175734 to four decimals. A mature fort keeps working on its own. Its reference
+    # also carries real variance (sigma 0.0044) where the fresh embark has none, and its
+    # cohort never fully survives three days - it starts with 13 hostiles and 101
+    # injured, so the survival gate is already pressed in both endpoints alike.
+    ("ourfort16-final", 3600): {"noop": 0.267857, "ref": 0.297285},  # 0.029   sigma 0
+    ("region3-lab", 3600):     {"noop": 0.281259, "ref": 0.332826},  # 0.052   sigma 0.0044
 }
 
 DEFAULT_SAVE = "bonsaifort2"
