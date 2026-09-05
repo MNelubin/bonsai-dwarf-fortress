@@ -39,6 +39,28 @@ class GateRejected(RuntimeError):
         self.report = report
 
 
+# A push that is not a fast-forward can never succeed for THIS candidate: the remote has
+# moved past the commit it was built on, and the promoter deliberately does not rebase -
+# authoring code is the agent's job, not the trusted gate's. It was treated as a
+# transient error instead, so promotion.started/promotion.retry_scheduled repeated every
+# ten seconds for as long as anyone left it running. Observed live on 2026-09-01 against
+# candidate 111d99ab, whose base 72771ae5 sat three commits behind GitHub main.
+NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "! [rejected]",
+    "fetch first",
+    "Updates were rejected",
+)
+
+# Even a genuinely transient failure must not retry forever. Hammering a remote once
+# every ten seconds indefinitely is how a stuck candidate becomes an outage nobody sees.
+MAX_PROMOTION_RETRIES = 5
+
+
+def is_non_fast_forward(error: str) -> bool:
+    return any(marker in error for marker in NON_FAST_FORWARD_MARKERS)
+
+
 @dataclass(frozen=True)
 class Candidate:
     job_id: str
@@ -448,18 +470,32 @@ def _record_rejection(candidate: Candidate, report: dict[str, Any]) -> None:
         _event(connection, "promotion.rejected", "job", candidate.job_id, report)
 
 
-def _record_retry(candidate: Candidate, error: str) -> None:
+def _record_retry(candidate: Candidate, error: str) -> int:
+    """Record one retry and return how many this candidate has now had."""
     payload = {"error": error[-4_000:]}
     with db_connection() as connection, connection.transaction():
-        connection.execute(
+        row = connection.execute(
             """
             UPDATE bonsai.git_changes
-            SET promotion_state = 'draft', evidence = evidence || %s
+            SET promotion_state = 'draft',
+                evidence = evidence || %s
+                    || jsonb_build_object(
+                        'promotion_retries',
+                        COALESCE((evidence ->> 'promotion_retries')::int, 0) + 1)
             WHERE job_id = %s
+            RETURNING (evidence ->> 'promotion_retries')::int
             """,
             (json.dumps({"last_retry": payload}), candidate.job_id),
+        ).fetchone()
+        attempts = int((row or [1])[0] or 1)
+        _event(
+            connection,
+            "promotion.retry_scheduled",
+            "job",
+            candidate.job_id,
+            {**payload, "attempt": attempts, "max_attempts": MAX_PROMOTION_RETRIES},
         )
-        _event(connection, "promotion.retry_scheduled", "job", candidate.job_id, payload)
+    return attempts
 
 
 def _promote(candidate: Candidate, report: dict[str, Any]) -> None:
@@ -609,8 +645,34 @@ def tick() -> bool:
         _record_rejection(candidate, exc.report)
         print(f"rejected {candidate.job_id}: {exc}", flush=True)
     except Exception as exc:
-        _record_retry(candidate, repr(exc))
-        print(f"promotion retry for {candidate.job_id}: {exc!r}", flush=True)
+        error = repr(exc)
+        if is_non_fast_forward(error):
+            _record_rejection(candidate, {
+                "reasons": [
+                    "candidate is not a fast-forward of the remote main: the baseline "
+                    "moved past the commit it was built on, and the promoter does not "
+                    "rebase. Advance the baseline and let the cycle rebuild."
+                ],
+                "error": error[-4_000:],
+            })
+            print(f"rejected {candidate.job_id}: not a fast-forward", flush=True)
+            return True
+        attempts = _record_retry(candidate, error)
+        if attempts >= MAX_PROMOTION_RETRIES:
+            _record_rejection(candidate, {
+                "reasons": [
+                    f"promotion failed {attempts} times; giving up rather than retrying "
+                    f"forever. Last error preserved below."
+                ],
+                "error": error[-4_000:],
+            })
+            print(f"rejected {candidate.job_id}: {attempts} failed promotions", flush=True)
+            return True
+        print(
+            f"promotion retry {attempts}/{MAX_PROMOTION_RETRIES} "
+            f"for {candidate.job_id}: {exc!r}",
+            flush=True,
+        )
     return True
 
 
