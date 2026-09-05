@@ -3268,6 +3268,29 @@ do not commit.
     )
 
 
+# The control plane being unreachable is not a job failing, and treating them alike is
+# how a 38-day outage produced 22950 identical log lines and no signal at all. HTTPError
+# means control answered and is already converted to RuntimeError by Api.request; what
+# escapes as a URLError or a bare timeout never reached it.
+CONTROL_BACKOFF_CAP_SECONDS = int(os.environ.get("BONSAI_CONTROL_BACKOFF_CAP", "300"))
+
+
+def control_unreachable(exc: BaseException) -> bool:
+    return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
+def control_backoff(attempts: int, poll_seconds: int) -> float:
+    """Exponential, capped. Retrying a dead endpoint every ten seconds forever is the
+    behaviour being replaced."""
+    return float(min(poll_seconds * (2 ** min(max(attempts, 1) - 1, 6)),
+                     CONTROL_BACKOFF_CAP_SECONDS))
+
+
+def should_announce_outage(attempts: int) -> bool:
+    """One line per escalation, not one per attempt."""
+    return attempts <= 3 or attempts % 20 == 0
+
+
 def main() -> None:
     config = Config.from_env()
     config.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -3279,10 +3302,20 @@ def main() -> None:
         f"Bonsai lab agent started with {config.model}; runtime_cleanup={startup_reap}",
         flush=True,
     )
+    unreachable_since: float | None = None
+    unreachable_attempts = 0
     while True:
         job: dict[str, Any] | None = None
         try:
             api.worker_heartbeat("idle")
+            if unreachable_attempts:
+                down_for = (time.time() - (unreachable_since or time.time())) / 60
+                print(
+                    f"control plane reachable again after {unreachable_attempts} failed "
+                    f"attempts over {down_for:.0f} min",
+                    flush=True,
+                )
+                unreachable_since, unreachable_attempts = None, 0
             job = api.lease()
             if job is None:
                 time.sleep(config.poll_seconds)
@@ -3294,6 +3327,22 @@ def main() -> None:
             api.worker_heartbeat("idle", details={"last_job_id": str(job["id"])})
             print(f"completed job {job['id']} artifacts={len(artifacts)}", flush=True)
         except Exception as exc:
+            if control_unreachable(exc):
+                unreachable_attempts += 1
+                if unreachable_since is None:
+                    unreachable_since = time.time()
+                delay = control_backoff(unreachable_attempts, config.poll_seconds)
+                if should_announce_outage(unreachable_attempts):
+                    down_for = (time.time() - unreachable_since) / 60
+                    print(
+                        f"control plane UNREACHABLE at {config.control_url}: {exc}. "
+                        f"attempt {unreachable_attempts}, down {down_for:.0f} min, "
+                        f"retrying in {delay:.0f}s",
+                        flush=True,
+                    )
+                time.sleep(delay)
+                continue
+            unreachable_since, unreachable_attempts = None, 0
             emergency_reap = reap_df_probe_processes()
             if emergency_reap["targets"]:
                 print(f"reaped DF probes after worker exception: {emergency_reap}", flush=True)

@@ -1690,3 +1690,38 @@ def test_harness_validation_returns_exact_quality_errors_for_repair(tmp_path: Pa
     assert quality_command["exit_code"] == 1
     assert "F821" in quality_command["output"]
     assert "missing_df_state" in quality_command["output"]
+
+
+def test_unreachable_control_is_not_a_failing_job():
+    # The 38-day outage wrote 22950 identical "job failed: <urlopen error timed out>"
+    # lines because a dead endpoint and a broken job took the same branch.
+    import urllib.error
+
+    from bonsai_lab_agent.worker import control_unreachable
+
+    assert control_unreachable(urllib.error.URLError(TimeoutError("timed out")))
+    assert control_unreachable(TimeoutError("timed out"))
+    assert control_unreachable(ConnectionRefusedError())
+    # Api.request turns an HTTP response into RuntimeError: control answered, so the job
+    # is what went wrong, not the link.
+    assert not control_unreachable(RuntimeError("control API 409: invalid or expired lease"))
+    assert not control_unreachable(ValueError("bad payload"))
+
+
+def test_outage_backoff_grows_and_is_capped():
+    from bonsai_lab_agent.worker import CONTROL_BACKOFF_CAP_SECONDS, control_backoff
+
+    delays = [control_backoff(n, 10) for n in range(1, 12)]
+    assert delays[0] == 10
+    assert delays == sorted(delays), "backoff must never shrink"
+    assert max(delays) <= CONTROL_BACKOFF_CAP_SECONDS
+    assert delays[-1] == CONTROL_BACKOFF_CAP_SECONDS, "must actually reach the ceiling"
+
+
+def test_an_outage_is_announced_on_escalation_not_on_every_attempt():
+    from bonsai_lab_agent.worker import should_announce_outage
+
+    announced = [n for n in range(1, 201) if should_announce_outage(n)]
+    assert announced[:3] == [1, 2, 3], "the first attempts must be visible immediately"
+    assert len(announced) < 20, f"too chatty for a long outage: {len(announced)} lines"
+    assert 200 in announced, "a long outage must keep saying so"
