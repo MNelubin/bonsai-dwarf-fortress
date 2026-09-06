@@ -52,6 +52,11 @@ def v1_developer(obs: dict) -> list[dict]:
 # posture change.
 THREAT_COOLDOWN_ROUNDS = 3
 
+# Below this the fort is treated as having no usable timber. An embark arrives with a
+# handful of logs in the wagon which DF will not let anyone build with, so the floor has
+# to sit above that load rather than at zero.
+WOOD_FLOOR = 8
+
 
 def v2_reactive(obs: dict) -> list[dict]:
     """v1, but it stops expanding when the game says something is wrong.
@@ -116,9 +121,29 @@ def v3_survival(obs: dict) -> list[dict]:
             {"command": "set_labor", "args": ["MINE", True]},
             {"command": "set_labor", "args": ["PLANT", True]},
             {"command": "set_labor", "args": ["BREWER", True]},
-            {"command": "designate_dig", "args": [80]},
+            {"command": "set_labor", "args": ["CUTWOOD", True]},
             {"command": "create_stockpile", "args": [2, "food"]},
         ])
+
+    # A rung ABOVE v2, not a policy beside it. This used to dig once, on round zero,
+    # and spend the rest of the episode on a food chain it could not start -- so the
+    # tier the scale calls its ceiling was beaten by the plain digger on both forts,
+    # 0.5165 against 0.5870 fresh and 0.5668 against 0.6331 mature. A reference that
+    # loses to a lower rung is not a reference. Development comes from v2, which
+    # yields to danger; the survival chain is what v3 ADDS on top of it.
+    inherited = v2_reactive(obs)
+    if inherited != ADVANCE:
+        actions.extend(a for a in inherited
+                       if a["command"] in ("designate_dig", "create_stockpile"))
+
+    # The only logs on a fresh embark sit inside the wagon, and DF refuses those as
+    # building material -- it cancels the job and deletes the half-built workshop. So a
+    # fort that never fells a tree can never build ANY workshop, which is why this tier
+    # finished zero workorders at every horizon we measured: `add_workorder` is gated on
+    # a built Carpenters, and the fort was stuck reporting the same refusal for fifteen
+    # rounds. `wood` counts wagon stock, so the floor has to sit above an embark load.
+    if (resources.get("wood") or 0) < WOOD_FLOOR:
+        actions.append({"command": "chop_trees", "args": [12]})
 
     # A failed early placement is expected while the soil chamber is still being dug.
     # Re-asking is idempotent once a plot exists and is evidence-driven before then.
