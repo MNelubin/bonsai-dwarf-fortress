@@ -123,11 +123,14 @@ CALIBRATION = {
     # why the endpoint is keyed by save.
     ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.587811},
     ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.635772},
-    # Twenty-eight fort-days on the fresh embark is where the survival chain finally
-    # pays for itself — v3 0.610626 against v1 0.600100, where at 3600 ticks the two are
-    # indistinguishable — but the floor for that horizon is still being measured, and a
-    # pair with only one end is not a calibration. calibration_for() refuses an
-    # unmeasured pair on purpose, so this horizon stays absent until it has both.
+    # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
+    # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
+    # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
+    # episodes 0.478571 to the last digit, and this is the widest band of the three at
+    # 0.1321. Nothing but development moves even here: comfort stays 1.0 and provisioning
+    # is 0.9286 for the idler and both workers alike, which makes it a property of the
+    # fort rather than of the policy.
+    ("ourfort16-final", 33600): {"noop": 0.478571, "ref": 0.610626},
 }
 
 DEFAULT_SAVE = "bonsaifort2"
