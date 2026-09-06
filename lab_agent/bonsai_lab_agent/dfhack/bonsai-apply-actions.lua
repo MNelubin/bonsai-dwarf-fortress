@@ -2005,15 +2005,22 @@ while QI <= #QUEUE do
             -- A tile is damp when water sits in any of the 26 tiles around it. Mining it
             -- is refused by DF and the refusal destroys the designation, so this has to be
             -- caught BEFORE marking rather than discovered as a stall.
+            -- The signal is water_table, NOT flow_size. Stone over an aquifer holds no
+            -- liquid until it is breached, so a flow_size test reads it as bone dry and
+            -- marks it anyway. Measured at the stalled rung, tile 100,91,46: its own
+            -- flow_size is 0 and its own water_table is false, while SIXTEEN of its
+            -- twenty-six neighbours have water_table true. That is what DF means by
+            -- "damp stone located", and checking for liquid instead of for the water
+            -- table is why my first attempt at this guard changed nothing.
             local function damp(x, y, z)
                 for dx = -1, 1 do
                     for dy = -1, 1 do
                         for dz = -1, 1 do
-                            if not (dx == 0 and dy == 0 and dz == 0) then
-                                local ok, d = pcall(function()
-                                    return dfhack.maps.getTileFlags(x + dx, y + dy, z + dz)
-                                end)
-                                if ok and d and (d.flow_size or 0) > 0 then return true end
+                            local ok, d = pcall(function()
+                                return dfhack.maps.getTileFlags(x + dx, y + dy, z + dz)
+                            end)
+                            if ok and d and (d.water_table or (d.flow_size or 0) > 0) then
+                                return true
                             end
                         end
                     end
