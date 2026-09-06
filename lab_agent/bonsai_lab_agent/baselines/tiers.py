@@ -57,6 +57,11 @@ THREAT_COOLDOWN_ROUNDS = 3
 # to sit above that load rather than at zero.
 WOOD_FLOOR = 8
 
+# Trees felled per request. A dozen is more timber than the opening needs and every log
+# is a hauling job, which is the same competition for hands that the fort-wide woodcutter
+# switch caused. Enough for a workshop or two, and the fort re-asks when it runs low.
+CHOP_BATCH = 5
+
 
 def v2_reactive(obs: dict) -> list[dict]:
     """v1, but it stops expanding when the game says something is wrong.
@@ -121,7 +126,15 @@ def v3_survival(obs: dict) -> list[dict]:
             {"command": "set_labor", "args": ["MINE", True]},
             {"command": "set_labor", "args": ["PLANT", True]},
             {"command": "set_labor", "args": ["BREWER", True]},
-            {"command": "set_labor", "args": ["CUTWOOD", True]},
+            # ONE woodcutter, not the whole fort. set_labor is fort-wide, and turning
+            # CUTWOOD on for all seven with a dozen trees marked and forty logs to haul
+            # starved mining completely: measured, this tier dug ZERO tiles in 28
+            # fort-days while its designations kept being placed, 11-14 a round. No dug
+            # soil means no farm plot ("no 4x3 plantable site" every round), no plants,
+            # no brewing and no workorders -- the whole chain hung off the labour switch
+            # being blunt. The catalog says as much about set_dwarf_labor: it is the
+            # guide's fix for a fort where one job starved mining of hands.
+            {"command": "set_dwarf_labor", "args": ["best", "CUTWOOD", True]},
             {"command": "create_stockpile", "args": [2, "food"]},
         ])
 
@@ -143,7 +156,7 @@ def v3_survival(obs: dict) -> list[dict]:
     # a built Carpenters, and the fort was stuck reporting the same refusal for fifteen
     # rounds. `wood` counts wagon stock, so the floor has to sit above an embark load.
     if (resources.get("wood") or 0) < WOOD_FLOOR:
-        actions.append({"command": "chop_trees", "args": [12]})
+        actions.append({"command": "chop_trees", "args": [CHOP_BATCH]})
 
     # A failed early placement is expected while the soil chamber is still being dug.
     # Re-asking is idempotent once a plot exists and is evidence-driven before then.
