@@ -99,22 +99,35 @@ CALIBRATION = {
     #   region3-lab     idle  0.475420     0     7       0      1.0      0.8217
     #   region3-lab     ref   0.526359    78     7       2      1.0      0.8033
     #
-    # Two things worth knowing before trusting these. The mature fort completes 7 work
+    # Two things worth knowing before trusting these. The mature fort completes work
     # orders under the DO-NOTHING policy, because a running fort works its own queue, so
-    # its floor is not idleness. And comfort now reads 1.0 for every policy on both
-    # forts: three in-game days cannot starve anyone, so the term is correct and carries
-    # no discriminating signal at this horizon. The whole separation is development, and
-    # the band is 0.029 fresh and 0.051 mature.
-    # Re-measured again after the damp-stone fix let the fort dig. The reference
-    # went from dug 2 / builds 2 to dug 13 / builds 3 and the band widened from
-    # 0.0294 to 0.0486 — 65% more separation from the mechanics repair alone,
-    # with no change to the metric. All five episodes identical: the scored
-    # surface is deterministic.
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.516491},
-    # region3-lab re-measured at k=5 after the same repairs. orders reads 17 for
-    # BOTH tiers because a running fort works its own queue and the accumulating
-    # counter finally sees it; the separation here is digging, 0 against 78.
-    ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.575358},
+    # its floor is not idleness. And comfort reads 1.0 for every policy on both forts at
+    # every horizon measured, three fort-days and twenty-eight alike: nobody starves, so
+    # the term is correct and carries no discriminating signal. It is a penalty for
+    # failing, not a way to tell good play from better. The separation is development.
+    #
+    # `ref` is THE BEST MEASURED TIER for that fort at that horizon, not always the top
+    # rung of the ladder. Measured 2026-09-06, whole ladder, k=3:
+    #
+    #                    v0_idle    v1_developer  v2_reactive  v3_survival
+    #   ourfort16-final  0.467857   0.587811      0.587411     0.585377
+    #   region3-lab      0.507812   0.635772      0.574869     0.455450
+    #
+    # The best play depends on the fort. On the fresh embark v1 and v3 are a tie inside
+    # run-to-run spread (v3 measured 0.5854 and 0.5921 on identical code, dug 34..51 —
+    # this fort stopped being deterministic once the reference started felling timber and
+    # raising buildings, though it still is for the simpler tiers). On the mature fort v3
+    # is far BELOW doing nothing: three Forgotten Beasts arrive during the episode, and a
+    # policy that farms and hauls above ground loses people that a policy digging under
+    # it does not. That is the game being right, not the metric being wrong, and it is
+    # why the endpoint is keyed by save.
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.587811},
+    ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.635772},
+    # Twenty-eight fort-days on the fresh embark is where the survival chain finally
+    # pays for itself — v3 0.610626 against v1 0.600100, where at 3600 ticks the two are
+    # indistinguishable — but the floor for that horizon is still being measured, and a
+    # pair with only one end is not a calibration. calibration_for() refuses an
+    # unmeasured pair on purpose, so this horizon stays absent until it has both.
 }
 
 DEFAULT_SAVE = "bonsaifort2"

@@ -137,11 +137,14 @@ def test_calibration_is_keyed_by_save_and_horizon():
     assert calibration_for("bonsaifort2", 99) is None
     assert calibration_for("a-fort-nobody-measured", 3600) is None
     # Withdrawn on 2026-09-06 because comfort was arithmetically zero when they were
-    # taken, then re-measured at k=5 on the repaired action layer and restored. Each
-    # fort keeps its own no-op: the mature one is higher because a running fort works
-    # its own order queue even when the policy does nothing.
-    assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.516491}
-    assert calibration_for("region3-lab", 3600) == {"noop": 0.507812, "ref": 0.575358}
+    # taken, then re-measured on the repaired action layer and restored. Each fort keeps
+    # its own no-op: the mature one is higher because a running fort works its own order
+    # queue even when the policy does nothing. `ref` is the BEST measured tier for that
+    # fort, which is not the same tier on both: the survival policy is the ceiling on the
+    # fresh embark and falls below idling on the mature one, where Forgotten Beasts kill
+    # anyone sent to work above ground.
+    assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.587811}
+    assert calibration_for("region3-lab", 3600) == {"noop": 0.507812, "ref": 0.635772}
     assert (calibration_for("region3-lab", 3600)
             != calibration_for("ourfort16-final", 3600))
 

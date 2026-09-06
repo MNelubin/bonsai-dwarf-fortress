@@ -124,6 +124,12 @@ def v3_survival(obs: dict) -> list[dict]:
             {"command": "set_kitchen_flag", "args": ["SEEDS", False]},
             {"command": "set_kitchen_flag", "args": ["DRINK", False]},
             {"command": "set_labor", "args": ["MINE", True]},
+            # Fort-wide here, unlike the woodcutter. Tried per dwarf and MEASURED it:
+            # it did not save the mature fort (0.4869 against 0.4554) and it cost the
+            # fresh one real work, dug 50 -> 29..39 and composite 0.5921 -> 0.5763..0.5860,
+            # because on a seven-dwarf embark pinning one planter takes a pair of hands
+            # out of everything else. The mature fort's losses are not caused by this
+            # switch.
             {"command": "set_labor", "args": ["PLANT", True]},
             {"command": "set_labor", "args": ["BREWER", True]},
             # ONE woodcutter, not the whole fort. set_labor is fort-wide, and turning
@@ -145,6 +151,15 @@ def v3_survival(obs: dict) -> list[dict]:
     # loses to a lower rung is not a reference. Development comes from v2, which
     # yields to danger; the survival chain is what v3 ADDS on top of it.
     inherited = v2_reactive(obs)
+    if obs.get("under_threat"):
+        # Yield with the WHOLE policy, not just the digging. Inheriting v2's restraint
+        # for excavation while the survival chain kept running was worse than either
+        # tier alone: on region3-lab three Forgotten Beasts arrive during the episode
+        # and this tier lost 13 of 136 dwarves where idling and plain digging each lost
+        # about two, scoring 0.4554 against the do-nothing floor of 0.5078. v2 already
+        # says why -- work that walks dwarves across open ground is exactly what not to
+        # do while something hostile is on the map -- and sowing a field is that.
+        return ADVANCE
     if inherited != ADVANCE:
         actions.extend(a for a in inherited
                        if a["command"] in ("designate_dig", "create_stockpile"))
