@@ -111,7 +111,10 @@ CALIBRATION = {
     # with no change to the metric. All five episodes identical: the scored
     # surface is deterministic.
     ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.516491},
-    ("region3-lab", 3600):     {"noop": 0.475420, "ref": 0.526359},
+    # region3-lab re-measured at k=5 after the same repairs. orders reads 17 for
+    # BOTH tiers because a running fort works its own queue and the accumulating
+    # counter finally sees it; the separation here is digging, 0 against 78.
+    ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.575358},
 }
 
 DEFAULT_SAVE = "bonsaifort2"

@@ -140,8 +140,8 @@ def test_calibration_is_keyed_by_save_and_horizon():
     # taken, then re-measured at k=5 on the repaired action layer and restored. Each
     # fort keeps its own no-op: the mature one is higher because a running fort works
     # its own order queue even when the policy does nothing.
-    assert calibration_for("ourfort16-final", 3600)["noop"] == 0.467857
-    assert calibration_for("region3-lab", 3600)["noop"] == 0.475420
+    assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.516491}
+    assert calibration_for("region3-lab", 3600) == {"noop": 0.507812, "ref": 0.575358}
     assert (calibration_for("region3-lab", 3600)
             != calibration_for("ourfort16-final", 3600))
 
