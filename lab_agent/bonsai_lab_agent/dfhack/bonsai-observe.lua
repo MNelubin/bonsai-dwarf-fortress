@@ -30,10 +30,34 @@ end)
 local nbuild, ndead, worders = 0, 0, 0
 pcall(function() nbuild = #w.buildings.all end)
 pcall(function() for _,u in ipairs(w.units.all) do if dfhack.units.isDead(u) then ndead = ndead + 1 end end end)
--- completed manager-order units (development proxy that is NOT wildlife-contaminated)
+-- Completed manager-order units. A development proxy that is not wildlife-contaminated,
+-- but it has to be ACCUMULATED, not read off the live queue.
+--
+-- This used to sum (amount_total - amount_left) over CURRENTLY QUEUED orders. DF removes
+-- an order from that list once it is done, so every completed order's contribution
+-- vanished from the total: the counter was not monotonic and lost exactly the work that
+-- succeeded. Measured on region3-lab at horizon 12000, the episode delta came out as -2,
+-- and raw_components hid the decrease behind max(0, obs - t0). It also explains orders
+-- reading 0 on the fresh embark after add_workorder had dispatched successfully - the
+-- order completed and disappeared before the next observation.
+--
+-- DF keeps no completed-order history (manager_orders holds only `all` and
+-- manager_order_next_id), so remember each order's delivered count by its own id and
+-- keep the record after the order is gone. Delivered only ever grows for a given id, so
+-- the sum is monotonic. The table lives as long as this DF process, which is exactly one
+-- episode: bonsai_session.sh boots a fresh instance and T0 is taken after that.
+_G.BONSAI_WORDERS_DELIVERED = _G.BONSAI_WORDERS_DELIVERED or {}
 pcall(function()
   for _, o in ipairs(w.manager_orders.all) do
-    pcall(function() worders = worders + math.max(0, (o.amount_total or 0) - (o.amount_left or 0)) end)
+    pcall(function()
+      local id = o.id
+      local delivered = math.max(0, (o.amount_total or 0) - (o.amount_left or 0))
+      local known = _G.BONSAI_WORDERS_DELIVERED[id] or 0
+      if delivered > known then _G.BONSAI_WORDERS_DELIVERED[id] = delivered end
+    end)
+  end
+  for _, delivered in pairs(_G.BONSAI_WORDERS_DELIVERED) do
+    worders = worders + delivered
   end
 end)
 
