@@ -136,12 +136,14 @@ def test_calibration_is_keyed_by_save_and_horizon():
     # A horizon measured for one fort is not thereby measured for another.
     assert calibration_for("bonsaifort2", 99) is None
     assert calibration_for("a-fort-nobody-measured", 3600) is None
-    # ourfort16-final and region3-lab were measured on 2026-09-05 and WITHDRAWN on
-    # 2026-09-06: the comfort term was arithmetically zero at the time, so a fifth of the
-    # metric's weight was structurally absent from every one of those composites. They
-    # refuse until re-measured, which is the whole reason the lookup can refuse at all.
-    assert calibration_for("ourfort16-final", 3600) is None
-    assert calibration_for("region3-lab", 3600) is None
+    # Withdrawn on 2026-09-06 because comfort was arithmetically zero when they were
+    # taken, then re-measured at k=5 on the repaired action layer and restored. Each
+    # fort keeps its own no-op: the mature one is higher because a running fort works
+    # its own order queue even when the policy does nothing.
+    assert calibration_for("ourfort16-final", 3600)["noop"] == 0.467857
+    assert calibration_for("region3-lab", 3600)["noop"] == 0.475420
+    assert (calibration_for("region3-lab", 3600)
+            != calibration_for("ourfort16-final", 3600))
 
 
 def test_an_unmeasured_save_refuses_instead_of_scoring(monkeypatch):

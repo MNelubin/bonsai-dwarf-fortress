@@ -87,18 +87,26 @@ CALIBRATION = {
     # also carries real variance (sigma 0.0044) where the fresh embark has none, and its
     # cohort never fully survives three days - it starts with 13 hostiles and 101
     # injured, so the survival gate is already pressed in both endpoints alike.
-    # WITHDRAWN 2026-09-06. These were measured while the comfort term was
-    # arithmetically zero — _sat divided the hunger timer by the episode horizon, which
-    # is the same quantity — so every composite below carried a structural 0 for a fifth
-    # of the metric's weight. Now that comfort is normalised against measured fort
-    # behaviour the endpoints are wrong, and scoring against them would produce numbers
-    # that look real and are not. An unmeasured pair refuses; that is the point.
+    # Re-measured 2026-09-06 at k=5 on the repaired code. Everything before this was
+    # taken while build_workshop lost its workshop to an illegal reagent, add_workorder
+    # could not dispatch, place_furniture installed nothing and comfort was
+    # arithmetically zero - so the "competent" reference had not been able to be
+    # competent, and a fifth of the weight was missing from every composite.
     #
-    # The withdrawn values, for the re-measurement to diff against:
-    #   ("ourfort16-final", 3600): noop 0.267857  ref 0.297285   gap 0.029
-    #   ("region3-lab",     3600): noop 0.281259  ref 0.332826   gap 0.052
+    #                        composite   dug  orders  builds  comfort  provisioning
+    #   ourfort16-final idle  0.467857     0     0       0      1.0      0.8929
+    #   ourfort16-final ref   0.497285     2     0       2      1.0      0.8929
+    #   region3-lab     idle  0.475420     0     7       0      1.0      0.8217
+    #   region3-lab     ref   0.526359    78     7       2      1.0      0.8033
     #
-    # Re-measure with calibrate.py at k=5 per (save, tier) before any scoring run.
+    # Two things worth knowing before trusting these. The mature fort completes 7 work
+    # orders under the DO-NOTHING policy, because a running fort works its own queue, so
+    # its floor is not idleness. And comfort now reads 1.0 for every policy on both
+    # forts: three in-game days cannot starve anyone, so the term is correct and carries
+    # no discriminating signal at this horizon. The whole separation is development, and
+    # the band is 0.029 fresh and 0.051 mature.
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.497285},
+    ("region3-lab", 3600):     {"noop": 0.475420, "ref": 0.526359},
 }
 
 DEFAULT_SAVE = "bonsaifort2"
