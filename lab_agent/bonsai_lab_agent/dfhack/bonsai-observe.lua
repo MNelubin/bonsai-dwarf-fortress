@@ -222,8 +222,20 @@ pcall(function()
         if blk then
           local tt = blk.tiletype
           for iy = 0, 15 do for ix = 0, 15 do
-            local sh = df.tiletype.attrs[tt[ix][iy]].shape
-            if sh == df.tiletype_shape.WALL then cnt = cnt + 1 end
+            local at = df.tiletype.attrs[tt[ix][iy]]
+            -- Rock and soil only. A tree trunk is WALL-shaped, so felling timber used
+            -- to drain the solid count exactly as if the fort had mined: measured with
+            -- mining switched OFF and no designation made anywhere, chopping 15 trees
+            -- scored dug=135, against the 87 that the best development tier mines in a
+            -- whole three-day episode. Development is half the composite and digging is
+            -- most of development, so the cheapest way to the top of the board was to
+            -- cut down the forest. Excavation means removing ground, not vegetation.
+            if at.shape == df.tiletype_shape.WALL
+                and at.material ~= df.tiletype_material.TREE
+                and at.material ~= df.tiletype_material.PLANT
+                and at.material ~= df.tiletype_material.MUSHROOM then
+              cnt = cnt + 1
+            end
           end end
         end
         nbbox = nbbox + 256
