@@ -237,28 +237,74 @@ end)
 -- A policy cannot react to an attack it cannot see. Before this the observation carried
 -- no danger signal at all, so "reacting to problems" was impossible in principle rather
 -- than merely unimplemented.
-local nhostile, ninjured, nannounce, ndanger = 0, 0, 0, 0
-local warn = {}
+local nhostile, nhostile_map, ninjured, nannounce, ndanger = 0, 0, 0, 0, 0
+local nwounded, ncancel = 0, 0
+local warn, cancels = {}, {}
+
+-- How close something dangerous has to be before it is this fort's problem.
+--
+-- `isDanger` is a property of the CREATURE, not of the situation: on the fresh embark
+-- it is true for four Hadrosaurid Fiends living in the caverns tens of levels down,
+-- which the fort will never meet. Counting them made `under_threat` permanently true
+-- from the first minute, and the reactive tier -- which stops expanding under threat --
+-- therefore held for the whole episode and dug 13 tiles where the same policy unthrottled
+-- digs 82. A threat channel that is always on carries no information and disables every
+-- policy that believes it.
+--
+-- Proximity is the missing predicate. A creature five levels away and thirty tiles off
+-- can be in the fort within a round; one in a cavern forty levels below cannot, and the
+-- fort should not cower from it. Invaders are exempt: a siege on the map edge is exactly
+-- the thing to react to BEFORE it arrives.
+local THREAT_RADIUS_XY = 30
+local THREAT_RADIUS_Z = 5
+
+local citizens, suspects = {}, {}
 pcall(function()
   for _, u in ipairs(w.units.active) do
     local ok = pcall(function()
       if dfhack.units.isDead(u) then return end
-      -- hostile = alive, not ours, and either an invader or an active enemy
-      local mine = dfhack.units.isCitizen(u)
-      if not mine then
-        local hostile = false
-        pcall(function() hostile = dfhack.units.isInvader(u) end)
-        if not hostile then pcall(function() hostile = dfhack.units.isDanger(u) end) end
-        if hostile then nhostile = nhostile + 1 end
-      else
-        -- injured citizen: any bleeding or missing/broken part shows as a wound
+      if dfhack.units.isCitizen(u) then
+        table.insert(citizens, { u.pos.x, u.pos.y, u.pos.z })
+        -- Injured means NEEDING CARE, which is not the same as carrying a wound record.
+        -- DF keeps a wound after it heals, so `#u.body.wounds > 0` counts scars: on the
+        -- mature fort it reported 101 injured of 136 with ZERO of them bleeding and 40
+        -- carrying nothing newer than a month, while DF's own health bookkeeping said two
+        -- dwarves needed a doctor. A fort with a history read as a fort in crisis, which
+        -- is the same mistake as counting cavern demons as hostiles: a state that is
+        -- permanently true tells a policy nothing.
+        pcall(function() if #u.body.wounds > 0 then nwounded = nwounded + 1 end end)
         local hurt = false
-        pcall(function() hurt = (#u.body.wounds > 0) end)
+        pcall(function() hurt = u.health.flags.needs_healthcare end)
         if not hurt then pcall(function() hurt = (u.body.blood_count < u.body.blood_max) end) end
         if hurt then ninjured = ninjured + 1 end
+      else
+        local invader, danger = false, false
+        pcall(function() invader = dfhack.units.isInvader(u) end)
+        pcall(function() danger = dfhack.units.isDanger(u) end)
+        if invader or danger then
+          table.insert(suspects, { u.pos.x, u.pos.y, u.pos.z, invader })
+        end
       end
     end)
     if not ok then break end
+  end
+end)
+
+pcall(function()
+  for _, s in ipairs(suspects) do
+    nhostile_map = nhostile_map + 1
+    local near = s[4]                                  -- invaders count from anywhere
+    if not near then
+      for _, c in ipairs(citizens) do
+        if math.abs(s[3] - c[3]) <= THREAT_RADIUS_Z
+            and math.abs(s[1] - c[1]) <= THREAT_RADIUS_XY
+            and math.abs(s[2] - c[2]) <= THREAT_RADIUS_XY then
+          near = true
+          break
+        end
+      end
+    end
+    if near then nhostile = nhostile + 1 end
   end
 end)
 
@@ -274,21 +320,34 @@ pcall(function()
     local txt = ""
     pcall(function() txt = a.text or "" end)
     local low = txt:lower()
-    if low:find("ambush") or low:find("siege") or low:find("attack") or low:find("has come")
-       or low:find("slain") or low:find("struck down") or low:find("cancel") then
+    -- A cancelled job is NOT danger. `cancel` used to sit in this list, and on any fort
+    -- that is actually working the cancellation feed never stops: "Miner cancels Carve
+    -- downward: Damp stone", "cancels Dig: Inappropriate". Those four lines filled the
+    -- twelve-announcement window, drove ndanger up every round and latched `under_threat`
+    -- on for the rest of the episode -- so even with the wildlife miscount fixed, the
+    -- reactive tier still held for good. Real danger and failed work are different
+    -- questions and the policy must be able to ask them separately: a fort whose digging
+    -- keeps being cancelled needs to dig SOMEWHERE ELSE, which is the opposite of the
+    -- hunker-down response that danger calls for.
+    if low:find("cancel") then
+      ncancel = ncancel + 1
+      if #cancels < 4 then cancels[#cancels+1] = (txt:gsub("[|=%s;]+", "_")):sub(1, 48) end
+    elseif low:find("ambush") or low:find("siege") or low:find("attack")
+       or low:find("has come") or low:find("slain") or low:find("struck down") then
       ndanger = ndanger + 1
-      if #warn < 4 then warn[#warn+1] = (txt:gsub("[|=%s]+", "_")):sub(1, 48) end
+      if #warn < 4 then warn[#warn+1] = (txt:gsub("[|=%s;]+", "_")):sub(1, 48) end
     end
   end
 end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d ninjured=%d nannounce=%d ndanger=%d warn=%s nwild=%d nitems=%d nunits=%d cids=%s",
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, worders,
   nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
   stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots,
   table.concat(shop_summary, ','), table.concat(pending_summary, ','),
   njobs, nunassignedjobs, nmanagerjobs, nbrewjobs, norders,
-  norderleft, nhostile, ninjured, nannounce, ndanger,
+  norderleft, nhostile, nhostile_map, ninjured, nwounded, nannounce, ndanger, ncancel,
   (#warn > 0 and table.concat(warn, ";") or "none"),
+  (#cancels > 0 and table.concat(cancels, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
   #w.items.all, #w.units.all, table.concat(cids, ",")))

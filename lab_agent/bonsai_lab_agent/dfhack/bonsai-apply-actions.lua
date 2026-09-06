@@ -131,6 +131,15 @@ local function refuse(verb, why)
     print(string.format('REFUSED %s: %s', verb, tostring(why)))
 end
 
+-- A verb that hit an obstacle and worked around it did NOT refuse, and must not say so.
+-- designate_dig printed `REFUSED designate_dig: ... damp stone ...` on every call while
+-- going on to designate 12-14 tiles that round, so the one channel the agent learns
+-- outcomes from reported failure for an action that had succeeded. Refusal means nothing
+-- happened; anything else is a note.
+local function note(verb, what)
+    print(string.format('NOTE %s: %s', verb, tostring(what)))
+end
+
 -- Every verb body runs inside pcall and the error was thrown away, so a failure
 -- in the BODY looked exactly like a verb that chose to do nothing: zero counter,
 -- no refusal, no trace. set_standing_order passed both of its preconditions and
@@ -2090,12 +2099,6 @@ while QI <= #QUEUE do
                 depth = dz
                 if placed >= n then break end
             end
-            if blocked_at then
-                refuse("designate_dig", string.format(
-                    "the shaft at %d,%d meets damp stone at z=%d, which DF will not mine "
-                    .. "and whose designation it deletes; digging %d level(s) and "
-                    .. "chambering there instead", ox, oy, blocked_at, depth))
-            end
             -- A CHAMBER off each landing, not spokes. This used to carve four one-tile
             -- arms at radii 1..3, which is connected and diggable and useless: nothing
             -- that needs floor area ever fits. Measured — build_farm_plot refused for
@@ -2186,6 +2189,15 @@ while QI <= #QUEUE do
                 pcall(function() df.global.process_jobs = true end)
             end
             c.designate_dig = c.designate_dig + placed
+            -- Reported LAST and as a note, because by here the chambers have been cut:
+            -- a blocked shaft bounds how deep the fort goes, it does not stop it digging.
+            if blocked_at then
+                note("designate_dig", string.format(
+                    "the shaft at %d,%d meets damp stone at z=%d, which DF will not mine "
+                    .. "and whose designation it deletes; dug %d level(s) and designated "
+                    .. "%d tile(s) in chambers off those landings instead",
+                    ox, oy, blocked_at, depth, placed))
+            end
         end)
     elseif verb == "build_room" then
         -- One idempotent, resumable request. All coordinates and requirements reaching

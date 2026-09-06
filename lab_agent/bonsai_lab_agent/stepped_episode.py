@@ -22,6 +22,7 @@ submission would be indistinguishable from infrastructure failure.
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Callable
 
@@ -286,8 +287,25 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
             cobs["danger_events"] = int(cur_raw.get("ndanger", 0))
             cobs["warnings"] = [w for w in (cur_raw.get("warn", "none") or "").split(";")
                                 if w and w != "none"]
-            cobs["under_threat"] = (cobs["hostiles"] > 0 or cobs["injured"] > 0
-                                    or cobs["danger_events"] > 0)
+            # A single casualty is not a fort under attack; on a fort of 136 it is
+            # Tuesday. Threat means danger present or arriving, or casualties on a scale
+            # that is itself the emergency -- otherwise the flag latches on and every
+            # policy that reads it stops developing for good.
+            cobs["wounded"] = int(cur_raw.get("nwounded", 0) or 0)
+            casualty_alarm = max(2, math.ceil(0.10 * max(1, int(cur_raw.get("ncit", 0) or 0))))
+            cobs["under_threat"] = (cobs["hostiles"] > 0
+                                    or cobs["danger_events"] > 0
+                                    or cobs["injured"] >= casualty_alarm)
+            # Work the fort refused to do, kept apart from danger. The observer used to
+            # score a cancelled dig job as a danger event, which latched `under_threat`
+            # on for good on any fort that was actually working. These say WHY the fort
+            # is not doing what it was told -- "Damp stone located" is the difference
+            # between a policy that re-asks forever and one that digs somewhere else.
+            cobs["cancellations"] = int(cur_raw.get("ncancel", 0) or 0)
+            cobs["cancel_reasons"] = [
+                c for c in (cur_raw.get("cancels", "none") or "").split(";")
+                if c and c != "none"]
+            cobs["hostiles_on_map"] = int(cur_raw.get("nhostile_map", 0) or 0)
             cobs["dependencies"] = dependency_state(cur_raw)
             cobs["previous_action_feedback"] = previous_feedback
 
