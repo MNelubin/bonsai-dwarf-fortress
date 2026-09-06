@@ -105,7 +105,12 @@ CALIBRATION = {
     # forts: three in-game days cannot starve anyone, so the term is correct and carries
     # no discriminating signal at this horizon. The whole separation is development, and
     # the band is 0.029 fresh and 0.051 mature.
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.497285},
+    # Re-measured again after the damp-stone fix let the fort dig. The reference
+    # went from dug 2 / builds 2 to dug 13 / builds 3 and the band widened from
+    # 0.0294 to 0.0486 — 65% more separation from the mechanics repair alone,
+    # with no change to the metric. All five episodes identical: the scored
+    # surface is deterministic.
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.516491},
     ("region3-lab", 3600):     {"noop": 0.475420, "ref": 0.526359},
 }
 
