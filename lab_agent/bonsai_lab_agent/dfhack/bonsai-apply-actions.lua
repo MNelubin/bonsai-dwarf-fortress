@@ -2002,6 +2002,24 @@ while QI <= #QUEUE do
             local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
             local placed = 0
             local DIG = df.tile_dig_designation
+            -- A tile is damp when water sits in any of the 26 tiles around it. Mining it
+            -- is refused by DF and the refusal destroys the designation, so this has to be
+            -- caught BEFORE marking rather than discovered as a stall.
+            local function damp(x, y, z)
+                for dx = -1, 1 do
+                    for dy = -1, 1 do
+                        for dz = -1, 1 do
+                            if not (dx == 0 and dy == 0 and dz == 0) then
+                                local ok, d = pcall(function()
+                                    return dfhack.maps.getTileFlags(x + dx, y + dy, z + dz)
+                                end)
+                                if ok and d and (d.flow_size or 0) > 0 then return true end
+                            end
+                        end
+                    end
+                end
+                return false
+            end
             local function mark(x, y, z, kind)
                 if placed >= n then return end
                 pcall(function()
@@ -2012,6 +2030,16 @@ while QI <= #QUEUE do
                     -- dwarf will refuse or drown in, and neither shows up in a
                     -- designation count — the batch just quietly never finishes.
                     if (des.flow_size or 0) > 0 then return end
+                    -- DAMP STONE. DF refuses to mine a tile that touches water and it
+                    -- CLEARS the designation when it refuses, so the shaft loses a rung
+                    -- and stalls there for good. The game says so in its own words:
+                    --   Digging designation cancelled: damp stone located.
+                    -- Measured on ourfort16-final: the shaft reached z=47 and z=46 was
+                    -- damp, so every re-designation was cancelled again, six of seven
+                    -- miners stood idle for 9000 ticks and the fort dug two tiles total.
+                    -- The existing guard above only looks at the tile itself; damp is a
+                    -- property of its NEIGHBOURS, including diagonals and both z faces.
+                    if damp(x, y, z) then return end
                     local tt = dfhack.maps.getTileType(x, y, z)
                     local sh = tt and df.tiletype.attrs[tt].shape
                     -- The shaft head is a down stair cut through a surface FLOOR; all
@@ -2042,13 +2070,24 @@ while QI <= #QUEUE do
                     placed = placed + 1
                 end)
             end
-            -- shaft: down-stair at the surface, up/down stairs beneath it
+            -- shaft: down-stair at the surface, up/down stairs beneath it. STOP at the
+            -- first damp rung: everything below it is unreachable until that tile is
+            -- mined, and that tile will never be mined, so marking deeper only produces
+            -- designations nobody can act on. The fort digs as far as the water allows
+            -- and carves its chambers off the deepest landing it actually reached.
             mark(ox, oy, oz, DIG.DownStair)
-            local depth = 0
+            local depth, blocked_at = 0, nil
             for dz = 1, 10 do
+                if damp(ox, oy, oz - dz) then blocked_at = oz - dz break end
                 mark(ox, oy, oz - dz, DIG.UpDownStair)
                 depth = dz
                 if placed >= n then break end
+            end
+            if blocked_at then
+                refuse("designate_dig", string.format(
+                    "the shaft at %d,%d meets damp stone at z=%d, which DF will not mine "
+                    .. "and whose designation it deletes; digging %d level(s) and "
+                    .. "chambering there instead", ox, oy, blocked_at, depth))
             end
             -- A CHAMBER off each landing, not spokes. This used to carve four one-tile
             -- arms at radii 1..3, which is connected and diggable and useless: nothing
