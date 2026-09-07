@@ -143,8 +143,8 @@ def test_calibration_is_keyed_by_save_and_horizon():
     # fort, which is not the same tier on both: the survival policy is the ceiling on the
     # fresh embark and falls below idling on the mature one, where Forgotten Beasts kill
     # anyone sent to work above ground.
-    assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.587811}
-    assert calibration_for("region3-lab", 3600) == {"noop": 0.507812, "ref": 0.635772}
+    assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.533515}
+    assert calibration_for("region3-lab", 3600) == {"noop": 0.507812, "ref": 0.565561}
     assert (calibration_for("region3-lab", 3600)
             != calibration_for("ourfort16-final", 3600))
 

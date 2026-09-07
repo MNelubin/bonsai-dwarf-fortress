@@ -27,8 +27,34 @@ pcall(function()
     end
   end
 end)
-local nbuild, ndead, worders = 0, 0, 0
-pcall(function() nbuild = #w.buildings.all end)
+local nbuild, nbuild_all, ndead, worders = 0, 0, 0, 0
+-- What the fort BUILT, which is not the same as what is in buildings.all.
+--
+-- `#w.buildings.all` counts every record: on region3-lab that is 1597 entries of which
+-- 223 are civzones, 14 stockpiles, 225 doors, 217 beds, 204 tables. A zone and a
+-- stockpile cost nothing at all in DF -- no material, no job, no dwarf-time -- so
+-- counting them made the development term farmable, worse than the tree exploit was.
+-- Measured: a policy that does NOTHING but call create_zone once a round scored
+-- composite 0.585504 with dug=0 and orders=0, against a do-nothing floor of 0.467857
+-- and a best-tier 0.587811 -- 98% of the reference score for free.
+--
+-- So: finished buildings only, and not the two kinds that are placed rather than built.
+-- Furniture stays counted: a bed needs an item and a dwarf to install it. Unfinished
+-- buildings are intent, not effect, and an agent can plan them by the hundred.
+-- The raw figure survives as nbuild_all, because losing a number is how a defect hides.
+pcall(function() nbuild_all = #w.buildings.all end)
+pcall(function()
+  for _, b in ipairs(w.buildings.all) do
+    pcall(function()
+      local ty = b:getType()
+      if ty ~= df.building_type.Civzone and ty ~= df.building_type.Stockpile then
+        local finished = true
+        pcall(function() finished = b:getBuildStage() >= b:getMaxBuildStage() end)
+        if finished then nbuild = nbuild + 1 end
+      end
+    end)
+  end
+end)
 pcall(function() for _,u in ipairs(w.units.all) do if dfhack.units.isDead(u) then ndead = ndead + 1 end end end)
 -- Completed manager-order units. A development proxy that is not wildlife-contaminated,
 -- but it has to be ACCUMULATED, not read off the live queue.
@@ -379,8 +405,8 @@ pcall(function()
   end
 end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d cids=%s",
-  tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, worders,
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d cids=%s",
+  tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, nbuild_all, worders,
   nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
   stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile,
   table.concat(shop_summary, ','), table.concat(pending_summary, ','),

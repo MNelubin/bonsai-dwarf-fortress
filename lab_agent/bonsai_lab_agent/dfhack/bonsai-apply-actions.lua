@@ -2968,8 +2968,19 @@ while QI <= #QUEUE do
         attempt("assign_room", function()
             local kind = a[2]
             local want = kind and ZONE_KINDS[kind] and df.civzone_type[ZONE_KINDS[kind]]
+            if not want then
+                local known = {}
+                for k in pairs(ZONE_KINDS) do known[#known + 1] = k end
+                table.sort(known)
+                refuse("assign_room", "no such room kind: " .. tostring(kind)
+                       .. "; try " .. table.concat(known, ", "))
+                return
+            end
             local unit = pick_citizen(a[3], true)
-            if not (want and unit) then return end
+            if not unit then
+                refuse("assign_room", "no dwarf matched " .. tostring(a[3]))
+                return
+            end
             for _, b in ipairs(w.buildings.all) do
                 if b:getType() == df.building_type.Civzone and b:getSubtype() == want
                     and b.assigned_unit_id == -1 then
@@ -3077,7 +3088,13 @@ while QI <= #QUEUE do
         attempt("configure_stockpile", function()
             local which = tonumber(a[2]) or 0
             local cat = pile_category(a[3])
-            if not cat then return end          -- refuse an unknown category
+            -- The comment here used to say "refuse an unknown category" beside a bare
+            -- return that refused nothing. A comment describing behaviour the code does
+            -- not have is worse than no comment: it stops the next reader looking.
+            if not cat then
+                refuse("configure_stockpile", "no such stockpile category: " .. tostring(a[3]))
+                return
+            end
             -- address a specific pile, so a fort with several can narrow them
             -- differently: one for food, one for wood, the way a player lays them out
             local piles = {}
@@ -3085,11 +3102,19 @@ while QI <= #QUEUE do
                 if b:getType() == df.building_type.Stockpile then piles[#piles + 1] = b end
             end
             local target = piles[which + 1] or piles[1]
-            if not target then return end
+            if not target then
+                refuse("configure_stockpile", "the fort has no stockpile to configure; "
+                       .. "create_stockpile first")
+                return
+            end
             -- Disable every category, then enable the one asked for. Explicit rather
             -- than leaning on DFHack's 'set' mode, whose clearing behaviour we have not
             -- measured — and an unmeasured assumption is what this verb was made of.
-            if not pile_apply(target, { cat }, 'set') then return end
+            if not pile_apply(target, { cat }, 'set') then
+                refuse("configure_stockpile", "DF rejected category " .. tostring(a[3])
+                       .. " on that pile")
+                return
+            end
 
             -- Barrels and bins. The guide turns them off for a stone pile so wheelbarrows
             -- are used instead. These live on `storage`, NOT on the building and NOT in
@@ -3153,7 +3178,10 @@ while QI <= #QUEUE do
         -- to dug stone, so it needs a fort that has dug some.
         attempt("smooth", function()
             local n = math.max(1, math.min(tonumber(a[2]) or 20, 200))
-            if not u1 then return end
+            if not u1 then
+                refuse("smooth", "the fort has no citizen to anchor the region on")
+                return
+            end
             local marked = 0
             for dz = 0, 8 do
                 for dx = -12, 12 do
@@ -3272,7 +3300,10 @@ while QI <= #QUEUE do
         -- read out of DFHack's own quickfort/dig.lua rather than guessed at.
         attempt("set_dig_priority", function()
             local want = math.max(1, math.min(tonumber(a[2]) or 4, 7))
-            if not u1 then return end
+            if not u1 then
+                refuse("set_dig_priority", "the fort has no citizen to anchor the region on")
+                return
+            end
             local P2 = P.dig or { u1.pos.x, u1.pos.y, u1.pos.z }
             local ox, oy, oz = P2[1], P2[2], P2[3]
             local touched = 0
@@ -3327,7 +3358,11 @@ while QI <= #QUEUE do
                 type = df.building_type.FarmPlot,
                 pos = xyz2pos(x, y, z), width = pw, height = ph,
             }
-            if not b then return end
+            if not b then
+                refuse("build_farm_plot", string.format(
+                    "DF refused to place a %dx%d plot at %d,%d,%d", pw, ph, x, y, z))
+                return
+            end
             -- a plot takes no items to build, so finish it rather than leaving the fort
             -- waiting on a construction job that carries no reagent
             pcall(function() b:setBuildStage(b:getMaxBuildStage()) end)

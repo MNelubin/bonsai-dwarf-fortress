@@ -110,8 +110,21 @@ CALIBRATION = {
     # rung of the ladder. Measured 2026-09-06, whole ladder, k=3:
     #
     #                    v0_idle    v1_developer  v2_reactive  v3_survival
-    #   ourfort16-final  0.467857   0.587811      0.587411     0.585377
-    #   region3-lab      0.507812   0.635772      0.574869     0.455450
+    #   ourfort16-final  0.467857   0.517153      0.517565     0.533515
+    #   region3-lab      0.507812   0.565561      0.537531     0.531642
+    #
+    # Re-measured 2026-09-07 after `buildings` stopped counting things nobody built. It
+    # was `#w.buildings.all`, which includes civzones and stockpiles -- both free in DF,
+    # no material, no job, no dwarf-time -- and unfinished work. A policy that only called
+    # create_zone scored 0.585504 against a 0.587811 best tier, taking 98% of the
+    # reference for nothing. The term now counts finished buildings that are neither.
+    #
+    # Two consequences worth stating rather than hiding. First, v1's seven "builds" were
+    # seven free stockpiles: it cannot raise a workshop on the fresh embark because the
+    # only wood is wagon-locked, so its build credit was entirely the exploit. Second,
+    # the bands roughly halved -- 0.1200 to 0.0656 fresh, 0.1280 to 0.0578 mature --
+    # because that much of the old separation WAS the hole. The fresh ladder is honest
+    # for the first time: the reference leads by 0.016, several times the ±0.006 spread.
     #
     # The best play depends on the fort. On the fresh embark v1 and v3 are a tie inside
     # run-to-run spread (v3 measured 0.5854 and 0.5921 on identical code, dug 34..51 —
@@ -121,8 +134,8 @@ CALIBRATION = {
     # policy that farms and hauls above ground loses people that a policy digging under
     # it does not. That is the game being right, not the metric being wrong, and it is
     # why the endpoint is keyed by save.
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.587811},
-    ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.635772},
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.533515},
+    ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.565561},
     # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
     # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
     # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
@@ -130,7 +143,10 @@ CALIBRATION = {
     # 0.1321. Nothing but development moves even here: comfort stays 1.0 and provisioning
     # is 0.9286 for the idler and both workers alike, which makes it a property of the
     # fort rather than of the policy.
-    ("ourfort16-final", 33600): {"noop": 0.478571, "ref": 0.610626},
+    # WITHDRAWN 2026-09-07: measured before `buildings` was fixed, so its reference
+    # carried free stockpiles. calibration_for() refuses an unmeasured pair on purpose;
+    # better no number than one taken against a counter that has since changed meaning.
+    # ("ourfort16-final", 33600): {"noop": 0.478571, "ref": 0.610626},
 }
 
 DEFAULT_SAVE = "bonsaifort2"
