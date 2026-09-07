@@ -94,6 +94,26 @@ provisioning is identical for every policy.** Half the weight carries no signal 
 horizon we run; all discrimination is development, and on the fresh fort `orders` is
 structurally 0 because the embark arrives with fifteen barrels. Two live terms out of five.
 
+0. **Do not run horizons above ~12000 ticks: they measure nothing.** Swept the fresh
+   embark at 3600 / 12000 / 33600, k=2. Twelve thousand and thirty-three thousand six
+   hundred are identical to six decimals for EVERY tier -- v0 0.478571, v1 0.531472 with
+   93 dug, v3 0.569934 with 93 dug and 3 builds -- because the fort finishes what it can
+   and then stands still for the remaining 21600 ticks. Only 3600 vs 12000 differ.
+
+   The 93-tile plateau is NOT the dig verb running out of levels. That was the obvious
+   explanation and it was built and measured twice, losing both times: cutting on every
+   standable level raised 12000 to 108 but dropped the calibrated 3600 horizon from 84 to
+   69 and the mature fort from 111 to 98; making it depth-first with a near frontier put
+   3600 back and returned 12000 to exactly 93, while the mature fort stayed 30% down,
+   because on a mountain fort the surface levels are standable and full of wall so the
+   budget goes to chambers far from the miners. Reverted; the reasoning is kept in the
+   code so it is not rebuilt a third time.
+
+   What a competent fort actually reaches, against the saturation scales it is measured
+   with: dug 93 against a scale of 200, orders 0 against 20, builds 3 against 10. Every
+   scale is two to seven times what is achievable, so development spends its whole life
+   in its own lower tail.
+
 1. Either make comfort and provisioning able to move within a scored episode — a scenario
    that starts short of food or drink would do it — or stop weighting them as if they
    discriminate and say plainly that they are failure penalties.

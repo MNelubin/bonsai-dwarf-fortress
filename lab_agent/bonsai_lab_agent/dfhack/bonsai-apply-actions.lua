@@ -2145,7 +2145,14 @@ while QI <= #QUEUE do
             local DIRS = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } }
             P.digring = (P.digring or 0)
             -- How far out a chamber may start. Bounded so a saturated fort cannot walk
-            -- this to the map edge looking for virgin rock.
+            -- this to the map edge looking for virgin rock -- but 30 was too tight and it
+            -- BOUND. Measured on ourfort16-final: every tier plateaus at 93 dug tiles and
+            -- an episode of 12000 ticks scores identically to one of 33600, to six
+            -- decimals, because the fort finishes its reachable band and then stands
+            -- still for 21600 ticks. The frontier walk already guarantees connectivity --
+            -- it starts at the first step that still holds undug wall, and everything
+            -- between there and the shaft is designated by definition -- so the bound is
+            -- a courtesy against runaway designation, not a correctness condition.
             local MAX_REACH = 30
 
             local function at(step, side, d)
@@ -2203,6 +2210,28 @@ while QI <= #QUEUE do
             -- Spend ordinary wall cuts at the deepest landing first. On a fresh embark
             -- the upper layers are often soil and the staircase itself yields no usable
             -- boulders; walking top-down consumed the whole batch before touching rock.
+            --
+            -- REFUTED, twice, keep the single level. The obvious next move here is to
+            -- cut on every level the fort can walk on rather than only the shaft's
+            -- landings: with an aquifer stopping the stair one rung down, `depth` is 1,
+            -- so this digs ONE z-level while z=49 and z=50 sit dry and untouched at some
+            -- 2100 tiles each. It was built and measured, twice, and lost both times.
+            --
+            -- Cutting on all standable levels each call: fresh 12000-tick digging rose
+            -- 93 -> 108, but the calibrated 3600-tick horizon FELL 84 -> 69 and the
+            -- mature fort 111 -> 98. Designations spread over four levels send miners
+            -- walking instead of digging.
+            --
+            -- Depth first, climbing only when a level is exhausted, with the frontier
+            -- back at 30: fresh returned to baseline (81..88 against 84) and the 12000
+            -- plateau came back to exactly 93 -- no gain at all -- while the mature fort
+            -- stayed 30% down at 78. On a mountain fort the surface levels ARE standable
+            -- and full of wall, so the budget goes to chambers far from the miners.
+            --
+            -- So the 93-tile plateau is not level availability, and this is not the way
+            -- to break it. Spend ordinary wall cuts at the deepest landing: on a fresh
+            -- embark the upper layers are soil and the staircase yields no usable
+            -- boulders, so walking top-down consumed the whole batch before reaching rock.
             for dz = depth, 1, -1 do
                 chamber(oz - dz, DIRS[((P.digring + dz - 1) % 4) + 1])
                 if placed >= n then break end
