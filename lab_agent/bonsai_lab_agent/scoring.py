@@ -44,7 +44,7 @@ STRESS_DANGER_THRESHOLD = 100_000
 
 # Calibrated per-horizon endpoints for normalized_score() — the median RAW composite
 # of a do-nothing controller (baseline, scores 0) and a competent reference (ceiling,
-# scores 1). Measured LIVE (full format, wildlife ON) via live_episode.calibrate_*.
+# scores 1). Measured LIVE (full format, wildlife ON) via the stepped driver.
 # no-op is σ≈0 across episodes (scored surface is deterministic); ref is filled once
 # the reference policy (action verbs) exists. Horizons are fort-days*1200 ticks.
 # Endpoints are keyed by (SAVE, horizon), not by horizon alone. A fort's no-op composite

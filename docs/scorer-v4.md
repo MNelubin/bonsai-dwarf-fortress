@@ -42,9 +42,11 @@ noisy (excluded; stress enters only as a coarse danger threshold). So K can be s
 | file | role |
 |---|---|
 | `lab_agent/bonsai_lab_agent/scoring.py` | metric: survival-gated development, K-run median + distribution-free median CI + trust gate |
-| `lab_agent/bonsai_lab_agent/live_episode.py` | drives real DF via the bash runner, parses ground-truth OBS → `EpisodeObs` |
+| `lab_agent/bonsai_lab_agent/session.py` | one live DF: boot, load, observe, dispatch, advance — the single place that talks to DFHack |
+| `lab_agent/bonsai_lab_agent/stepped_episode.py` | the ONLY episode driver: observe → decide → sanitize → dispatch → advance a chunk, repeat |
 | `lab_agent/bonsai_lab_agent/game_scorer.py` | suite v4 flow: sanitize agent action intents → deterministic dispatch → K episodes → aggregate → result dict |
-| `lab_agent/bonsai_lab_agent/dfhack/*.lua,*.sh` | frame-based advance, observer, wildlife toggle, **deterministic action dispatch**, canonical episode runner |
+| `lab_agent/bonsai_lab_agent/dfhack/*.lua,*.sh` | frame-based advance, observer, reachability, wildlife toggle, **deterministic action dispatch**, phased session runner |
+| `lab_agent/bonsai_lab_agent/dfhack/probes/` | one-off research scripts; nothing in the runtime calls them and they are not packaged |
 
 **Trust boundary:** the untrusted agent supplies a controller mapping `obs → action
 intents`. The evaluator `sanitize_actions()` allow-lists them (`set_labor`,
@@ -115,42 +117,24 @@ between episodes, so a long K-run eval keeps its job lease.
 - Restore autonomy: start `bonsai-df-runtime`, `bonsai-evaluator`, `bonsai-lab-agent`
   (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
 
-### Legacy step detail (superseded by the pre-staged flip above)
+### How it actually runs now
 
-1. **Verify discrimination live** (blocker): run `bonsai_episode.sh 36000 0` (no-op)
-   and `... 36000 0 bonsai-ref-setup` (reference) with `bonsai-df-runtime` UP and the
-   reaper/evaluator/orchestrator stopped; confirm reference composite > no-op with the
-   trust gate. Calibrate `scoring.CALIBRATION[H] = {noop, ref}` for H ∈ {3600, 12000, 36000}.
-2. **Deploy** `scoring.py`, `live_episode.py`, `game_scorer.py` into the installed
-   trusted package (`/opt/bonsai-lab-agent/venv/.../bonsai_lab_agent/`) and the
-   `dfhack/*` scripts into `/srv/df-bonsai/current/hack/scripts/` +
-   `bonsai_episode.sh` into `/srv/df-bonsai/current/`.
-3. **Patch `evaluator.evaluate_job`**: after `prepare_checkout` + `controller_command`,
-   replace the fixture/smoke path with (all building blocks exist + tested):
-   ```python
-   from bonsai_lab_agent import game_scorer
-   from bonsai_lab_agent.controller_invoke import make_controller_fn
-   from bonsai_lab_agent.scoring import CALIBRATION
-   H = 3600                                   # active ladder rung (3600/12000/36000)
-   cal = CALIBRATION[H]                        # {noop, ref}; must be calibrated for H
-   controller_fn = make_controller_fn(command, str(repo), config.controller_timeout_seconds)
-   result = game_scorer.score_submission(
-       controller_fn, horizon_ticks=H, k=5,
-       noop_composite=cal["noop"], ref_composite=cal["ref"])
-   return {**result, "submission_id": submission_id,
-           "result_hash": hashlib.sha256(json.dumps(result["summary"], sort_keys=True,
-                                                     default=str).encode()).hexdigest()}
-   ```
-   Optionally keep the contract smoke as a cheap gate-0 (run it first; only score
-   gameplay if it passes). Set `regime_key = hash(save_sha256, df/dfhack ver,
-   plugin_set, scorer weights, H)`; **reset `best_score`/champion when `regime_key`
-   changes** (else the smoke-era 1.0 freezes the champion forever). v4 scores stay in
-   `[0,1]` so the `control_plane main.py:524` clamp is fine.
-   CAVEAT: `score_submission` runs K live DF episodes (~2–10 min each depending on H
-   and host load), so raise the evaluator job timeout / heartbeat accordingly.
-4. **Restore autonomy**: start `bonsai-df-runtime`, `bonsai-evaluator`,
-   `bonsai-lab-agent` (CT123) + `bonsai-orchestrator` (CT124); POST `control/running`.
-   The K2 agent now climbs the REAL score.
+The section that stood here described a cutover that has since happened, in terms of
+files that no longer exist. Kept short and true instead:
+
+* One episode driver. `stepped_episode.run_stepped_episode` over `session.DFSession`,
+  which boots and loads through `bonsai_session.sh` in phases. The one-shot
+  `bonsai_episode.sh` runner and the `live_episode.py` module that wrapped it are gone;
+  they were a second driver with a second OBS parser and a second EpisodeObs adapter,
+  and the copies had drifted — the legacy adapter read a `dug` key the observer never
+  emitted, scoring every episode's excavation as zero.
+* Endpoints are keyed by `(save, horizon)`, not by horizon alone, and `ref` is the best
+  MEASURED tier for that pair rather than a fixed rung of the ladder. Use
+  `scoring.calibration_for(save, horizon)`, which returns `None` for a pair nobody has
+  measured; the evaluator turns that into `uncalibrated_horizon` rather than a number
+  computed against a different fort's baseline.
+* `BONSAI_SUITE=v4` routes the evaluator to `game_evaluate.evaluate_job_v4`.
+
 
 ## Interaction model — stepped and persistent
 

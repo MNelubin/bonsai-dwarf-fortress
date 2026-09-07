@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Persistent DF session for the STEPPED episode driver (interaction model B).
 #
-# Splits the proven one-shot bonsai_episode.sh into phases so a Python driver can
+# Splits the retired one-shot episode runner into phases so a Python driver can
 # run a real loop: observe -> controller decides -> apply intents -> advance a chunk
 # -> observe -> ... The fragile boot/load/prep sequence is kept here verbatim
 # (battle-tested); everything after READY is issued by session.py over dfhack-run.

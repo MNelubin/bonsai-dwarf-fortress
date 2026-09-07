@@ -214,7 +214,11 @@ def obs_to_episode_obs(d: dict, cohort_ids: set[str], t0_solid: int | None = Non
     """
     live = set(d.get("cids", "").split(",")) - {""}
     solid = int(d.get("nsolid", -1))
-    dug = int(d.get("dug", 0))
+    # No T0 solid count means no excavation measure. It used to fall back to a "dug" key,
+    # which the observer has never emitted, so the fallback was a silent zero dressed as a
+    # reading -- exactly how the retired second adapter scored every episode's digging at
+    # nothing. Zero is honest here only because the caller failed to pin T0.
+    dug = 0
     if t0_solid is not None and t0_solid >= 0 and solid >= 0:
         dug = max(0, t0_solid - solid)
     return EpisodeObs(

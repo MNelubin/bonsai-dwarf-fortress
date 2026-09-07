@@ -4,7 +4,7 @@ Replaces the degenerate smoke score (evaluator.evaluation_outcome: an API-contra
 arithmetic that always lands ~1.0) with a STATISTICAL gameplay score computed from
 DFHack ground truth the controller cannot forge.
 
-Trust model: this module + scoring.py + live_episode.py + the bonsai-*.lua scripts
+Trust model: this module + scoring.py + session.py + the bonsai-*.lua scripts
 run ONLY on the trusted evaluator side. The untrusted agent contributes a controller
 that maps observation -> action intents; the evaluator DISPATCHES those intents
 deterministically (bonsai-apply-actions.lua) so the agent cannot reach into DF state
@@ -29,7 +29,6 @@ from typing import Any, Callable
 from bonsai_lab_agent import actions
 from bonsai_lab_agent import scoring
 from bonsai_lab_agent.scoring import EpisodeObs, aggregate, raw_components, DEFAULT_WEIGHTS
-from bonsai_lab_agent import live_episode
 
 SUITE_NAME = "gameplay_survival_development"
 SUITE_VERSION = "4"
@@ -138,31 +137,12 @@ def _write_actions(actions: list[dict]) -> None:
             f.write("\t".join([a["verb"], *[str(x) for x in args]]) + "\n")
 
 
-def run_scored_episode(controller_fn: Callable[[dict], list[dict]],
-                       horizon_ticks: int, suppress_wildlife: bool = False,
-                       t0_obs: EpisodeObs = PINNED_T0,
-                       timeout: int = 300) -> tuple[EpisodeObs, EpisodeObs]:
-    """One real scored episode. The controller decides setup actions from the pinned
-    T0 observation; the evaluator sanitizes + writes them; bonsai-apply-actions.lua
-    dispatches them deterministically after the runner samples T0, then advances.
-    Returns the (T0, H) EpisodeObs pair sampled live."""
-    actions = sanitize_actions(controller_fn(controller_observation(t0_obs)))
-    _write_actions(actions)
-    p = subprocess.run(
-        ["bash", live_episode.EPISODE_SH, str(horizon_ticks),
-         "1" if suppress_wildlife else "0", "bonsai-apply-actions"],
-        capture_output=True, text=True, timeout=timeout, cwd=DF_DIR,
-    )
-    t0d = hd = None
-    for line in p.stdout.splitlines():
-        if "OBS_T0 OBS" in line:
-            t0d = live_episode._parse_obs(line)
-        elif "OBS_H OBS" in line:
-            hd = live_episode._parse_obs(line)
-    if not t0d or not hd:
-        raise RuntimeError(f"scored episode produced no OBS pair: ...{(p.stdout + p.stderr)[-200:]}")
-    return live_episode._pair_to_obs(t0d, hd)
-
+# run_scored_episode lived here: a SECOND episode driver, on the one-shot bash runner,
+# with its own OBS parsing and its own EpisodeObs adapter. It had no callers. Two drivers
+# meant two of everything, and the copies drifted -- the legacy adapter read a `dug` key
+# the observer never emitted, so it scored dug_tiles=0 for every episode it ever ran while
+# the stepped one derived it correctly from the fall in solid tiles. One driver now:
+# stepped_episode over session.DFSession.
 
 def score_submission(controller_fn: Callable[[dict], list[dict]], *,
                      horizon_ticks: int, k: int,
