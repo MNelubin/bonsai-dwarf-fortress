@@ -140,6 +140,30 @@ local function note(verb, what)
     print(string.format('NOTE %s: %s', verb, tostring(what)))
 end
 
+-- Both labour verbs took a name and silently did nothing when DF had no such labour.
+-- Measured by driving every verb through the gate with a deliberately wrong argument:
+-- set_labor and set_dwarf_labor were the ONLY two of twenty-five that returned zero with
+-- nothing said, while set_standing_order answered the same nonsense with "DF has no
+-- standing order named best; it has 50, for example auto_butcher, ...". The labour
+-- argument carries no `choices` in the schema either, so a controller has to guess the
+-- name from a doc string -- it WILL get one wrong, and a silent zero teaches it nothing.
+local function labor_id(name)
+    local lid = df.unit_labor[name or ""]
+    if lid then return lid end
+    local known = {}
+    pcall(function()
+        for i = df.unit_labor._first_item, df.unit_labor._last_item do
+            local k = df.unit_labor[i]
+            if type(k) == "string" and k ~= "NONE" then known[#known + 1] = k end
+        end
+    end)
+    table.sort(known)
+    local sample = {}
+    for i = 1, math.min(3, #known) do sample[i] = known[i] end
+    return nil, string.format("DF has no labour named %s; it has %d, for example %s",
+                              tostring(name), #known, table.concat(sample, ", "))
+end
+
 -- Every verb body runs inside pcall and the error was thrown away, so a failure
 -- in the BODY looked exactly like a verb that chose to do nothing: zero counter,
 -- no refusal, no trace. set_standing_order passed both of its preconditions and
@@ -1960,12 +1984,14 @@ while QI <= #QUEUE do
     local verb = a[1]
     if verb == "set_labor" then
         attempt("set_labor", function()
-            local lid = df.unit_labor[a[2]]
-            if lid then
-                local on = (a[3] ~= "False" and a[3] ~= "false" and a[3] ~= "0")
-                for _, u in ipairs(cits) do u.status.labors[lid] = on end
-                c.set_labor = c.set_labor + 1
+            local lid, why = labor_id(a[2])
+            if not lid then
+                refuse("set_labor", why)
+                return
             end
+            local on = (a[3] ~= "False" and a[3] ~= "false" and a[3] ~= "0")
+            for _, u in ipairs(cits) do u.status.labors[lid] = on end
+            c.set_labor = c.set_labor + 1
         end)
     elseif verb == "designate_dig" then
         -- Digging in DF needs REACHABILITY. The old dispatch stamped dig flags on a
@@ -3012,8 +3038,15 @@ while QI <= #QUEUE do
         -- One dwarf, one labour. set_labor is a fort-wide switch; a player specialises.
         attempt("set_dwarf_labor", function()
             local unit = pick_citizen(a[2], false)
-            local lid = df.unit_labor[a[3] or ""]
-            if not (unit and lid) then return end
+            if not unit then
+                refuse("set_dwarf_labor", "no dwarf matched " .. tostring(a[2]))
+                return
+            end
+            local lid, why = labor_id(a[3])
+            if not lid then
+                refuse("set_dwarf_labor", why)
+                return
+            end
             local on = not (a[4] == "False" or a[4] == "false" or a[4] == "0")
             unit.status.labors[lid] = on
             c.set_dwarf_labor = c.set_dwarf_labor + 1
