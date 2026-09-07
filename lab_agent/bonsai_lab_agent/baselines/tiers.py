@@ -118,6 +118,10 @@ def v3_survival(obs: dict) -> list[dict]:
     if resources.get("wood") is None or food_chain.get("farm_plots") is None:
         return ADVANCE
 
+    # Storage the fort already has. An embark has none and needs somewhere to put food;
+    # an established fort has piles everywhere and a new one only moves food around.
+    stockpiles = (deps.get("logistics") or {}).get("stockpiles")
+
     actions = []
     if round_index == 0:
         actions.extend([
@@ -160,9 +164,21 @@ def v3_survival(obs: dict) -> list[dict]:
         # says why -- work that walks dwarves across open ground is exactly what not to
         # do while something hostile is on the map -- and sowing a field is that.
         return ADVANCE
+    # A food pile on a fort that already has storage is what killed this tier on the
+    # mature save. Ablation, k=2 on region3-lab: with the opening create_stockpile it
+    # lost 13 of 136 dwarves and scored 0.4949, BELOW the do-nothing floor of 0.5078;
+    # without it, 2 lost -- the same as idling -- survival 0.818 -> 0.971, composite
+    # 0.5453, and digging rose 44 -> 73 because the haulers went back to work. Dropping
+    # the farm as well changed nothing (2 and 5 lost), so sowing was never the problem:
+    # my own reading of the trace blamed the fields, and the measurement says storage.
+    # A new pile drags hauling across the whole map, and three Forgotten Beasts arrive
+    # during the episode.
+    wants_storage = not stockpiles          # None (old observer) reads as "none known"
+    if round_index == 0 and wants_storage:
+        actions.append({"command": "create_stockpile", "args": [2, "food"]})
     if inherited != ADVANCE:
-        actions.extend(a for a in inherited
-                       if a["command"] in ("designate_dig", "create_stockpile"))
+        allowed = ("designate_dig", "create_stockpile") if wants_storage else ("designate_dig",)
+        actions.extend(a for a in inherited if a["command"] in allowed)
 
     # The only logs on a fresh embark sit inside the wagon, and DF refuses those as
     # building material -- it cancels the job and deletes the half-built workshop. So a

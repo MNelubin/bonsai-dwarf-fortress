@@ -113,13 +113,22 @@ pcall(function()
   end
 end)
 
-local nworkshop, nbuiltshop, nunbuiltshop, nfarmplots = 0, 0, 0, 0
+-- How much storage the fort already has. Without it a policy cannot tell a seven-dwarf
+-- embark with nowhere to put food from an established fort with piles everywhere, and it
+-- opens both the same way. Measured on region3-lab by ablation: the reference tier's
+-- opening create_stockpile is what killed it -- a new food pile pulls hauling across the
+-- whole fort, and with three Forgotten Beasts about that cost 13 of 136 dwarves against
+-- the 2 that idling loses. Dropping that one call took losses to 2, survival 0.818 to
+-- 0.971 and the composite 0.4949 to 0.5453. The fort could not say "I already have
+-- storage", so nobody could ask.
+local nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile = 0, 0, 0, 0, 0
 local shop_names = { 'Carpenters', 'Masons', 'Still', 'Craftsdwarfs', 'Farmers' }
 local shops, pending_shops = {}, {}
 for _, name in ipairs(shop_names) do shops[name], pending_shops[name] = 0, 0 end
 pcall(function()
   for _, b in ipairs(w.buildings.all) do
     if b:getType() == df.building_type.FarmPlot then nfarmplots = nfarmplots + 1 end
+    if b:getType() == df.building_type.Stockpile then nstockpile = nstockpile + 1 end
     if df.building_workshopst:is_instance(b) then
       nworkshop = nworkshop + 1
       if b:getBuildStage() >= b:getMaxBuildStage() then
@@ -205,7 +214,38 @@ pcall(function()
   -- -> 42084 within 2000 ticks purely because new stockpiles widened the box and
   -- dragged in 8401 tiles of untouched rock. That would have scored the agent on how
   -- far apart it scattered buildings, which is worse than the field being blind.
-  local B = _G.BONSAI_SOLID_BOX
+  -- Rock and soil only, decided ONCE per process instead of per tile.
+--
+-- Two things live in this table. First the rule: a tree trunk is WALL-shaped, so felling
+-- timber used to drain the solid count exactly as if the fort had mined -- measured with
+-- mining OFF and no designation anywhere, chopping 15 trees scored dug=135 against the 87
+-- the best development tier mines in a whole three-day episode. Excavation means removing
+-- ground, not vegetation.
+--
+-- Second the cost. This scan is the single most expensive thing the observer does: on
+-- region3-lab the pinned box is 139x129x81, about 1.9M tiles, and observation was 47% of
+-- the whole episode at ~7s a call against 0.2s on the fresh embark. Asking
+-- df.tiletype.attrs[...] per tile pays for a DFHack wrapper index 1.9M times a round.
+-- Deciding it once into a plain Lua array and indexing that instead: 5332ms -> 1692ms,
+-- 3.15x, with an identical count of 1497465. Building the table costs 5.5ms.
+local SOLID_LUT = _G.BONSAI_SOLID_LUT
+if not SOLID_LUT then
+  SOLID_LUT = {}
+  pcall(function()
+    for i = 0, df.tiletype._last_item do
+      local at = df.tiletype.attrs[i]
+      if at then
+        SOLID_LUT[i] = (at.shape == df.tiletype_shape.WALL
+                        and at.material ~= df.tiletype_material.TREE
+                        and at.material ~= df.tiletype_material.PLANT
+                        and at.material ~= df.tiletype_material.MUSHROOM) or false
+      end
+    end
+  end)
+  _G.BONSAI_SOLID_LUT = SOLID_LUT
+end
+
+local B = _G.BONSAI_SOLID_BOX
   if not B then
     local x0, x1 = span(xs, 20, m.x_count)
     local y0, y1 = span(ys, 20, m.y_count)
@@ -222,20 +262,7 @@ pcall(function()
         if blk then
           local tt = blk.tiletype
           for iy = 0, 15 do for ix = 0, 15 do
-            local at = df.tiletype.attrs[tt[ix][iy]]
-            -- Rock and soil only. A tree trunk is WALL-shaped, so felling timber used
-            -- to drain the solid count exactly as if the fort had mined: measured with
-            -- mining switched OFF and no designation made anywhere, chopping 15 trees
-            -- scored dug=135, against the 87 that the best development tier mines in a
-            -- whole three-day episode. Development is half the composite and digging is
-            -- most of development, so the cheapest way to the top of the board was to
-            -- cut down the forest. Excavation means removing ground, not vegetation.
-            if at.shape == df.tiletype_shape.WALL
-                and at.material ~= df.tiletype_material.TREE
-                and at.material ~= df.tiletype_material.PLANT
-                and at.material ~= df.tiletype_material.MUSHROOM then
-              cnt = cnt + 1
-            end
+            if SOLID_LUT[tt[ix][iy]] then cnt = cnt + 1 end
           end end
         end
         nbbox = nbbox + 256
@@ -352,10 +379,10 @@ pcall(function()
   end
 end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d cids=%s",
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, worders,
   nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
-  stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots,
+  stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile,
   table.concat(shop_summary, ','), table.concat(pending_summary, ','),
   njobs, nunassignedjobs, nmanagerjobs, nbrewjobs, norders,
   norderleft, nhostile, nhostile_map, ninjured, nwounded, nannounce, ndanger, ncancel,

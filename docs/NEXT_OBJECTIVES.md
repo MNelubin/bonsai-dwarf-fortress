@@ -27,6 +27,43 @@ Both forts, always: `ourfort16-final` (fresh embark, 7 dwarves) and `region3-lab
 the fresh fort and below idling on the mature one — so a change verified on a single save
 is not verified.
 
+## Throughput — how many forts, and where the time goes
+
+Measured 2026-09-07 on CT123 (16 cores, 32 GB).
+
+**Run up to 12 light forts at once, or 8 mature ones.** Twelve concurrent fresh-embark
+episodes finished in 74s against 65s for a single one — 14% degradation for twelve times
+the work — and all twelve succeeded. The mature save is memory-bound rather than CPU-bound:
+each DF holds about 2.9 GB, so four of them already take 17 of the container's 32 GB.
+
+The old rule said two. It came from `advance stalled` failures at four forts, which were
+not load at all: `bonsai_episode.sh` killed every fort but the supervised one, three times
+a run, so the neighbours died and reported a stall. That script is gone. The limit cost
+about a 6x slowdown on every calibration for weeks.
+
+Where an episode's time goes, after the fixes below:
+
+    fresh, 3600 ticks   57-64s   boot+load ~32s, advance ~19s, observe ~5s
+    mature, 3600 ticks  234-244s boot+load ~35s, advance ~150s, observe ~50s
+
+Two things were fixed to get there, both verified score-for-score identical (fresh floor
+0.467857 and mature floor 0.507812 to the last digit):
+
+* **The observer's solid-tile scan** was 47% of a mature episode — about 7s per call
+  against 0.2s on the fresh fort. The pinned box is 139x129x81 there, some 1.9M tiles, and
+  the inner loop asked `df.tiletype.attrs[...]` per tile, paying a DFHack wrapper index
+  1.9M times a round. Deciding solidity once into a plain Lua array cut it 5332ms to
+  1692ms with an identical count.
+* **The save menu walk** was 26s of a 51s boot: it clicked into every world in turn,
+  sleeping three seconds a step, to find which one held the save. It now remembers the
+  row per save and polls instead of sleeping — 26s to 10s, self-correcting if the memory
+  is stale.
+
+Reusing a booted DF across episodes was considered and MEASURED rather than assumed:
+starting the process is only 3-4s of a ~50s boot, because the menu walk and the map load
+dominate and a reused process pays both again. It would buy about 5% while risking the
+`_G.BONSAI_*` state that makes episodes independent, so it was not built.
+
 ## A — Mechanics and action coverage
 
 Done and measured: the threat channel (proximity, cancellations, real injuries), the

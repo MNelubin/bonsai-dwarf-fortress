@@ -30,7 +30,12 @@ def observer_keys() -> set[str]:
 def driver_keys() -> set[str]:
     """Keys the stepped driver pulls out of a raw observation dict."""
     text = DRIVER.read_text(encoding="utf-8", errors="replace")
-    return set(re.findall(r'(?:raw|d|cur_raw|before_raw|t0_raw)\.get\(\s*"(\w+)"', text))
+    direct = re.findall(r'(?:raw|d|cur_raw|before_raw|t0_raw)\.get\(\s*"(\w+)"', text)
+    # `_raw_int(raw, "nstockpile")` is the other way the driver reads a key, and the first
+    # version of this test missed it — so it passed while the dependency view read a key
+    # the observer did not yet emit, which is exactly the bug it exists to catch.
+    helper = re.findall(r'_raw_int\(\s*raw\s*,\s*"(\w+)"', text)
+    return set(direct) | set(helper)
 
 
 def test_observer_emits_every_key_the_driver_reads():

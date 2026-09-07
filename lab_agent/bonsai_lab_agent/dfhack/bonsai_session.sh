@@ -47,6 +47,7 @@ kill)
 boot)
   WD=${2:-1800}                 # hard backstop; session.py also kills in a finally block
   SAVE=${3:-bonsaifort2}
+  T_START=$(date +%s)
   echo "SUPERVISED_PID=$(sup)"
   kill_mine; sleep 1
 
@@ -74,6 +75,7 @@ boot)
 
   for i in $(seq 1 50); do ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT && break; sleep 2; done
   ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT || { echo "BOOTFAIL:noport"; exit 1; }
+  echo "T_PORT=$(( $(date +%s) - T_START ))"
 
   # Arm the watchdog on THIS DF only, and let it stand down quietly if the session
   # already ended cleanly.
@@ -104,23 +106,62 @@ boot)
   click_until "Continue active game" "World:" 20 || { echo "LOADFAIL:worldlist"; exit 1; }
 
   saverow(){ rowof "Folder: ${SAVE}\$"; }
+
+  # Which world holds this save. Searching every world is correct and was the fix for
+  # two worlds sharing a name, but the answer never changes and the walk pays for it on
+  # every single boot: click in, sleep 3, poll the save list for up to 10s, go back,
+  # sleep 3 -- about 16 seconds burnt per world that is not the right one. Measured on
+  # the fresh embark, the menu walk was 26s of a 51s boot, against 22s for the actual map
+  # load and 3s to start the process. So remember the row, try it first, and fall back to
+  # the full search when the memory is wrong or missing. Self-correcting: a stale row
+  # simply fails the check and the walk runs as before.
+  ROWFILE="/srv/df-bonsai/worldrow.${SAVE}"
+
+  # Wait for the save list by POLLING, not by sleeping a fixed amount first. The old
+  # inner loop slept two seconds before it ever looked.
+  wait_saverow(){
+    local t
+    for t in $(seq 1 "${1:-12}"); do
+      [ -n "$(saverow)" ] && return 0
+      sleep 1
+    done
+    [ -n "$(saverow)" ]
+  }
+
   found=""
-  for wr in $(rows | grep -aE "World:" | cut -d"|" -f1); do
-    click_row "$wr"; sleep 3
-    for t in 1 2 3 4 5; do [ -n "$(saverow)" ] && break; sleep 2; done
-    if [ -n "$(saverow)" ]; then found="$wr"; break; fi
-    back; sleep 3
-    rows | grep -aqE "World:" || click_until "Continue active game" "World:" 10 || true
-  done
+  if [ -s "$ROWFILE" ]; then
+    cached=$(cat "$ROWFILE")
+    click_row "$cached"
+    if wait_saverow 12; then
+      found="$cached"
+    else
+      back; sleep 1
+      rows | grep -aqE "World:" || click_until "Continue active game" "World:" 10 || true
+    fi
+  fi
+
+  if [ -z "$found" ]; then
+    for wr in $(rows | grep -aE "World:" | cut -d"|" -f1); do
+      click_row "$wr"
+      if wait_saverow 8; then found="$wr"; break; fi
+      back; sleep 1
+      rows | grep -aqE "World:" || click_until "Continue active game" "World:" 10 || true
+    done
+  fi
   [ -n "$found" ] || { echo "LOADFAIL:savelist"; exit 1; }
+  printf '%s
+' "$found" > "$ROWFILE" 2>/dev/null || true
   click_row "$(saverow)"
   # A perfectly valid save can sit at tick 0 (the 53.16 full-game audit save does).
   # Readiness is map state, not an arbitrary non-zero calendar value.
+  echo "T_CLICK=$(( $(date +%s) - T_START ))"
   for i in $(seq 1 60); do sleep 2; [ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] && break; done
   [ "$(getnum 'dfhack.isMapLoaded() and 1 or 0')" = "1" ] || { echo "LOADFAIL:map"; exit 1; }
+  echo "T_MAP=$(( $(date +%s) - T_START ))"
 
   run bonsai-headless-init >/dev/null
   run lua "df.global.world.status.popups:resize(0); df.global.pause_state=true" >/dev/null
+  echo "T_READY=$(( $(date +%s) - T_START ))"
   echo "READY port=$PORT tick=$(getnum 'df.global.cur_year_tick') frame=$(getnum 'df.global.world.frame_counter')"
   ;;
 

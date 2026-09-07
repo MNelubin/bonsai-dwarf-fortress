@@ -91,6 +91,12 @@ def dependency_state(raw: dict) -> dict:
             "built_by_type": shop_counts,
             "pending_by_type": pending_shop_counts,
         },
+        # Storage the fort already has. A policy that cannot see it opens an established
+        # fort the same way it opens an embark, and on a mature fort that means hauling
+        # every scrap of food across the map for no gain.
+        "logistics": {
+            "stockpiles": _raw_int(raw, "nstockpile"),
+        },
         "jobs": {
             "total": _raw_int(raw, "njobs"),
             "unassigned": _raw_int(raw, "nunassignedjobs"),
