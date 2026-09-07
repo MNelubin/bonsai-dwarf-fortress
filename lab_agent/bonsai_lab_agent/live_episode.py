@@ -38,6 +38,19 @@ def _pair_to_obs(t0d: dict, hd: dict) -> tuple[EpisodeObs, EpisodeObs]:
     h_ids = set(hd.get("cids", "").split(",")) - {""}
     size = len(t0_ids)
 
+    # The observer emits `nsolid`, never `dug`, so reading a "dug" key returned 0 for
+    # every episode this adapter ever scored -- a third of the development term blind no
+    # matter how much the fort mined. stepped_episode derives it from the fall in solid
+    # tiles since T0 and its docstring records this very bug as fixed; the fix landed on
+    # one of the two adapters. Digging turns walls into floors, so the drop IS the count.
+    t0_solid = int(t0d.get("nsolid", -1))
+
+    def dug_of(d: dict) -> int:
+        solid = int(d.get("nsolid", -1))
+        if t0_solid >= 0 and solid >= 0:
+            return max(0, t0_solid - solid)
+        return int(d.get("dug", 0))
+
     def mk(d: dict, alive: int, coh: int) -> EpisodeObs:
         return EpisodeObs(
             abs_tick=int(d.get("t", 0)),
@@ -45,7 +58,7 @@ def _pair_to_obs(t0d: dict, hd: dict) -> tuple[EpisodeObs, EpisodeObs]:
             hunger_sum=int(d.get("hsum", 0)), thirst_sum=int(d.get("tsum", 0)),
             stress_danger=int(d.get("strdang", 0)),
             food_count=int(d.get("nfood", 0)), drink_count=int(d.get("ndrink", 0)),
-            buildings=int(d.get("nbuild", 0)), dug_tiles=int(d.get("dug", 0)),
+            buildings=int(d.get("nbuild", 0)), dug_tiles=dug_of(d),
             workorders_done=int(d.get("worders", 0)),
         )
     t0 = mk(t0d, size, size)

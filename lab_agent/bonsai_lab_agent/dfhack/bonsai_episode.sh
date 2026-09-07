@@ -4,14 +4,22 @@
 HORIZON=${1:-3600}; SUPPRESS=${2:-0}; SETUP=${3:-}; PORT=5001
 cd /srv/df-bonsai/current
 sup(){ ss -ltnp 2>/dev/null | grep 127.0.0.1:5000 | grep -oE 'pid=[0-9]+' | cut -d= -f2 | head -1; }
+# The DF listening on OUR port, which is the only one this script may kill. It used to
+# kill EVERY dwarfort except the supervised 5000 one, and to do it three times: before
+# booting, from a watchdog scaled to the horizon, and at the end. Any other episode
+# running at that moment died with it, and the victim reports `advance stalled`, which
+# reads like a broken save rather than a neighbour's cleanup. Two forts run side by side
+# routinely, so a process-wide sweep is never the right scope.
+mine(){ ss -ltnp 2>/dev/null | grep "127.0.0.1:$PORT" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | head -1; }
+kill_mine(){ local p s; p=$(mine); s=$(sup); if [ -n "$p" ] && [ "$p" != "$s" ]; then kill -9 "$p" 2>/dev/null; fi; return 0; }
 run(){ DFHACK_PORT=$PORT timeout 25 ./hack/dfhack-run "$@" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
 scr(){ run screen-dump 2>/dev/null | grep -aE '\|'; }
 click(){ printf '%s\n' "$1" > click_target.txt; run click-text >/dev/null 2>&1; }
 getnum(){ run lua "print(($1))" | grep -aoE '[-]?[0-9]+' | head -1; }
 click_until(){ for t in $(seq 1 ${3:-10}); do scr | grep -qiE "$2" && return 0; click "$1"; sleep 3; done; scr | grep -qiE "$2"; }
-S=$(sup); for p in $(pgrep -x dwarfort); do [ "$p" != "$S" ] && kill -9 $p 2>/dev/null; done; sleep 1
+kill_mine; sleep 1
 WD_TIME=$((220 + HORIZON / 60))   # scale watchdog with horizon (boot+load+advance); 36000 -> ~820s
-( sleep $WD_TIME; SS=$(ss -ltnp 2>/dev/null|grep 127.0.0.1:5000|grep -oE 'pid=[0-9]+'|cut -d= -f2|head -1); for p in $(pgrep -x dwarfort); do [ "$p" != "$SS" ] && kill -9 $p 2>/dev/null; done ) >/dev/null 2>&1 &
+( sleep $WD_TIME; kill_mine ) >/dev/null 2>&1 &
 setsid env DFHACK_PORT=$PORT DF_PRELOAD=$PWD/detshim2.so LD_PRELOAD=$PWD/detshim2.so HOME=$PWD/spike-home XDG_RUNTIME_DIR=$PWD/spike-home DFHACK_HEADLESS=1 DFHACK_DISABLE_CONSOLE=1 SDL_AUDIODRIVER=dummy TERM=dumb ./dfhack --exec > boot_mine.log 2>&1 </dev/null &
 disown
 for i in $(seq 1 50); do ss -ltn 2>/dev/null | grep -q 127.0.0.1:$PORT && break; sleep 2; done; sleep 3
@@ -31,5 +39,5 @@ sf=$(getnum 'df.global.world.frame_counter'); tgt=$((sf+HORIZON))
 run bonsai-advance2 >/dev/null
 for i in $(seq 1 130); do fc=$(getnum 'df.global.world.frame_counter'); { [ "${fc:-0}" -ge "$tgt" ] && [ "$(run lua "print(df.global.pause_state)"|grep -c true)" = "1" ]; } && break; sleep 1; done
 echo "OBS_H $(obs)"
-S=$(sup); for p in $(pgrep -x dwarfort); do [ "$p" != "$S" ] && kill -9 $p 2>/dev/null; done
+kill_mine
 echo "EPISODE_DONE"

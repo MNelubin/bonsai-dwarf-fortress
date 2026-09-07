@@ -852,9 +852,18 @@ local function free_furniture(item_name)
     if want == nil then return nil end
     for _, it in ipairs(w.items.all) do
         if it:getType() == want and not it.flags.in_building then
-            local usable = reach and reach.item(it, REACH_GROUPS)
-                or not (it.flags.forbid or it.flags.in_job or it.flags.removed
-                        or it.flags.foreign)
+            -- `a and b or c` is not an if/else when b can be FALSE: a reach test that
+            -- answers "no" collapses the and-chain and hands the decision to the flag
+            -- list, which then accepts an item nobody can walk to. The flags are the
+            -- fallback for when the reach module is ABSENT, not a second opinion when it
+            -- says no. free_material a few hundred lines up already spells this out.
+            local usable
+            if reach then
+                usable = reach.item(it, REACH_GROUPS)
+            else
+                usable = not (it.flags.forbid or it.flags.in_job or it.flags.removed
+                              or it.flags.foreign)
+            end
             if usable then return it end
         end
     end
