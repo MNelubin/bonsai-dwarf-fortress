@@ -110,8 +110,15 @@ CALIBRATION = {
     # rung of the ladder. Measured 2026-09-06, whole ladder, k=3:
     #
     #                    v0_idle    v1_developer  v2_reactive  v3_survival
-    #   ourfort16-final  0.467857   0.517153      0.517565     0.533515
-    #   region3-lab      0.507812   0.565561      0.537531     0.531642
+    #   ourfort16-final  0.467857   0.545397      0.545871     0.607482
+    #   region3-lab      0.535346   0.620099      0.585560     0.579671
+    #
+    # Re-measured 2026-09-07 with the saturation scales set from what a fort reaches
+    # rather than from constants sized for a far longer run. Bands: fresh 0.0656 ->
+    # 0.1396, mature 0.0578 -> 0.0848, and the gap between the reference and the plain
+    # digger on the fresh embark went 0.016 -> 0.062 against a run-to-run spread of about
+    # 0.006. The mature no-op moved too (0.5078 -> 0.5353): that fort's own manager queue
+    # delivers 17 orders whatever the policy does, and orders are now scaled by 10.
     #
     # Re-measured 2026-09-07 after `buildings` stopped counting things nobody built. It
     # was `#w.buildings.all`, which includes civzones and stockpiles -- both free in DF,
@@ -134,8 +141,8 @@ CALIBRATION = {
     # policy that farms and hauls above ground loses people that a policy digging under
     # it does not. That is the game being right, not the metric being wrong, and it is
     # why the endpoint is keyed by save.
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.533515},
-    ("region3-lab", 3600):     {"noop": 0.507812, "ref": 0.565561},
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.607482},
+    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.620099},
     # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
     # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
     # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
@@ -257,7 +264,16 @@ def raw_components(obs: EpisodeObs, t0: EpisodeObs, horizon_ticks: int,
     orders = max(0, obs.workorders_done - t0.workorders_done)
     builds = max(0, obs.buildings - t0.buildings)
     # soft-saturating so a huge dig doesn't dwarf everything else
-    development = (_sat_pos(dug, 200) + _sat_pos(orders, 20) + _sat_pos(builds, 10)) / 3.0
+    # Half credit at COMPETENT PLAY, which is what the scale argument means: _sat_pos
+    # returns 0.5 at x = scale, and that is where the curve is steepest and the measure
+    # separates best. The old 200 / 20 / 10 were sized for a far longer episode than any
+    # we run, so every fort sat in the term's lower tail where it barely moves. Measured
+    # on both saves at the calibrated horizon: a competent fort digs 85-111 tiles, raises
+    # 3 buildings, and the mature fort's own manager queue delivers 17 orders. At the old
+    # scales that reads 0.099 for the plain digger against 0.143 for the reference; at
+    # these it reads 0.153 against 0.276, so the gap the metric has to resolve grows from
+    # 0.043 to 0.123 against a run-to-run spread of about 0.006.
+    development = (_sat_pos(dug, 100) + _sat_pos(orders, 10) + _sat_pos(builds, 3)) / 3.0
 
     composite = survival * (
         w["provisioning"] * provisioning
