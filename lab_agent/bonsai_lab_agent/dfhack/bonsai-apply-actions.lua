@@ -2144,6 +2144,14 @@ while QI <= #QUEUE do
             local wide = math.max(1, math.min(tonumber(a[4]) or 3, 10))
             local DIRS = { { 1, 0 }, { 0, 1 }, { -1, 0 }, { 0, -1 } }
             P.digring = (P.digring or 0)
+            local deferred = 0            -- chambers skipped because a miner cannot reach them yet
+            -- Deferring chambers that sit behind undug rock was tried and is OFF. It did
+            -- not lift the fresh fort's throughput when asked for too much (30 a call
+            -- dug 53 with the gate and 46 without, against 90 when asked for 12), and
+            -- it was suspected of collapsing the careful tiers on the mature fort, which
+            -- turned out to be the request size instead. Kept switchable because the
+            -- reasoning is sound and a fort with slower miners may yet want it.
+            local REACH_GATE = false
             -- How far out a chamber may start. Bounded so a saturated fort cannot walk
             -- this to the map edge looking for virgin rock -- but 30 was too tight and it
             -- BOUND. Measured on ourfort16-final: every tier plateaus at 93 dug tiles and
@@ -2197,6 +2205,28 @@ while QI <= #QUEUE do
                     if fresh_step(z, d, s, hh) then start = s; break end
                 end
                 if not start then return end          -- nothing left this way
+                -- Only cut what a miner can WALK TO now. The step before `start` is
+                -- either the shaft column or rock that is designated but not yet dug;
+                -- a chamber behind undug rock is a job nobody can path to, and DF's
+                -- reaction to hundreds of those is not to wait patiently but to churn:
+                -- measured on the fresh embark at 3600 ticks, asking 12 tiles a call dug
+                -- 91, asking 30 dug 46 and asking 60 dug 49. The miners spent the
+                -- episode being assigned unreachable squares and cancelling them. So a
+                -- request beyond the walkable frontier is deferred, not refused -- the
+                -- caller is told how much is behind rock and to ask again once it is cut.
+                if start > 1 then
+                    local px, py = at(start - 1, 0, d)
+                    local ok, sh = pcall(function()
+                        local tt = dfhack.maps.getTileType(px, py, z)
+                        return tt and df.tiletype.attrs[tt].shape or nil
+                    end)
+                    local walkable = ok and (sh == df.tiletype_shape.FLOOR
+                        or sh == df.tiletype_shape.STAIR_UP
+                        or sh == df.tiletype_shape.STAIR_DOWN
+                        or sh == df.tiletype_shape.STAIR_UPDOWN
+                        or sh == df.tiletype_shape.RAMP)
+                    if not walkable and REACH_GATE then deferred = deferred + 1; return end
+                end
                 for step = start, math.min(start + len - 1, MAX_REACH) do
                     for side = -hh, hh do
                         local x, y = at(step, side, d)
@@ -2232,9 +2262,43 @@ while QI <= #QUEUE do
             -- to break it. Spend ordinary wall cuts at the deepest landing: on a fresh
             -- embark the upper layers are soil and the staircase yields no usable
             -- boulders, so walking top-down consumed the whole batch before reaching rock.
-            for dz = depth, 1, -1 do
-                chamber(oz - dz, DIRS[((P.digring + dz - 1) % 4) + 1])
-                if placed >= n then break end
+            --
+            -- Keep cutting until the budget is met. This used to cut ONE chamber per
+            -- call and stop: asked for 12, 30, 100 or 400 tiles it placed 12, 11, 11
+            -- and 10, because a chamber is len x wide and the loop ran once. So `tiles`
+            -- was an upper bound and never a target, and every working tier plateaued
+            -- at 93 dug tiles -- eight calls a run, about twelve each -- which two
+            -- rounds of digging-more-levels work then failed to explain, because the
+            -- map was never the limit. Rotate through the directions and let the
+            -- frontier walk carry each one outward; four directions in a row placing
+            -- nothing means the band within MAX_REACH is spent, and the verb says so.
+            local turn, idle = 0, 0
+            deferred = 0
+            while placed < n and idle < #DIRS and turn < 64 do
+                local before_turn = placed
+                local d = DIRS[((P.digring + turn) % #DIRS) + 1]
+                for dz = depth, 1, -1 do
+                    chamber(oz - dz, d)
+                    if placed >= n then break end
+                end
+                if placed == before_turn then idle = idle + 1 else idle = 0 end
+                turn = turn + 1
+            end
+            -- Said even when NOTHING was placed: a zero with the reason "everything
+            -- reachable is already marked" is the verb working, and a zero without it is
+            -- indistinguishable from the verb being broken.
+            if placed < n and (placed > 0 or deferred > 0) then
+                if deferred > 0 then
+                    note("designate_dig", string.format(
+                        "designated %d of the %d asked; the rest lies behind rock that is "
+                        .. "marked but not yet dug, so it cannot be reached -- ask again "
+                        .. "once these are cut", placed, n))
+                else
+                    note("designate_dig", string.format(
+                        "designated %d of the %d asked: the band within %d tiles of the "
+                        .. "shaft holds no more undug wall on the levels the fort can reach",
+                        placed, n, MAX_REACH))
+                end
             end
             -- The ring MUST advance whether or not anything was placed. It used to
             -- advance only under `placed > 0`, which was harmless while `mark()` counted

@@ -34,14 +34,14 @@ def v1_developer(obs: dict) -> list[dict]:
     if r == 0:
         return [
             {"command": "set_labor", "args": ["MINE", True]},
-            {"command": "designate_dig", "args": [45]},
+            {"command": "designate_dig", "args": [dig_request(obs)]},
             {"command": "create_stockpile", "args": [3]},
         ]
     if r == 2:
         return [{"command": "build_workshop", "args": ["Carpenters"]},
                 {"command": "set_labor", "args": ["CARPENTER", True]}]
-    if r % 3 == 0:
-        return [{"command": "designate_dig", "args": [30]}]
+    if r % DIG_EVERY_ROUNDS == 0:
+        return [{"command": "designate_dig", "args": [dig_request(obs)]}]
     if r % 7 == 0:
         return [{"command": "create_stockpile", "args": [2]}]
     return ADVANCE
@@ -56,6 +56,44 @@ THREAT_COOLDOWN_ROUNDS = 3
 # handful of logs in the wagon which DF will not let anyone build with, so the floor has
 # to sit above that load rather than at zero.
 WOOD_FLOOR = 8
+
+# How fast a fresh embark's miners actually remove rock, measured: about 90 tiles in
+# 3600 ticks when fed 12 a call every third round. Asking for more than they can reach
+# before the next call does not speed them up -- it halves them. Fed 30 a call the same
+# fort dug 53, fed 60 it dug 50, and the reference tiers plateaued at 93 tiles on every
+# horizon because they asked a fixed 30 that a bug happened to cut to 12. The right
+# request is what will be dug before the next request: rate times interval.
+DIG_TILES_PER_TICK = 0.025
+# ...and that fort had seven citizens. Rock removed per citizen per tick, so a fort of
+# 136 is asked for what 136 can dig, not what 7 can. Measured why it matters: on the
+# mature save the threat channel lights on round 2 and stays lit, so the careful tiers
+# get exactly ONE dig call all episode. Asked for a seven-dwarf dozen at that call they
+# dug 7 and 12 tiles where they had dug 45; asked in proportion to hands they bank
+# enough work to last the hold.
+DIG_TILES_PER_CITIZEN_TICK = DIG_TILES_PER_TICK / 7
+DIG_EVERY_ROUNDS = 3
+DIG_MIN, DIG_MAX = 12, 120
+
+
+def dig_request(obs: dict) -> int:
+    """Tiles to designate now: what the miners can consume before the next dig call.
+
+    Rate times interval, and deliberately nothing cleverer. Reading the fort's own dug
+    delta and asking DIG_HEADROOM times it was tried: it lifted the mature digger 110 ->
+    156 but dropped the fresh fort 87 -> 67 and collapsed the threat-aware tiers on the
+    mature save to 8 and 12 tiles, because a tier holding under threat digs little
+    between calls, sees a small delta, asks the minimum, and spirals down. This formula
+    reproduces the calibrated fresh numbers to the digit and breaks the 93-tile plateau
+    at 12000 ticks (v1 dug 241). Its known cost: the rate is a seven-dwarf embark's, so a
+    136-dwarf fort is asked for less than it could dig -- 85 tiles where a fixed 30 gave
+    110. v1 is meant to be plain and beatable; a policy that reads its fort is v3's job.
+    """
+    rounds_left = max(1, int(obs.get("rounds_total", 24) or 24) - int(obs.get("round", 0) or 0))
+    chunk = max(1, int(obs.get("ticks_remaining", 3600) or 3600) // rounds_left)
+    hands = max(1, int(obs.get("cohort_size", 7) or 7))
+    want = round(DIG_TILES_PER_CITIZEN_TICK * hands * chunk * DIG_EVERY_ROUNDS)
+    return max(DIG_MIN, min(DIG_MAX, want))
+
 
 # Trees felled per request. A dozen is more timber than the opening needs and every log
 # is a hauling job, which is the same competition for hands that the fort-wide woodcutter

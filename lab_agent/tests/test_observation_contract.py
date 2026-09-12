@@ -51,3 +51,20 @@ def test_excavation_is_derived_from_the_solid_count():
     # in `nsolid` since T0. Pin this, because reading it as a key is the bug above.
     assert "nsolid" in observer_keys()
     assert "dug" not in observer_keys()
+
+
+def test_no_module_defines_the_same_top_level_name_twice():
+    # Python keeps the LAST definition and says nothing. A botched edit left tiers.py
+    # with two `dig_request`s -- an interval formula first and the adaptive one it was
+    # meant to replace second -- and the lab host ran the adaptive code for a whole
+    # recalibration while the diff on the workstation read as reverted. Twelve minutes
+    # of eight forts, measuring the wrong thing, with every test green.
+    import ast
+    for path in PKG.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        seen: dict[str, int] = {}
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                seen[node.name] = seen.get(node.name, 0) + 1
+        dupes = sorted(n for n, c in seen.items() if c > 1)
+        assert not dupes, f"{path.relative_to(PKG)} defines {dupes} more than once"
