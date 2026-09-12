@@ -144,7 +144,7 @@ def test_calibration_is_keyed_by_save_and_horizon():
     # fresh embark and falls below idling on the mature one, where Forgotten Beasts kill
     # anyone sent to work above ground.
     assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.597084}
-    assert calibration_for("region3-lab", 3600) == {"noop": 0.535346, "ref": 0.617712}
+    assert calibration_for("region3-lab", 3600) == {"noop": 0.535346, "ref": 0.616001}
     assert (calibration_for("region3-lab", 3600)
             != calibration_for("ourfort16-final", 3600))
 

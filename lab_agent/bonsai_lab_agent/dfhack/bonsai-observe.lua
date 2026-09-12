@@ -261,10 +261,18 @@ if not SOLID_LUT then
     for i = 0, df.tiletype._last_item do
       local at = df.tiletype.attrs[i]
       if at then
+        -- Natural ground only. A CONSTRUCTION is a wall a dwarf put there: raising one
+        -- read as un-digging, and a Forgotten Beast smashing one read as excavation --
+        -- measured on region3-lab, five constructed walls destroyed during an episode
+        -- were credited to the fort as five tiles dug. The mature fort holds 1880 of
+        -- them; a deconstruct verb, which we do not yet have, would have made every one
+        -- of them farmable. Same rule as the trees: excavation removes what the map
+        -- was born with.
         SOLID_LUT[i] = (at.shape == df.tiletype_shape.WALL
                         and at.material ~= df.tiletype_material.TREE
                         and at.material ~= df.tiletype_material.PLANT
-                        and at.material ~= df.tiletype_material.MUSHROOM) or false
+                        and at.material ~= df.tiletype_material.MUSHROOM
+                        and at.material ~= df.tiletype_material.CONSTRUCTION) or false
       end
     end
   end)

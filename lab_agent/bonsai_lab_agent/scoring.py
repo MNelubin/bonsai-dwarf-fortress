@@ -111,7 +111,9 @@ CALIBRATION = {
     #
     #                    v0_idle    v1_developer  v2_reactive  v3_survival
     #   ourfort16-final  0.467857   0.545397      0.544434     0.597084
-    #   region3-lab      0.535346   0.555828      0.614328     0.617712
+    #   region3-lab      0.535346   0.561454      0.594356     0.616001
+    # (mature row re-measured once more after CONSTRUCTION left the solid count: a
+    #  wall a dwarf raised is not ground, and a beast smashing one is not excavation)
     #
     # Re-measured 2026-09-12 after designate_dig began honouring its `tiles` argument
     # and the tiers began asking in proportion to hands. The reference leads on BOTH
@@ -149,7 +151,7 @@ CALIBRATION = {
     # it does not. That is the game being right, not the metric being wrong, and it is
     # why the endpoint is keyed by save.
     ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.597084},
-    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.617712},
+    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.616001},
     # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
     # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
     # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
