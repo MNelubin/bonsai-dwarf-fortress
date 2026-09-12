@@ -35,18 +35,32 @@ PY = sys.executable
 FRESH, MATURE = "ourfort16-final", "region3-lab"
 
 
-def flat_out(model: dict) -> list[float]:
-    W, b = model["layers"][-1]["W"], model["layers"][-1]["b"]
-    return [v for row in W for v in row] + list(b)
+def _which(model: dict, layers: str) -> list[int]:
+    return list(range(len(model["layers"]))) if layers == "all" else [len(model["layers"]) - 1]
 
 
-def set_out(model: dict, flat: list[float]) -> dict:
+def flat_out(model: dict, layers: str = "output") -> list[float]:
+    """The weights under search, as one flat list. `output` is the last layer only --
+    what fires when, over features the imitation already learned. `all` includes the
+    hidden layer -- what the player notices in the first place -- which is where a
+    behaviour the teacher never had can come from."""
+    out: list[float] = []
+    for i in _which(model, layers):
+        L = model["layers"][i]
+        out += [v for row in L["W"] for v in row] + list(L["b"])
+    return out
+
+
+def set_out(model: dict, flat: list[float], layers: str = "output") -> dict:
     m = copy.deepcopy(model)
-    W, b = m["layers"][-1]["W"], m["layers"][-1]["b"]
-    n_out, n_hid = len(W), len(W[0])
-    for i in range(n_out):
-        W[i] = flat[i * n_hid:(i + 1) * n_hid]
-    m["layers"][-1]["b"] = flat[n_out * n_hid:]
+    k = 0
+    for i in _which(m, layers):
+        L = m["layers"][i]
+        n_out, n_in = len(L["W"]), len(L["W"][0])
+        for r in range(n_out):
+            L["W"][r] = flat[k:k + n_in]; k += n_in
+        L["b"] = flat[k:k + n_out]; k += n_out
+    assert k == len(flat)
     return m
 
 
@@ -82,12 +96,13 @@ def main() -> None:
     ap.add_argument("--sigma-decay", type=float, default=0.97); ap.add_argument("--horizon", type=int, default=3600)
     ap.add_argument("--holdout-every", type=int, default=5); ap.add_argument("--port", type=int, default=7300)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--layers", choices=("output", "all"), default="output")
     a = ap.parse_args()
 
     rng = random.Random(a.seed)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     base = json.loads(Path(a.base).read_text(encoding="utf-8"))
-    mean = flat_out(base)
+    mean = flat_out(base, a.layers)
     sigma = a.sigma
     best_score, best_model = -1.0, base
     log = open(out / "evolve_log.jsonl", "a", encoding="utf-8")
@@ -106,7 +121,7 @@ def main() -> None:
         cands, models = [], []
         for i in range(a.pop):
             flat = [v + rng.gauss(0, sigma) for v in mean]
-            m = set_out(base, flat)
+            m = set_out(base, flat, a.layers)
             p = out / f"gen{gen:03d}_c{i:02d}.json"
             p.write_text(json.dumps(m)); cands.append(p); models.append((flat, m))
         scores = evaluate(cands, FRESH, a.horizon, a.port, 900)
