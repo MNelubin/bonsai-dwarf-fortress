@@ -110,8 +110,15 @@ CALIBRATION = {
     # rung of the ladder. Measured 2026-09-06, whole ladder, k=3:
     #
     #                    v0_idle    v1_developer  v2_reactive  v3_survival
-    #   ourfort16-final  0.467857   0.545397      0.545871     0.607482
-    #   region3-lab      0.535346   0.620099      0.585560     0.579671
+    #   ourfort16-final  0.467857   0.545397      0.544434     0.597084
+    #   region3-lab      0.535346   0.555828      0.614328     0.617712
+    #
+    # Re-measured 2026-09-12 after designate_dig began honouring its `tiles` argument
+    # and the tiers began asking in proportion to hands. The reference leads on BOTH
+    # forts for the first time. On the mature save the careful tiers get one dig call
+    # before the threat channel locks them out; asked for what 136 citizens can dig
+    # they bank 120 tiles and dig all of it while holding, where a seven-dwarf dozen
+    # had left them at 7 and 12.
     #
     # Re-measured 2026-09-07 with the saturation scales set from what a fort reaches
     # rather than from constants sized for a far longer run. Bands: fresh 0.0656 ->
@@ -141,8 +148,8 @@ CALIBRATION = {
     # policy that farms and hauls above ground loses people that a policy digging under
     # it does not. That is the game being right, not the metric being wrong, and it is
     # why the endpoint is keyed by save.
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.607482},
-    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.620099},
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.597084},
+    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.617712},
     # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
     # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
     # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
