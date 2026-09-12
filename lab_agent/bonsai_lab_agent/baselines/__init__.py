@@ -14,6 +14,5 @@ lights up, not merely carry a branch that never fires.
 """
 from bonsai_lab_agent.baselines.tiers import (TIERS, v0_idle, v1_developer, v2_reactive,
                                               v3_survival)
-from bonsai_lab_agent.baselines.llm_policy import llm_policy
 
-__all__ = ["TIERS", "v0_idle", "v1_developer", "v2_reactive", "v3_survival", "llm_policy"]
+__all__ = ["TIERS", "v0_idle", "v1_developer", "v2_reactive", "v3_survival"]

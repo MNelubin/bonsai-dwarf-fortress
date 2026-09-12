@@ -1,11 +1,16 @@
-"""A controller that asks a local language model what to do.
+"""A language model as ORACLE, not as player.
 
-The smallest possible agent: no autonomy loop, no code editing, no memory beyond what
-the driver hands it each round. One observation in, one list of actions out, through the
-same contract every tier uses -- the action schema the driver ships, the dependency view,
-the threat channel, and the receipt for last round's actions. If the contract cannot
-carry a competent game to a model, this is where it shows, and it shows before anything
-autonomous is built on top of it.
+This was written as a controller and scored 0.5454 on the fresh embark -- level with the
+plain digger, and it dug 7 tiles because it asked for everything every round. It was also
+the wrong idea. The vision is explicit: the player is a compact CPU model that never
+calls a large model during ordinary play; a large model may occasionally act as teacher
+or oracle -- label a hard state, propose a plan, explain a failure -- and its answers
+become data, rules or weights that the CPU player then carries on its own.
+
+So this module stays for that use only: run it on states the Student gets wrong, keep
+the answers as training rows. It must never be the thing that plays. It lives in
+`player/` rather than beside the tiers so the baselines stay what they are -- programmable
+teachers with a CPU-sized footprint.
 
 The model runs on the lab's own Ollama. No hosted provider is involved.
 """
