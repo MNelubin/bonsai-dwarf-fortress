@@ -124,7 +124,39 @@ structurally 0 because the embark arrives with fifteen barrels. Two live terms o
    reference began felling timber and raising buildings: identical code measured 0.5854
    and 0.5921. Do not claim a win inside +/- 0.006.
 
-## C — The autonomous agent
+## C — The player (was: "the autonomous agent")
+
+The player is a compact CPU model, per PROJECT_VISION: no large language model in the
+loop during play. A language model may act as an occasional oracle (`player/oracle_llm.py`)
+whose answers become training data; it must never be the thing that plays.
+
+Stage B, imitation — DONE. `player/imitation.py` (44 features, reversible action labels,
+a pure-Python Student), `collect_trajectories`, `train_imitation` (numpy, CPU, seconds),
+`evaluate_student`. The student reproduces v3_survival: fresh 0.5980 vs 0.5971, mature
+0.616001 to the digit.
+
+Stage C, improvement against the scorer — RUNNING and it works. `player/evolve.py` is a
+cross-entropy method over the Student's output layer, twelve candidates a generation
+played in parallel, mature fort as an unselected holdout. 25 generations, 50 minutes:
+
+    k=3, 3600 ticks        evolved student   teacher v3   normalised
+    ourfort16-final        0.6666            0.5971       1.54
+    region3-lab            0.6342            0.6160       1.23
+
+Everyone alive on both. It found, on its own, the mature fort's opening — bank the
+digging before the threat locks you out — and carried it to the fresh embark where no
+tier does it: 132 tiles designated at round 0, then the miners work all episode. The
+whole final population sits above the teacher (worst of twelve 0.6514).
+
+Weights: `player/weights/student_evolved_v1.json` (3968 params, 88 KB); the per-
+generation log beside it.
+
+Next for the player, in order: (1) evolve the hidden layer too, not only the output;
+(2) feed the player's discoveries back into the tiers -- dig_request under-asks on the
+fresh embark; (3) DAgger on the states where student and teacher disagree; (4) a
+scarcity scenario so comfort and provisioning carry signal, which is the owner's call.
+
+## C′ — What "autonomous" meant before
 
 Only after A and B. The agent consumes exactly the contract in `actions/` and the
 observation in `stepped_episode`, including `previous_action_feedback` — which is why a
