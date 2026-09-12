@@ -38,7 +38,11 @@ FEATURE_NAMES: tuple[str, ...] = (
     "shops_built_log", "shops_unbuilt_log", "stockpiles_log", "farm_plots_log",
     "jobs_log", "jobs_unassigned_log", "jobs_manager_log", "jobs_brewing_log",
     "orders_active_log", "orders_left_log",
-) + tuple(f"built_{k}" for k in SHOP_KINDS) + tuple(f"pending_{k}" for k in SHOP_KINDS)
+) + tuple(f"built_{k}" for k in SHOP_KINDS) + tuple(f"pending_{k}" for k in SHOP_KINDS) + (
+    # appended 2026-09-12: the player's own dig backlog, so "do the miners have work" is
+    # something it can see rather than something a weight has to guess
+    "designated_log", "dig_backlog_log",
+)
 
 
 def _log(x) -> float:
@@ -95,6 +99,8 @@ def featurize(obs: dict) -> list[float]:
     ]
     f += [_log(built.get(k)) for k in SHOP_KINDS]
     f += [_log(pend.get(k)) for k in SHOP_KINDS]
+    designated = _num((deps.get("digging") or {}).get("designated_total"))
+    f += [_log(designated), _log(designated - _num(obs.get("dug_tiles")))]
     assert len(f) == len(FEATURE_NAMES), (len(f), len(FEATURE_NAMES))
     return f
 

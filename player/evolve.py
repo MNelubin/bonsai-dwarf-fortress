@@ -97,6 +97,8 @@ def main() -> None:
     ap.add_argument("--holdout-every", type=int, default=5); ap.add_argument("--port", type=int, default=7300)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--layers", choices=("output", "all"), default="output")
+    ap.add_argument("--select", choices=("fresh", "both"), default="both")
+    ap.add_argument("--mature-top", type=int, default=4)
     a = ap.parse_args()
 
     rng = random.Random(a.seed)
@@ -114,7 +116,7 @@ def main() -> None:
     log.write(json.dumps({"gen": 0, "kind": "base", "fresh": s_fresh, "mature": s_mature}) + "\n"); log.flush()
     print(f"gen 0 base: fresh={s_fresh} mature={s_mature}", flush=True)
     if s_fresh is not None:
-        best_score = s_fresh
+        best_score = s_fresh + (s_mature or 0.0) if a.select == "both" else s_fresh
 
     for gen in range(1, a.generations + 1):
         t = time.time()
@@ -128,15 +130,32 @@ def main() -> None:
         ranked = sorted([(s, i) for i, s in enumerate(scores) if s is not None], reverse=True)
         if not ranked:
             print(f"gen {gen}: every candidate failed", flush=True); continue
-        elite = ranked[:a.elite]
+        if a.select == "both":
+            # Selecting on the fresh embark alone overfits it. Measured: forty generations
+            # of --layers all took the fresh score 0.6666 -> 0.6753 and the mature score
+            # 0.6334 -> 0.5857, four more dwarves dead and three buildings lost, while the
+            # unselected holdout only REPORTED the slide. So the top candidates by fresh
+            # score also play the mature save, and the elite is ranked by the SUM. One
+            # mature episode per candidate is enough: its spread is 0.0008.
+            top = [i for _, i in ranked[:a.mature_top]]
+            m_scores = evaluate([cands[i] for i in top], MATURE, a.horizon, a.port + 20, 1500)
+            both = sorted([(scores[i] + (m if m is not None else 0.0), i, scores[i], m)
+                           for i, m in zip(top, m_scores)], reverse=True)
+            elite = [(s, i) for s, i, _, _ in both[:a.elite]]
+            fitness_of = {i: s for s, i, _, _ in both}
+        else:
+            elite = ranked[:a.elite]
+            fitness_of = dict((i, s) for s, i in ranked)
         # CEM: the next mean is the elite's mean; the elite's spread tempers sigma
         mean = [statistics.fmean(models[i][0][k] for _, i in elite) for k in range(len(mean))]
         sigma *= a.sigma_decay
-        gen_best, gi = ranked[0]
+        gi = elite[0][1]
+        gen_best = fitness_of[gi]
         if gen_best > best_score:
             best_score, best_model = gen_best, models[gi][1]
             (out / "student_best.json").write_text(json.dumps(best_model))
         row = {"gen": gen, "kind": "gen", "sigma": round(sigma, 4), "best": gen_best,
+               "best_fresh": scores[gi], "best_mature": (fitness_of[gi] - scores[gi]) if a.select == "both" else None,
                "elite_mean": statistics.fmean(s for s, _ in elite), "median": statistics.median(s for s, _ in ranked),
                "worst": ranked[-1][0], "failed": scores.count(None), "best_ever": best_score,
                "seconds": round(time.time() - t)}

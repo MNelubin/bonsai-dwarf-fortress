@@ -2317,6 +2317,12 @@ while QI <= #QUEUE do
                 pcall(function() df.global.process_jobs = true end)
             end
             c.designate_dig = c.designate_dig + placed
+            -- How much this verb has ever designated in this fort. The observer emits it
+            -- so a policy can see its own backlog -- designated minus dug -- and decide
+            -- whether the miners have work, instead of asking on a fixed cadence or
+            -- carrying a guessed weight. The evolved player found "bank the digging and
+            -- go quiet" without being able to see when the bank ran out.
+            _G.BONSAI_DESIGNATED = (_G.BONSAI_DESIGNATED or 0) + placed
             -- Reported LAST and as a note, because by here the chambers have been cut:
             -- a blocked shaft bounds how deep the fort goes, it does not stop it digging.
             if blocked_at then

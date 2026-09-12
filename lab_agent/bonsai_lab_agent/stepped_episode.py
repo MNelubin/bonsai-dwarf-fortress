@@ -97,6 +97,11 @@ def dependency_state(raw: dict) -> dict:
         "logistics": {
             "stockpiles": _raw_int(raw, "nstockpile"),
         },
+        # Tiles this fort's designate_dig has ever placed. With dug_tiles beside it a
+        # policy can see its own backlog and judge whether the miners have work.
+        "digging": {
+            "designated_total": _raw_int(raw, "ndesig"),
+        },
         "jobs": {
             "total": _raw_int(raw, "njobs"),
             "unassigned": _raw_int(raw, "nunassignedjobs"),
