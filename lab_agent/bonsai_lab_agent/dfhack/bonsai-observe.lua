@@ -43,6 +43,13 @@ local nbuild, nbuild_all, ndead, worders = 0, 0, 0, 0
 -- buildings are intent, not effect, and an agent can plan them by the hundred.
 -- The raw figure survives as nbuild_all, because losing a number is how a defect hides.
 pcall(function() nbuild_all = #w.buildings.all end)
+-- Workshops and furnaces count once per KIND. The evolved player found the cheapest
+-- finished building -- a Still costs one log -- and raised seven of them, no
+-- Carpenter's, no farm, and took 0.033 of composite for it: four redundant stills were
+-- most of its lead over the reference on the fresh embark. A fort with seven stills is
+-- not four times as developed as one with a still, a carpenter's and a mason's; a fort
+-- with seven beds for seven dwarves is. So kinds for the shops, count for the rest.
+local shop_kinds = {}
 pcall(function()
   for _, b in ipairs(w.buildings.all) do
     pcall(function()
@@ -50,7 +57,14 @@ pcall(function()
       if ty ~= df.building_type.Civzone and ty ~= df.building_type.Stockpile then
         local finished = true
         pcall(function() finished = b:getBuildStage() >= b:getMaxBuildStage() end)
-        if finished then nbuild = nbuild + 1 end
+        if finished then
+          if ty == df.building_type.Workshop or ty == df.building_type.Furnace then
+            local kind = tostring(ty) .. ":" .. tostring(b.type)
+            if not shop_kinds[kind] then shop_kinds[kind] = true; nbuild = nbuild + 1 end
+          else
+            nbuild = nbuild + 1
+          end
+        end
       end
     end)
   end
