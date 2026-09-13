@@ -9,10 +9,13 @@ generation played in parallel on the lab, the best few averaged into the next me
 Pure Python on purpose. Four thousand weights and Gaussian noise do not need numpy, and
 the lab venv then needs nothing installed to run the whole loop.
 
-Selection is on the fresh embark because an episode there costs a minute. The mature
-save is a HOLDOUT: the elite plays it every few generations and the score is logged, not
-selected on. If fresh climbs while mature falls, the search found a habit of one fort and
-not a better player -- or found a hole in the metric, which is worth knowing either way.
+Every candidate plays the fresh embark because an episode there costs a minute. The
+top few by that score then play the other scenarios (the mature save, the hungry month)
+and the elite is ranked by the SUM OF NORMALISED scores across them -- normalised
+against each scenario's own calibrated no-op and reference, because a raw composite of
+0.63 on the mature fort and 0.42 on the hungry one are not the same distance travelled.
+A candidate that only learns the habits of one scenario loses on the others and is not
+selected. A scenario with no calibration pair is refused, not scored at zero.
 
     BONSAI_PLAYER_PKG=/srv/bonsai-agent/player_pkg python -m player.evolve \
         --base student_v1.json --out /srv/bonsai-agent/evolve --generations 25
@@ -33,6 +36,27 @@ from pathlib import Path
 
 PY = sys.executable
 FRESH, MATURE = "ourfort16-final", "region3-lab"
+
+# name -> (save, prep script or "", horizon, per-episode timeout seconds)
+SCENARIOS = {
+    "fresh":  (FRESH, "", 3600, 900),
+    "mature": (MATURE, "", 3600, 1500),
+    # a fort-month on a wagon with no food: the composite here is mostly whether the
+    # policy finds the livestock before the dwarves die
+    "hungry": (FRESH, "bonsai-prep-hungry", 33600, 2400),
+}
+
+
+def normalised(score, name: str):
+    """(agent - noop) / (ref - noop) against the scenario's calibrated endpoints."""
+    if score is None:
+        return None
+    from bonsai_lab_agent.scoring import calibration_for
+    save, prep, horizon, _ = SCENARIOS[name]
+    cal = calibration_for(f"{save}+{prep}" if prep else save, horizon)
+    if cal is None:
+        raise SystemExit(f"scenario {name} has no calibration pair; measure it before selecting on it")
+    return (score - cal["noop"]) / (cal["ref"] - cal["noop"])
 
 
 def _which(model: dict, layers: str) -> list[int]:
@@ -64,13 +88,19 @@ def set_out(model: dict, flat: list[float], layers: str = "output") -> dict:
     return m
 
 
-def evaluate(cands: list[Path], save: str, horizon: int, base_port: int, timeout: int) -> list[float | None]:
-    """Play every candidate once, all at the same time. None where the episode failed."""
+def evaluate(cands: list[Path], name: str, base_port: int) -> list:
+    """Play every candidate once on one scenario, all at the same time. None where the
+    episode failed. Raw composite medians; see normalised()."""
+    save, prep, horizon, timeout = SCENARIOS[name]
     procs = []
     for i, path in enumerate(cands):
         env = {**os.environ, "BONSAI_EPISODE_SAVE": save, "BONSAI_EPISODE_PORT": str(base_port + i),
                "PYTHONPATH": os.environ.get("BONSAI_PLAYER_PKG", "")}
-        log = open(str(path) + f".{save}.log", "w")
+        if prep:
+            env["BONSAI_EPISODE_PREP"] = prep
+        else:
+            env.pop("BONSAI_EPISODE_PREP", None)
+        log = open(str(path) + f".{name}.log", "w")
         procs.append((subprocess.Popen([PY, "-m", "player.evaluate_student", str(path), "1", str(horizon)],
                                        stdout=log, stderr=subprocess.STDOUT, env=env, cwd="/srv/df-bonsai/current"), log))
     deadline = time.time() + timeout
@@ -82,10 +112,25 @@ def evaluate(cands: list[Path], save: str, horizon: int, base_port: int, timeout
         log.close()
     out = []
     for path in cands:
-        text = Path(str(path) + f".{save}.log").read_text(encoding="utf-8", errors="replace")
+        text = Path(str(path) + f".{name}.log").read_text(encoding="utf-8", errors="replace")
         m = re.search(r'"composite_median": ([0-9.]+)', text)
         out.append(float(m.group(1)) if m else None)
     return out
+
+
+def evaluate_many(cands: list[Path], names: list[str], base_port: int) -> dict:
+    """The secondary scenarios run side by side, each on its own port block."""
+    import threading
+    results: dict = {}
+
+    def run(j, name):
+        results[name] = evaluate(cands, name, base_port + 20 * (j + 1))
+    threads = [threading.Thread(target=run, args=(j, n)) for j, n in enumerate(names)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return results
 
 
 def main() -> None:
@@ -93,30 +138,43 @@ def main() -> None:
     ap.add_argument("--base", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--generations", type=int, default=25); ap.add_argument("--pop", type=int, default=12)
     ap.add_argument("--elite", type=int, default=4); ap.add_argument("--sigma", type=float, default=0.15)
-    ap.add_argument("--sigma-decay", type=float, default=0.97); ap.add_argument("--horizon", type=int, default=3600)
-    ap.add_argument("--holdout-every", type=int, default=5); ap.add_argument("--port", type=int, default=7300)
+    ap.add_argument("--sigma-decay", type=float, default=0.97)
+    ap.add_argument("--port", type=int, default=7300)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--layers", choices=("output", "all"), default="output")
-    ap.add_argument("--select", choices=("fresh", "both"), default="both")
-    ap.add_argument("--mature-top", type=int, default=4)
+    ap.add_argument("--scenarios", default="fresh,mature,hungry",
+                    help="comma list from %s; everyone plays the first, --top play the rest" % ",".join(SCENARIOS))
+    ap.add_argument("--top", type=int, default=6, help="how many candidates by the first scenario play the rest")
     a = ap.parse_args()
+    names = [n.strip() for n in a.scenarios.split(",") if n.strip()]
+    for n in names:
+        if n not in SCENARIOS:
+            raise SystemExit(f"unknown scenario {n}")
+        normalised(0.0, n)                                  # refuse early if uncalibrated
+    first, rest = names[0], names[1:]
+
+    def fitness(raw: dict):
+        parts = [normalised(raw.get(n), n) for n in names]
+        return None if any(p is None for p in parts) else sum(parts)
 
     rng = random.Random(a.seed)
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     base = json.loads(Path(a.base).read_text(encoding="utf-8"))
     mean = flat_out(base, a.layers)
     sigma = a.sigma
-    best_score, best_model = -1.0, base
+    best_score, best_model = float("-inf"), base
     log = open(out / "evolve_log.jsonl", "a", encoding="utf-8")
 
-    # generation 0: where does the imitation student stand, on both forts, before touching it
+    # generation 0: where does the base stand on every scenario before touching it
     (out / "gen000_base.json").write_text(json.dumps(base))
-    s_fresh = evaluate([out / "gen000_base.json"], FRESH, a.horizon, a.port, 600)[0]
-    s_mature = evaluate([out / "gen000_base.json"], MATURE, a.horizon, a.port, 1200)[0]
-    log.write(json.dumps({"gen": 0, "kind": "base", "fresh": s_fresh, "mature": s_mature}) + "\n"); log.flush()
-    print(f"gen 0 base: fresh={s_fresh} mature={s_mature}", flush=True)
-    if s_fresh is not None:
-        best_score = s_fresh + (s_mature or 0.0) if a.select == "both" else s_fresh
+    raw0 = {first: evaluate([out / "gen000_base.json"], first, a.port)[0]}
+    raw0.update({n: v[0] for n, v in evaluate_many([out / "gen000_base.json"], rest, a.port).items()})
+    f0 = fitness(raw0)
+    log.write(json.dumps({"gen": 0, "kind": "base", "raw": raw0,
+                          "norm": {n: normalised(raw0[n], n) for n in names}, "fitness": f0}) + "\n"); log.flush()
+    print(f"gen 0 base: raw={raw0} fitness={f0}", flush=True)
+    if f0 is not None:
+        best_score = f0
 
     for gen in range(1, a.generations + 1):
         t = time.time()
@@ -126,41 +184,37 @@ def main() -> None:
             m = set_out(base, flat, a.layers)
             p = out / f"gen{gen:03d}_c{i:02d}.json"
             p.write_text(json.dumps(m)); cands.append(p); models.append((flat, m))
-        scores = evaluate(cands, FRESH, a.horizon, a.port, 900)
+        scores = evaluate(cands, first, a.port)
         ranked = sorted([(s, i) for i, s in enumerate(scores) if s is not None], reverse=True)
         if not ranked:
             print(f"gen {gen}: every candidate failed", flush=True); continue
-        if a.select == "both":
-            # Selecting on the fresh embark alone overfits it. Measured: forty generations
-            # of --layers all took the fresh score 0.6666 -> 0.6753 and the mature score
-            # 0.6334 -> 0.5857, four more dwarves dead and three buildings lost, while the
-            # unselected holdout only REPORTED the slide. So the top candidates by fresh
-            # score also play the mature save, and the elite is ranked by the SUM. One
-            # mature episode per candidate is enough: its spread is 0.0008.
-            top = [i for _, i in ranked[:a.mature_top]]
-            m_scores = evaluate([cands[i] for i in top], MATURE, a.horizon, a.port + 20, 1500)
-            both = sorted([(scores[i] + (m if m is not None else 0.0), i, scores[i], m)
-                           for i, m in zip(top, m_scores)], reverse=True)
-            elite = [(s, i) for s, i, _, _ in both[:a.elite]]
-            fitness_of = {i: s for s, i, _, _ in both}
-        else:
-            elite = ranked[:a.elite]
-            fitness_of = dict((i, s) for s, i in ranked)
+        # Selecting on the fresh embark alone overfits it. Measured: forty generations of
+        # --layers all took the fresh score 0.6666 -> 0.6753 and the mature score
+        # 0.6334 -> 0.5857, four more dwarves dead and three buildings lost, while an
+        # unselected holdout only REPORTED the slide. So the top candidates by the first
+        # scenario play every other one, and the elite is ranked by the summed normalised
+        # score. One episode per scenario per candidate: the mature spread is 0.0008.
+        top = [i for _, i in ranked[:a.top]]
+        others = evaluate_many([cands[i] for i in top], rest, a.port) if rest else {}
+        raw_of = {i: {first: scores[i], **{n: others[n][j] for n in rest}} for j, i in enumerate(top)}
+        fitness_of = {i: fitness(raw_of[i]) for i in top}
+        scored = sorted([(f, i) for i, f in fitness_of.items() if f is not None], reverse=True)
+        if not scored:
+            print(f"gen {gen}: every top candidate failed a scenario", flush=True); continue
+        elite = scored[:a.elite]
         # CEM: the next mean is the elite's mean; the elite's spread tempers sigma
         mean = [statistics.fmean(models[i][0][k] for _, i in elite) for k in range(len(mean))]
         sigma *= a.sigma_decay
-        gi = elite[0][1]
-        gen_best = fitness_of[gi]
+        gen_best, gi = elite[0]
         if gen_best > best_score:
             best_score, best_model = gen_best, models[gi][1]
             (out / "student_best.json").write_text(json.dumps(best_model))
         row = {"gen": gen, "kind": "gen", "sigma": round(sigma, 4), "best": gen_best,
-               "best_fresh": scores[gi], "best_mature": (fitness_of[gi] - scores[gi]) if a.select == "both" else None,
-               "elite_mean": statistics.fmean(s for s, _ in elite), "median": statistics.median(s for s, _ in ranked),
-               "worst": ranked[-1][0], "failed": scores.count(None), "best_ever": best_score,
-               "seconds": round(time.time() - t)}
-        if gen % a.holdout_every == 0:
-            row["mature_holdout"] = evaluate([out / "student_best.json"], MATURE, a.horizon, a.port, 1200)[0]
+               "best_raw": raw_of[gi], "best_norm": {n: normalised(raw_of[gi][n], n) for n in names},
+               "elite_mean": statistics.fmean(f for f, _ in elite),
+               "first_median": statistics.median(s for s, _ in ranked), "first_worst": ranked[-1][0],
+               "failed": scores.count(None) + sum(1 for i in top if fitness_of[i] is None),
+               "best_ever": best_score, "seconds": round(time.time() - t)}
         log.write(json.dumps(row) + "\n"); log.flush()
         print(json.dumps(row), flush=True)
         for p in cands:                                   # keep the directory small
