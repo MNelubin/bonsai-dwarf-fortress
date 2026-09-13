@@ -27,7 +27,7 @@ for i in range(k):
         return acts
 
     try:
-        t0, h = stepped_episode.run_stepped_episode(counted, horizon_ticks=horizon, rounds=24)
+        t0, h = stepped_episode.run_stepped_episode(counted, horizon_ticks=horizon)
         c = scoring.raw_components(h, t0, horizon)
         rows.append(c["composite"])
         print(f"  ep{i+1}/{k} composite={c['composite']:.6f} dug={h.dug_tiles-t0.dug_tiles} "

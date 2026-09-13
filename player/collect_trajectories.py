@@ -36,7 +36,7 @@ def main() -> None:
                 return acts
 
             try:
-                t0, h = stepped_episode.run_stepped_episode(watched, horizon_ticks=horizon, rounds=24)
+                t0, h = stepped_episode.run_stepped_episode(watched, horizon_ticks=horizon)
                 c = scoring.raw_components(h, t0, horizon)
                 for r in rows:
                     r.update({"save": save, "tier": tier, "episode": ep, "horizon": horizon,

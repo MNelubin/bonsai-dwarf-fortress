@@ -95,6 +95,18 @@ def test_chunk_plan_decision_density_is_horizon_independent():
     assert len(se.chunk_plan(3600, 24)) == len(se.chunk_plan(36000, 24)) == 24
 
 
+def test_default_rounds_hold_at_24_up_to_a_month_then_follow_the_calendar():
+    # Both calibrated horizons keep their 24 decisions, so no recorded endpoint moves.
+    assert len(se.chunk_plan(3600)) == 24
+    assert len(se.chunk_plan(33600)) == 24
+    # A fort-year would otherwise be one decision a fortnight; instead the chunk is
+    # capped and the agent looks at the fort every ~1.2 days like it does in a month.
+    year = se.chunk_plan(403200)
+    assert len(year) == se.rounds_for(403200) == 288
+    assert max(year) <= se.MAX_CHUNK_TICKS
+    assert sum(year) == 403200
+
+
 # ------------------------------------------------------------------ the loop
 def test_controller_invoked_once_per_round():
     calls = []

@@ -13,7 +13,13 @@ react to what the fort actually looks like at that moment.
 Decision density is pinned by `rounds`, not by chunk size, so episodes at different
 horizons give the agent the same number of decisions — otherwise a 30-day episode
 would hand the agent 10x the agency of a 3-day one and the horizons would not be
-comparable.
+comparable. That holds up to a fort-month: 24 rounds over 33 600 ticks is a decision
+every 1 400 ticks, a little over a fort-day, which is how often anyone looks at a
+fort. Past a month the pin stops meaning "equal agency" and starts meaning "nobody
+is playing": a fort-year with 24 rounds is one decision a fortnight. So the number
+of rounds is the LARGER of DEFAULT_ROUNDS and however many it takes to keep a chunk
+under MAX_CHUNK_TICKS. Every horizon calibrated so far (3 600 and 33 600) still lands
+on exactly 24 rounds, so no measured endpoint moves.
 
 FAIL-SAFE: a controller that crashes, hangs, or returns garbage costs the agent its
 actions for that round only. It never aborts the episode — otherwise a broken
@@ -32,6 +38,12 @@ from bonsai_lab_agent.session import DFSession, SessionError
 
 DEFAULT_ROUNDS = 24
 MIN_CHUNK_TICKS = 100
+MAX_CHUNK_TICKS = 1400   # 33 600 / 24: the longest a round may run before the agent looks again
+
+
+def rounds_for(horizon_ticks: int) -> int:
+    """How many decisions a horizon gets: 24 up to a fort-month, then one per ~1.2 days."""
+    return max(DEFAULT_ROUNDS, math.ceil(horizon_ticks / MAX_CHUNK_TICKS))
 FEEDBACK_TEXT_LIMIT = 1200
 
 
@@ -198,7 +210,7 @@ def _action_feedback(round_index: int, raw_actions, clean: list[dict],
     }
 
 
-def chunk_plan(horizon_ticks: int, rounds: int = DEFAULT_ROUNDS) -> list[int]:
+def chunk_plan(horizon_ticks: int, rounds: int | None = None) -> list[int]:
     """Split the horizon into per-round tick chunks that sum EXACTLY to the horizon.
 
     Exactness matters: the score compares fort state at a fixed horizon, so an episode
@@ -207,6 +219,8 @@ def chunk_plan(horizon_ticks: int, rounds: int = DEFAULT_ROUNDS) -> list[int]:
     """
     if horizon_ticks <= 0:
         return []
+    if rounds is None:
+        rounds = rounds_for(horizon_ticks)
     rounds = max(1, min(rounds, horizon_ticks // MIN_CHUNK_TICKS or 1))
     base, extra = divmod(horizon_ticks, rounds)
     return [base + (1 if i < extra else 0) for i in range(rounds)]
@@ -254,7 +268,7 @@ def _safe_controller(controller_fn: Callable[[dict], list[dict]], obs: dict) -> 
 
 def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
                         horizon_ticks: int,
-                        rounds: int = DEFAULT_ROUNDS,
+                        rounds: int | None = None,
                         suppress_wildlife: bool = False,
                         recorder=None,
                         repeat_schema: bool = True,
@@ -281,10 +295,10 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
         cohort_ids = set(t0_raw.get("cids", "").split(",")) - {""}
         t0_solid = int(t0_raw.get("nsolid", -1))
         t0 = obs_to_episode_obs(t0_raw, cohort_ids, t0_solid)
-        _emit(recorder, "on_start", t0_raw, t0, horizon_ticks, rounds)
+        chunks = chunk_plan(horizon_ticks, rounds)
+        _emit(recorder, "on_start", t0_raw, t0, horizon_ticks, len(chunks))
 
         cur_raw = t0_raw
-        chunks = chunk_plan(horizon_ticks, rounds)
         remaining = horizon_ticks
         previous_feedback = None
         for i, chunk in enumerate(chunks):
