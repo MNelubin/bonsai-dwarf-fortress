@@ -82,3 +82,44 @@ def test_the_committed_champion_still_loads_after_widening():
     s = Student(widen.widen(model))
     acts = s({"round": 0, "rounds_total": 24, "cohort_alive": 7, "cohort_size": 7})
     assert isinstance(acts, list) and acts
+
+
+def test_split_count_factors_only_count_verbs():
+    from player.imitation import split_count
+    assert split_count("designate_dig|120") == ("designate_dig|#", 120)
+    assert split_count("slaughter_animal|3") == ("slaughter_animal|#", 3)
+    assert split_count("set_labor|MINE|True") == ("set_labor|MINE|True", None)
+    assert split_count("build_workshop|Butchers") == ("build_workshop|Butchers", None)
+
+
+@pytest.mark.skipif(not (WEIGHTS / "student_v3.json").exists(), reason="weights not checked in")
+def test_factored_student_emits_counts_inside_the_catalogue_and_matches_numpy():
+    np = pytest.importorskip("numpy")
+    from player import train_imitation as ti
+    from player.imitation import COUNT_VERBS
+    model = json.loads((WEIGHTS / "student_v3.json").read_text(encoding="utf-8"))
+    s = Student(model)
+    assert s.counts, "v3 is a factored model"
+    rows = [json.loads(l) for l in (ROOT / "player" / "traj" / "fresh.jsonl").read_text(encoding="utf-8").splitlines()[:5]]
+    # the pure-Python forward pass and the numpy one agree on identical vectors
+    X = np.array([r["x"] for r in rows])
+    P = ti.predict(model, X)
+    import math
+    for r, p_np in zip(rows, P):
+        x = [(v - m) / (sd if sd > 1e-9 else 1.0) for v, m, sd in zip(r["x"], s.mean, s.std)]
+        for i, (W, b) in enumerate(s.layers):
+            y = [sum(wi * xi for wi, xi in zip(row, x)) + bi for row, bi in zip(W, b)]
+            x = [v if v > 0 else 0.0 for v in y] if i < len(s.layers) - 1 else y
+        p_py = [1 / (1 + math.exp(-v)) for v in x[: len(s.labels)]]
+        assert p_py == pytest.approx(list(p_np), abs=1e-9)
+    # a count-carrying verb comes out as an integer inside the catalogue range
+    obs = {"round": 0, "rounds_total": 24, "ticks_remaining": 3600, "cohort_alive": 7, "cohort_size": 7,
+           "food_count": 12, "drink_count": 12}
+    qty = s.quantities(obs)
+    for label, n in qty.items():
+        lo, hi = COUNT_VERBS[label.split("|")[0]]
+        assert isinstance(n, int) and lo <= n <= hi
+    acts = s(obs)
+    for a in acts:
+        if a["command"] in COUNT_VERBS:
+            assert isinstance(a["args"][0], int) and a["args"][0] >= 1

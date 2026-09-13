@@ -108,6 +108,27 @@ def featurize(obs: dict) -> list[float]:
     return f
 
 
+# Verbs whose first argument is a quantity. In a factored model these get one label
+# ("designate_dig|#": fire or not) and one count output (how many, on a log1p scale),
+# so "how much" is a number the player owns instead of a separate label per value the
+# teacher happened to use. Ranges are the catalogue's.
+COUNT_VERBS: dict[str, tuple[int, int]] = {
+    "designate_dig": (1, 400), "chop_trees": (1, 60), "slaughter_animal": (1, 10), "brew_drink": (1, 5),
+}
+COUNT_MARK = "#"
+
+
+def split_count(key: str) -> tuple[str, int | None]:
+    """`designate_dig|120` -> (`designate_dig|#`, 120); anything else -> (key, None)."""
+    parts = key.split("|")
+    if parts[0] in COUNT_VERBS and len(parts) > 1:
+        try:
+            return "|".join([parts[0], COUNT_MARK] + parts[2:]), int(parts[1])
+        except ValueError:
+            pass
+    return key, None
+
+
 def action_key(action: dict) -> str:
     """`{"command": "set_labor", "args": ["MINE", True]}` -> `set_labor|MINE|True`."""
     args = action.get("args") or []
@@ -143,6 +164,12 @@ class Student:
         self.std = weights["norm"]["std"]
         self.layers = [(w["W"], w["b"]) for w in weights["layers"]]
         self.threshold = float(weights.get("threshold", 0.5))
+        # factored head: the last `len(counts)` output rows are log1p(count) regressions,
+        # standardised by count_norm, one per label in `counts` (a label carrying "#")
+        self.counts = list(weights.get("counts") or [])
+        cn = weights.get("count_norm") or {}
+        self.count_mean = cn.get("mean") or [0.0] * len(self.counts)
+        self.count_std = cn.get("std") or [1.0] * len(self.counts)
         if self.features != list(FEATURE_NAMES):
             raise ValueError("saved model was trained on a different feature order")
 
@@ -150,17 +177,33 @@ class Student:
     def load(cls, path: str | Path) -> "Student":
         return cls(json.loads(Path(path).read_text(encoding="utf-8")))
 
-    def probabilities(self, obs: dict) -> list[float]:
+    def _forward(self, obs: dict) -> list[float]:
         x = [(v - m) / (s if s > 1e-9 else 1.0) for v, m, s in zip(featurize(obs), self.mean, self.std)]
         for i, (W, b) in enumerate(self.layers):
             y = [sum(wi * xi for wi, xi in zip(row, x)) + bi for row, bi in zip(W, b)]
-            if i < len(self.layers) - 1:
-                x = [v if v > 0 else 0.0 for v in y]            # relu
-            else:
-                x = [1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, v)))) for v in y]   # sigmoid
+            x = [v if v > 0 else 0.0 for v in y] if i < len(self.layers) - 1 else y   # relu / linear
         return x
+
+    def probabilities(self, obs: dict) -> list[float]:
+        z = self._forward(obs)[: len(self.labels)]
+        return [1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, v)))) for v in z]   # sigmoid
+
+    def quantities(self, obs: dict) -> dict[str, int]:
+        """label -> count, for the labels that carry one. Clipped to the catalogue."""
+        z = self._forward(obs)[len(self.labels):]
+        out = {}
+        for label, v, m, s in zip(self.counts, z, self.count_mean, self.count_std):
+            lo, hi = COUNT_VERBS[label.split("|")[0]]
+            out[label] = int(min(hi, max(lo, round(math.expm1(v * s + m)))))
+        return out
 
     def __call__(self, obs: dict) -> list[dict]:
         probs = self.probabilities(obs)
-        chosen = [key_action(k) for k, p in zip(self.labels, probs) if p >= self.threshold]
+        qty = self.quantities(obs) if self.counts else {}
+        chosen = []
+        for k, p in zip(self.labels, probs):
+            if p >= self.threshold:
+                if k in qty:
+                    k = k.replace(COUNT_MARK, str(qty[k]), 1)
+                chosen.append(key_action(k))
         return chosen or ADVANCE

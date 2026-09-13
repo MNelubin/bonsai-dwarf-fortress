@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from player.imitation import FEATURE_NAMES
+from player.imitation import COUNT_MARK, FEATURE_NAMES, split_count
 
 
 def load(paths: list[str]) -> tuple[np.ndarray, list[list[str]], list[dict]]:
@@ -41,17 +41,46 @@ def load(paths: list[str]) -> tuple[np.ndarray, list[list[str]], list[dict]]:
     return X, Y, rows
 
 
-def train(X, Y, labels, layers=(64,), epochs=400, lr=1e-2, seed=0, l2=1e-4):
-    """Any depth; `layers=()` is a linear model. Adam on weighted BCE, full batch."""
+def factor(Y: list[list[str]]) -> tuple[list[list[str]], list[dict[str, int]]]:
+    """Per row: the factored labels, and {label: count} for the ones that carry one."""
+    labels_rows, count_rows = [], []
+    for ys in Y:
+        ls, cs = [], {}
+        for y in ys:
+            k, c = split_count(y)
+            ls.append(k)
+            if c is not None:
+                cs[k] = c
+        labels_rows.append(sorted(set(ls))); count_rows.append(cs)
+    return labels_rows, count_rows
+
+
+def train(X, Y, labels, layers=(64,), epochs=400, lr=1e-2, seed=0, l2=1e-4, factored=True):
+    """Any depth; `layers=()` is a linear model. Adam on weighted BCE, full batch.
+
+    factored=True splits count-carrying verbs into a fire/no-fire label and a log1p(count)
+    regression, appended as extra linear output rows (see imitation.COUNT_VERBS). The
+    regression is fit only on rows where the verb fired.
+    """
     rng = np.random.default_rng(seed)
-    idx = {k: i for i, k in enumerate(labels)}
-    T = np.zeros((len(Y), len(labels)))
-    for r, ys in enumerate(Y):
+    Yl, Yc = factor(Y) if factored else (Y, [{} for _ in Y])
+    counts = [k for k in labels if COUNT_MARK in k] if factored else []
+    idx = {k: i for i, k in enumerate(labels)}; cidx = {k: i for i, k in enumerate(counts)}
+    T = np.zeros((len(Yl), len(labels)))
+    for r, ys in enumerate(Yl):
         for y in ys:
             T[r, idx[y]] = 1.0
+    C = np.zeros((len(Yl), len(counts))); M = np.zeros_like(C)          # log1p targets, mask
+    for r, cs in enumerate(Yc):
+        for k, c in cs.items():
+            C[r, cidx[k]] = np.log1p(c); M[r, cidx[k]] = 1.0
+    cmean = np.array([C[:, j][M[:, j] > 0].mean() if M[:, j].any() else 0.0 for j in range(len(counts))])
+    cstd = np.array([C[:, j][M[:, j] > 0].std() + 1e-3 if M[:, j].any() else 1.0 for j in range(len(counts))])
+    Cn = (C - cmean) / cstd
     mean, std = X.mean(0), X.std(0) + 1e-9
     Xn = (X - mean) / std
-    sizes = [Xn.shape[1], *layers, len(labels)]
+    n_lab, n_cnt = len(labels), len(counts)
+    sizes = [Xn.shape[1], *layers, n_lab + n_cnt]
     Ws = [rng.normal(0, 1 / np.sqrt(a), (b, a)) for a, b in zip(sizes, sizes[1:])]
     bs = [np.zeros(b) for b in sizes[1:]]
     # positive labels are rare (one action in ~24 rounds); weight them so the net does
@@ -61,10 +90,14 @@ def train(X, Y, labels, layers=(64,), epochs=400, lr=1e-2, seed=0, l2=1e-4):
     m = [np.zeros_like(p) for p in params]; v = [np.zeros_like(p) for p in params]
     for ep in range(1, epochs + 1):
         acts = [Xn]
-        for i, (W, b) in enumerate(zip(Ws, bs)):
+        for W, b in zip(Ws, bs):
             z = acts[-1] @ W.T + b
-            acts.append(np.maximum(0, z) if i < len(Ws) - 1 else 1 / (1 + np.exp(-z)))
-        G = (acts[-1] - T) * (T * pw + (1 - T)) / len(Xn)           # weighted BCE gradient
+            acts.append(np.maximum(0, z) if len(acts) < len(Ws) else z)
+        Z = acts[-1]
+        P = 1 / (1 + np.exp(-Z[:, :n_lab]))
+        G_lab = (P - T) * (T * pw + (1 - T)) / len(Xn)                     # weighted BCE gradient
+        G_cnt = (Z[:, n_lab:] - Cn) * M / max(1.0, M.sum())                # masked MSE gradient
+        G = np.concatenate([G_lab, G_cnt], axis=1)
         gWs, gbs = [None] * len(Ws), [None] * len(Ws)
         for i in range(len(Ws) - 1, -1, -1):
             gWs[i] = G.T @ acts[i] + l2 * Ws[i]; gbs[i] = G.sum(0)
@@ -73,25 +106,39 @@ def train(X, Y, labels, layers=(64,), epochs=400, lr=1e-2, seed=0, l2=1e-4):
         for i, (p, g) in enumerate(zip(params, [*gWs, *gbs])):
             m[i] = 0.9 * m[i] + 0.1 * g; v[i] = 0.999 * v[i] + 0.001 * g * g
             p -= lr * (m[i] / (1 - 0.9 ** ep)) / (np.sqrt(v[i] / (1 - 0.999 ** ep)) + 1e-8)
-    return {"features": list(FEATURE_NAMES), "labels": labels,
+    return {"features": list(FEATURE_NAMES), "labels": labels, "counts": counts,
+            "count_norm": {"mean": cmean.tolist(), "std": cstd.tolist()},
             "norm": {"mean": mean.tolist(), "std": std.tolist()},
             "layers": [{"W": W.tolist(), "b": b.tolist()} for W, b in zip(Ws, bs)],
             "threshold": 0.5, "hidden": list(layers), "epochs": epochs, "rows": int(len(Xn))}
 
 
-def predict(model, X):
+def forward(model, X):
     mean, std = np.array(model["norm"]["mean"]), np.array(model["norm"]["std"])
     x = (X - mean) / std
     for i, L in enumerate(model["layers"]):
         x = x @ np.array(L["W"]).T + np.array(L["b"])
-        x = np.maximum(0, x) if i < len(model["layers"]) - 1 else 1 / (1 + np.exp(-x))
+        if i < len(model["layers"]) - 1:
+            x = np.maximum(0, x)
     return x
+
+
+def predict(model, X):
+    """Label probabilities only (the count rows are separate, see predict_counts)."""
+    return 1 / (1 + np.exp(-forward(model, X)[:, : len(model["labels"])]))
+
+
+def predict_counts(model, X):
+    """label -> predicted count per row, on the natural scale."""
+    z = forward(model, X)[:, len(model["labels"]):]
+    cm, cs = np.array(model["count_norm"]["mean"]), np.array(model["count_norm"]["std"])
+    return {k: np.expm1(z[:, j] * cs[j] + cm[j]) for j, k in enumerate(model.get("counts") or [])}
 
 
 def targets(Y, labels):
     idx = {k: i for i, k in enumerate(labels)}
     T = np.zeros((len(Y), len(labels)), dtype=bool)
-    for r, ys in enumerate(Y):
+    for r, ys in enumerate(factor(Y)[0]):
         for y in ys:
             T[r, idx[y]] = True
     return T
@@ -111,6 +158,14 @@ def summary(model, X, Y, labels) -> dict:
 
 def report(model, X, Y, labels):
     P = predict(model, X) >= model["threshold"]; T = targets(Y, labels)
+    Yl, Yc = factor(Y)
+    if model.get("counts"):
+        Q = predict_counts(model, X)
+        print(f"{'count':44} {'n':>4} {'teacher':>8} {'student':>8}   (mean where the verb fired)")
+        for k in model["counts"]:
+            rows_ = [(cs[k], q) for cs, q in zip(Yc, Q[k]) if k in cs]
+            if rows_:
+                print(f"{k:44} {len(rows_):4} {np.mean([a for a, _ in rows_]):8.1f} {np.mean([b for _, b in rows_]):8.1f}")
     print(f"{'action':44} {'n':>4} {'prec':>6} {'rec':>6}")
     for i, k in enumerate(labels):
         tp = int((P[:, i] & T[:, i]).sum()); fp = int((P[:, i] & ~T[:, i]).sum()); fn = int((~P[:, i] & T[:, i]).sum())
@@ -136,7 +191,7 @@ def main():
     ap.add_argument("--sweep", action="store_true", help="fit %s on the same split and report each" % (SWEEP,))
     a = ap.parse_args()
     X, Y, rows = load(a.traj)
-    labels = sorted({y for ys in Y for y in ys})
+    labels = sorted({split_count(y)[0] for ys in Y for y in ys})
     # hold out whole EPISODES, not rows: rows of one episode are near-duplicates
     eps = sorted({(r["_src"], r["episode"]) for r in rows})
     random.Random(a.seed).shuffle(eps)

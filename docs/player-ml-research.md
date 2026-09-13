@@ -91,6 +91,12 @@ then moves counts continuously instead of jumping between labels. This is the on
 that lets the player exceed the teacher on *quantities* — the dimension where the teacher
 is most obviously hand-tuned (DIG_MIN 12, DIG_MAX 120, CHOP_BATCH 5, `slaughter_animal 3`).
 
+BUILT 2026-09-13: `imitation.COUNT_VERBS` (designate_dig, chop_trees, slaughter_animal,
+brew_drink) get a `verb|#` label plus a log1p(count) regression row appended to the
+output layer; `Student.quantities()` clips to the catalogue. Imitation on the same 216
+rows: macro-F1 0.995 (was 0.989 — `designate_dig|90` and `|120` were two labels fighting
+over ten rows), held-out dig count 121 vs teacher 120. `student_v3.json` is factored.
+
 ## 4. Layers and width: what to measure, and why deeper is not it
 
 The owner's instinct — play with layer counts and parameters — is right to test and
