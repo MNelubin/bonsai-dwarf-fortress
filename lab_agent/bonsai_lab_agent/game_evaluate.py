@@ -40,7 +40,10 @@ def episode_save() -> str:
     One definition, shared with DFSession, so the endpoints a run is scored against and
     the save it actually plays can never drift apart.
     """
-    return os.environ.get("BONSAI_EPISODE_SAVE") or DEFAULT_SAVE
+    # The save plus its prep script, if any: a reshaped fort is a different scenario
+    # and must be scored against its own endpoints.
+    from bonsai_lab_agent.session import scenario_id
+    return scenario_id(os.environ.get("BONSAI_EPISODE_SAVE") or DEFAULT_SAVE)
 
 
 def _uncalibrated(submission_id, horizon: int, save: str) -> dict[str, Any]:

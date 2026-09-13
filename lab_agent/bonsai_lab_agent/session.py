@@ -49,6 +49,15 @@ class SessionError(RuntimeError):
     """DF session could not be established or has become unusable."""
 
 
+def scenario_id(save: str | None = None) -> str:
+    """The name endpoints are keyed by: the save, plus the prep script if one reshapes
+    it. `ourfort16-final` and `ourfort16-final+bonsai-prep-hungry` are different forts
+    at T0 and must never share a floor."""
+    save = save or os.environ.get("BONSAI_EPISODE_SAVE") or ""
+    prep = os.environ.get("BONSAI_EPISODE_PREP")
+    return f"{save}+{prep}" if prep else save
+
+
 class DFSession:
     """A live, loaded DF fort that accepts repeated commands.
 
@@ -102,11 +111,20 @@ class DFSession:
         for attempt in range(6):
             try:
                 self.boot_frame = self.frame()
-                return
+                break
             except SessionError:
                 if attempt == 5:
                     raise
                 time.sleep(2)
+        # A scenario is a save plus, optionally, a prep script that reshapes the fort
+        # before T0 -- stores removed, timers set, whatever the curriculum needs. This is
+        # how a scarcity scenario exists without a second save file: DF would not write
+        # one headless, and a script in git is reproducible where a binary is not.
+        prep = os.environ.get("BONSAI_EPISODE_PREP")
+        if prep:
+            out = self.run(prep, timeout=60)
+            self.advance(50)                     # let DF collect flagged items
+            self.prep_report = out.strip()[-200:]
 
     def close(self) -> None:
         """Kill our DF (never the supervised one). Safe to call twice."""
@@ -200,7 +218,7 @@ class DFSession:
                 f.write("\t".join([a["verb"], *[str(x) for x in args]]) + "\n")
         return self.run("bonsai-apply-actions", self.actions_file)
 
-    def advance(self, ticks: int, poll_timeout: int = 240) -> int:
+    def advance(self, ticks: int, poll_timeout: int | None = None) -> int:
         """Advance exactly `ticks` sim frames, then pause. Returns the new frame counter.
 
         bonsai-advance2.lua counts from the CURRENT frame_counter, so successive calls
@@ -218,6 +236,11 @@ class DFSession:
         # tick count as an ARGUMENT, not a shared advance_n.txt: parallel episodes in
         # one DF directory would otherwise read each other's horizon
         self.run("bonsai-advance2", str(ticks))
+        # A fixed 240s fits 150-tick chunks and nothing else: a year split into 24 rounds
+        # is 16800 ticks a chunk, ~90s on the fresh embark and ~12 minutes on the mature
+        # save. Allow the slowest fort we have measured (24 ticks/s) with room to spare.
+        if poll_timeout is None:
+            poll_timeout = max(240, ticks // 10)
         deadline = time.time() + poll_timeout
         interval = POLL_MIN_INTERVAL
         while time.time() < deadline:

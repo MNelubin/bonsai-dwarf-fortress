@@ -266,7 +266,11 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
     a recorder had a bad day.
     """
     own_session = session is None
-    sess = session or DFSession()
+    # The watchdog is a backstop against a wedged DF, not a budget for the episode. A
+    # fixed 1800s killed anything longer than half an hour, which a year-long episode
+    # on the fresh embark is (403200 ticks at ~190/s). Size it to the horizon at a
+    # pessimistic 3 ticks/s plus boot, and let the reaper still catch a real hang.
+    sess = session or DFSession(watchdog_seconds=max(1800, horizon_ticks // 3 + 600))
     try:
         if own_session:
             sess.boot()
