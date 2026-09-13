@@ -180,20 +180,35 @@ dig bank, the same weights re-measured (k=3, 2026-09-13):
     ourfort16-final + hungry, 33600                0.2622      0.38   (never butchers)
 
 Parity with the teacher on the fed forts, and no idea what to do when the wagon is
-empty, because the teacher only learned that after the champion was trained. The
-evolution now selects on the SUM of normalised scores across fresh, mature and hungry
-(`--scenarios fresh,mature,hungry`; everyone plays fresh, the top six play the rest),
-so the next champion has to survive the month to be a champion. Run `evolve5` from the
-widened champion is in progress; its log lands beside the weights when it finishes.
+empty, because the teacher only learned that after the champion was trained.
+
+Two things were then measured side by side (k=3, 2026-09-13, normalised in brackets):
+
+    weights                                  fresh          mature         hungry month     sum
+    student_v3 (imitation, factored head)    0.6187 [1.01]  0.6227 [0.88]  0.4215 [1.00]    2.89
+    evolve5 champion (CEM, 20 gens)          0.6116 [0.96]  0.6602 [1.26]  0.2045 [0.16]    2.38
+    evolve5's own claim for that champion    0.6125 [0.97]  0.6602 [1.26]  0.3062 [0.55]    2.78
+
+The imitation student that simply KNOWS the butcher chain beats twenty generations of
+search that did not start with it. The CEM champion found something real on the mature
+fort — 0.6602 three times to the digit, one more order and one building over the teacher
+— and paid for it on the hungry month, where its single selection episode said 0.31 and
+three said 0.20. That gap is the winner's curse the ARS method exists to remove: the
+shipped model is now the re-played mean, never the best candidate. Kept as
+`student_evolved_v2_cem.json` for the mature-fort trick it carries.
+
+`evolve6` runs ARS from `student_v3` on all three scenarios. Whatever it ships has been
+measured on every scenario as itself.
 
 Weights: `player/weights/student_evolved_v1.json` (3968 params, 88 KB); the per-
 generation log beside it.
 
-Next for the player, in order: (1) retrain imitation on 52 features with hungry
-trajectories in the set, so the student starts out knowing the butcher chain instead
-of having to stumble on it; (2) evolve the hidden layer too; (3) DAgger on the states
-where student and teacher disagree; (4) a fort-year scenario now that decision density
-follows the calendar.
+Next for the player, in order: (1) read what the CEM champion does on the mature fort
+(one more order, one building) and, if it is a rule, put it in the teacher; (2) keep
+the trajectories every evolution run deletes and train on them weighted by normalised
+score (docs/player-ml-research.md §2); (3) DAgger on the states where student and
+teacher disagree; (4) a fort-year scenario now that decision density follows the
+calendar. The architecture question is closed for now: docs/player-ml-research.md §4.
 
 ## C′ — What "autonomous" meant before
 
