@@ -107,6 +107,22 @@ held-out F1 per label as the metric):
 | 1 × 128 | ~9.1k | more width |
 | 2 × 64 | ~8.9k | does depth buy anything the width did not |
 
+Measured 2026-09-13 on the 52-feature v3 trajectories (9 episodes: 5 fresh, 2 mature,
+2 hungry month; 216 rows; leave-one-episode-out, predictions pooled):
+
+    layers   params   macro-F1   exact-set
+    linear     1060     0.931      0.875
+    1 x 32     2356     0.989      0.986
+    1 x 64     4692     0.989      0.986
+    1 x 128    9364     0.989      0.986
+    2 x 64     8852     0.990      0.991
+
+So the teacher is NOT linearly separable in our features (the threat hold and the hunger
+rule are conjunctions), one hidden layer of 32 is already the whole story, and depth buys
+0.001 -- a single row. Capacity is not where the player's ceiling is; §3 (the action
+head) and the data are. `student_v3.json` ships at 1 x 64 for continuity with the
+evolved weights.
+
 Then the two or three survivors go to the lab for one k=3 ladder each. Expect the linear
 model to lose on a few labels (the threat hold is an AND of conditions) and 1×64 to be
 enough; if 2×64 wins on held-out F1 but loses live, that is overfitting to the teacher's
