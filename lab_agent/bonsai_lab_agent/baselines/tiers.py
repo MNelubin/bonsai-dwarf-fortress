@@ -259,6 +259,12 @@ def v3_survival(obs: dict) -> list[dict]:
         allowed = ("designate_dig", "create_stockpile") if wants_storage else ("designate_dig",)
         actions.extend(a for a in inherited if a["command"] in allowed)
 
+    # Gathering when hungry was tried here and REMOVED: on the hungry scenario over a
+    # month every tier's provisioning rose to 0.25-0.32 -- the idle fort included --
+    # because dwarves with nothing to do gather plants on their own, and a herbalist
+    # labour plus a gathering zone measured 0.268 against 0.321 without it. No benefit,
+    # and a fort-wide labour switch is a known hazard (seq 509). What the scenario does
+    # show is that hungry dwarves do not dig at all for at least a month.
     # The only logs on a fresh embark sit inside the wagon, and DF refuses those as
     # building material -- it cancels the job and deletes the half-built workshop. So a
     # fort that never fells a tree can never build ANY workshop, which is why this tier
