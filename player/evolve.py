@@ -17,6 +17,19 @@ against each scenario's own calibrated no-op and reference, because a raw compos
 A candidate that only learns the habits of one scenario loses on the others and is not
 selected. A scenario with no calibration pair is refused, not scored at zero.
 
+Two search methods, same episodes per generation:
+
+  --method cem   the elite's mean becomes the next mean (truncation selection). The
+                 shipped model is the best single candidate ever seen, which is the max
+                 of a noisy draw: evolve4's 0.6666 re-measured 0.6153.
+  --method ars   Augmented Random Search (Mania, Guy, Recht 2018): candidates come in
+                 mirrored pairs (+eps, -eps), the top pairs by the first scenario play the
+                 rest, and the mean moves along sum (R+ - R-) eps, scaled by the std of the
+                 rewards so the step self-adjusts. The MEAN is the policy: it is re-played
+                 every generation on every scenario and shipped only when its own measured
+                 fitness is the best so far. No candidate is ever shipped, so there is no
+                 winner's curse to re-measure later.
+
     BONSAI_PLAYER_PKG=/srv/bonsai-agent/player_pkg python -m player.evolve \
         --base student_v1.json --out /srv/bonsai-agent/evolve --generations 25
 """
@@ -142,9 +155,11 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=7300)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--layers", choices=("output", "all"), default="output")
+    ap.add_argument("--method", choices=("cem", "ars"), default="ars")
+    ap.add_argument("--step", type=float, default=0.02, help="ars: step size alpha along the reward-weighted direction")
     ap.add_argument("--scenarios", default="fresh,mature,hungry",
                     help="comma list from %s; everyone plays the first, --top play the rest" % ",".join(SCENARIOS))
-    ap.add_argument("--top", type=int, default=6, help="how many candidates by the first scenario play the rest")
+    ap.add_argument("--top", type=int, default=6, help="how many candidates by the first scenario play the rest (ars: rounded down to whole pairs)")
     a = ap.parse_args()
     names = [n.strip() for n in a.scenarios.split(",") if n.strip()]
     for n in names:
@@ -176,11 +191,20 @@ def main() -> None:
     if f0 is not None:
         best_score = f0
 
+    if a.method == "ars" and a.pop % 2:
+        raise SystemExit("ars: --pop must be even (mirrored pairs)")
+
     for gen in range(1, a.generations + 1):
         t = time.time()
-        cands, models = [], []
+        cands, models, noises = [], [], []
         for i in range(a.pop):
-            flat = [v + rng.gauss(0, sigma) for v in mean]
+            if a.method == "ars":
+                if i % 2 == 0:
+                    eps = [rng.gauss(0, 1) for _ in mean]
+                    noises.append(eps)
+                flat = [v + (sigma if i % 2 == 0 else -sigma) * e for v, e in zip(mean, noises[-1])]
+            else:
+                flat = [v + rng.gauss(0, sigma) for v in mean]
             m = set_out(base, flat, a.layers)
             p = out / f"gen{gen:03d}_c{i:02d}.json"
             p.write_text(json.dumps(m)); cands.append(p); models.append((flat, m))
@@ -194,32 +218,67 @@ def main() -> None:
         # unselected holdout only REPORTED the slide. So the top candidates by the first
         # scenario play every other one, and the elite is ranked by the summed normalised
         # score. One episode per scenario per candidate: the mature spread is 0.0008.
-        top = [i for _, i in ranked[:a.top]]
-        others = evaluate_many([cands[i] for i in top], rest, a.port) if rest else {}
+        if a.method == "ars":
+            # rank PAIRS by the better member; both members of a chosen pair play the rest
+            pair_best = {}
+            for s_, i in ranked:
+                pair_best[i // 2] = max(pair_best.get(i // 2, float("-inf")), s_)
+            pairs = sorted(pair_best, key=pair_best.get, reverse=True)[: max(1, a.top // 2)]
+            top = [j for pr in pairs for j in (2 * pr, 2 * pr + 1)]
+        else:
+            top = [i for _, i in ranked[:a.top]]
+        # the incumbent mean plays the secondary scenarios beside the candidates (ars),
+        # so shipping is decided on what the mean itself measured, not on a candidate
+        inc_path = out / f"gen{gen:03d}_mean.json"
+        inc_model = set_out(base, mean, a.layers)
+        inc_path.write_text(json.dumps(inc_model))
+        second = [cands[i] for i in top] + ([inc_path] if a.method == "ars" else [])
+        others = evaluate_many(second, rest, a.port) if rest else {}
         raw_of = {i: {first: scores[i], **{n: others[n][j] for n in rest}} for j, i in enumerate(top)}
         fitness_of = {i: fitness(raw_of[i]) for i in top}
         scored = sorted([(f, i) for i, f in fitness_of.items() if f is not None], reverse=True)
-        if not scored:
-            print(f"gen {gen}: every top candidate failed a scenario", flush=True); continue
-        elite = scored[:a.elite]
-        # CEM: the next mean is the elite's mean; the elite's spread tempers sigma
-        mean = [statistics.fmean(models[i][0][k] for _, i in elite) for k in range(len(mean))]
+        row = {"gen": gen, "kind": "gen", "method": a.method, "sigma": round(sigma, 4),
+               "first_median": statistics.median(s_ for s_, _ in ranked), "first_worst": ranked[-1][0],
+               "failed": scores.count(None) + sum(1 for i in top if fitness_of[i] is None)}
+        if a.method == "ars":
+            # the update uses whole pairs whose both members scored
+            used = [pr for pr in pairs if fitness_of.get(2 * pr) is not None and fitness_of.get(2 * pr + 1) is not None]
+            if used:
+                diffs = [fitness_of[2 * pr] - fitness_of[2 * pr + 1] for pr in used]
+                allr = [fitness_of[2 * pr] for pr in used] + [fitness_of[2 * pr + 1] for pr in used]
+                sd = statistics.pstdev(allr) or 1.0
+                scale = a.step / (len(used) * sd)
+                mean = [v + scale * sum(d * noises[pr][k] for d, pr in zip(diffs, used)) for k, v in enumerate(mean)]
+            # the incumbent's own measured fitness decides shipping. Its first-scenario
+            # score is one more episode: play it now so the mean's fitness is complete.
+            inc_first = evaluate([inc_path], first, a.port)[0]
+            inc_raw = {first: inc_first, **{n: others[n][-1] for n in rest}}
+            inc_fit = fitness(inc_raw)
+            row.update({"incumbent_raw": inc_raw, "incumbent": inc_fit,
+                        "incumbent_norm": {n: normalised(inc_raw[n], n) for n in names},
+                        "pairs_used": len(used), "cand_best": scored[0][0] if scored else None})
+            if inc_fit is not None and inc_fit > best_score:
+                best_score, best_model = inc_fit, inc_model
+                (out / "student_best.json").write_text(json.dumps(best_model))
+        else:
+            if not scored:
+                print(f"gen {gen}: every top candidate failed a scenario", flush=True); continue
+            elite = scored[:a.elite]
+            # CEM: the next mean is the elite's mean; the elite's spread tempers sigma
+            mean = [statistics.fmean(models[i][0][k] for _, i in elite) for k in range(len(mean))]
+            gen_best, gi = elite[0]
+            if gen_best > best_score:
+                best_score, best_model = gen_best, models[gi][1]
+                (out / "student_best.json").write_text(json.dumps(best_model))
+            row.update({"best": gen_best, "best_raw": raw_of[gi],
+                        "best_norm": {n: normalised(raw_of[gi][n], n) for n in names},
+                        "elite_mean": statistics.fmean(f for f, _ in elite)})
         sigma *= a.sigma_decay
-        gen_best, gi = elite[0]
-        if gen_best > best_score:
-            best_score, best_model = gen_best, models[gi][1]
-            (out / "student_best.json").write_text(json.dumps(best_model))
-        row = {"gen": gen, "kind": "gen", "sigma": round(sigma, 4), "best": gen_best,
-               "best_raw": raw_of[gi], "best_norm": {n: normalised(raw_of[gi][n], n) for n in names},
-               "elite_mean": statistics.fmean(f for f, _ in elite),
-               "first_median": statistics.median(s for s, _ in ranked), "first_worst": ranked[-1][0],
-               "failed": scores.count(None) + sum(1 for i in top if fitness_of[i] is None),
-               "best_ever": best_score, "seconds": round(time.time() - t)}
+        row.update({"best_ever": best_score, "seconds": round(time.time() - t)})
         log.write(json.dumps(row) + "\n"); log.flush()
         print(json.dumps(row), flush=True)
-        for p in cands:                                   # keep the directory small
-            if p != out / "student_best.json":
-                p.unlink(missing_ok=True)
+        for p in cands + [inc_path]:                       # keep the directory small
+            p.unlink(missing_ok=True)
     print(f"done best_ever={best_score}", flush=True)
 
 
