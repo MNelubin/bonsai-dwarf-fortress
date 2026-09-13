@@ -101,9 +101,19 @@ def set_out(model: dict, flat: list[float], layers: str = "output") -> dict:
     return m
 
 
-def evaluate(cands: list[Path], name: str, base_port: int) -> list:
-    """Play every candidate once on one scenario, all at the same time. None where the
-    episode failed. Raw composite medians; see normalised()."""
+def evaluate(cands: list[Path], name: str, base_port: int, retry: bool = True) -> list:
+    """Play every candidate once on one scenario, all at the same time; a failed episode
+    is played once more. None where it failed twice. Raw composite medians; see
+    normalised()."""
+    scores = _evaluate_once(cands, name, base_port)
+    if retry and any(v is None for v in scores):
+        again = [c for c, v in zip(cands, scores) if v is None]
+        it = iter(_evaluate_once(again, name, base_port))
+        scores = [v if v is not None else next(it) for v in scores]
+    return scores
+
+
+def _evaluate_once(cands: list[Path], name: str, base_port: int) -> list:
     save, prep, horizon, timeout = SCENARIOS[name]
     procs = []
     for i, path in enumerate(cands):
@@ -132,18 +142,14 @@ def evaluate(cands: list[Path], name: str, base_port: int) -> list:
 
 
 def evaluate_many(cands: list[Path], names: list[str], base_port: int) -> dict:
-    """The secondary scenarios run side by side, each on its own port block."""
-    import threading
-    results: dict = {}
-
-    def run(j, name):
-        results[name] = evaluate(cands, name, base_port + 20 * (j + 1))
-    threads = [threading.Thread(target=run, args=(j, n)) for j, n in enumerate(names)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    return results
+    """The secondary scenarios run ONE AFTER THE OTHER, and a failed episode is played
+    once more. Measured on evolve6 (2026-09-13): with mature and hungry side by side,
+    19 forts at once on a 32 GB box, 40% of hungry-month episodes and 14% of mature ones
+    died of "boot failed" (memory) or "dfhack-run lua timed out" (load). A failed episode
+    is a None fitness, a None fitness breaks its mirrored pair, and in ten of twenty
+    generations not one whole pair survived -- the search stood still and looked like a
+    plateau. Sequential costs ~5 minutes a generation and keeps the forts under twelve."""
+    return {name: evaluate(cands, name, base_port) for name in names}
 
 
 def main() -> None:
