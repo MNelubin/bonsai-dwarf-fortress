@@ -40,7 +40,7 @@ def v1_developer(obs: dict) -> list[dict]:
     if r == 2:
         return [{"command": "build_workshop", "args": ["Carpenters"]},
                 {"command": "set_labor", "args": ["CARPENTER", True]}]
-    if r % DIG_EVERY_ROUNDS == 0:
+    if wants_dig(obs):
         return [{"command": "designate_dig", "args": [dig_request(obs)]}]
     if r % 7 == 0:
         return [{"command": "create_stockpile", "args": [2]}]
@@ -75,8 +75,32 @@ DIG_EVERY_ROUNDS = 3
 DIG_MIN, DIG_MAX = 12, 120
 
 
+# When the standing bank of designated-but-undug rock falls under this many tiles, ask
+# for more. Below it the miners are about to idle; above it, more designation only sends
+# them walking (seq 527: 12 a call dug 90, 30 a call dug 46).
+DIG_BACKLOG_FLOOR = 12
+
+
+def dig_backlog(obs: dict) -> int | None:
+    """Designated and not yet dug, or None if the observer predates the field."""
+    designated = ((obs.get("dependencies") or {}).get("digging") or {}).get("designated_total")
+    if designated is None:
+        return None
+    return max(0, int(designated) - int(obs.get("dug_tiles") or 0))
+
+
 def dig_request(obs: dict) -> int:
-    """Tiles to designate now: what the miners can consume before the next dig call.
+    """Tiles to designate now.
+
+    Learned from the player, not designed. The evolved Student (KB seq 531/532) beat this
+    tier on the fresh embark by banking the whole episode's digging at round 0 -- 132
+    tiles, then silence -- and let the miners work through it: 102 dug against the ~44
+    this tier managed asking a dozen every third round. So: at round 0 ask for what the
+    hands can dig over the WHOLE horizon; afterwards ask only when the standing backlog
+    has run low, which the fort can now report (dependencies.digging.designated_total).
+    This does not contradict "30 a call dug 46": that was REPEATED large asks stacking
+    rock nobody could reach yet. One bank, then top-ups when it runs out, is the regime
+    the player found.
 
     Rate times interval, and deliberately nothing cleverer. Reading the fort's own dug
     delta and asking DIG_HEADROOM times it was tried: it lifted the mature digger 110 ->
@@ -88,11 +112,28 @@ def dig_request(obs: dict) -> int:
     136-dwarf fort is asked for less than it could dig -- 85 tiles where a fixed 30 gave
     110. v1 is meant to be plain and beatable; a policy that reads its fort is v3's job.
     """
-    rounds_left = max(1, int(obs.get("rounds_total", 24) or 24) - int(obs.get("round", 0) or 0))
-    chunk = max(1, int(obs.get("ticks_remaining", 3600) or 3600) // rounds_left)
+    r = int(obs.get("round", 0) or 0)
+    rounds_left = max(1, int(obs.get("rounds_total", 24) or 24) - r)
+    ticks_left = int(obs.get("ticks_remaining", 3600) or 3600)
     hands = max(1, int(obs.get("cohort_size", 7) or 7))
-    want = round(DIG_TILES_PER_CITIZEN_TICK * hands * chunk * DIG_EVERY_ROUNDS)
+    if r == 0:
+        want = round(DIG_TILES_PER_CITIZEN_TICK * hands * ticks_left)        # the bank
+    else:
+        chunk = max(1, ticks_left // rounds_left)
+        want = round(DIG_TILES_PER_CITIZEN_TICK * hands * chunk * DIG_EVERY_ROUNDS)
     return max(DIG_MIN, min(DIG_MAX, want))
+
+
+def wants_dig(obs: dict) -> bool:
+    """Ask again only when the bank has run low. Without the backlog field, fall back to
+    the old cadence so an older observer still gets a digging fort."""
+    r = int(obs.get("round", 0) or 0)
+    if r == 0:
+        return True
+    backlog = dig_backlog(obs)
+    if backlog is None:
+        return r % DIG_EVERY_ROUNDS == 0
+    return backlog < DIG_BACKLOG_FLOOR
 
 
 # Trees felled per request. A dozen is more timber than the opening needs and every log

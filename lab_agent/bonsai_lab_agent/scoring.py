@@ -110,8 +110,16 @@ CALIBRATION = {
     # rung of the ladder. Measured 2026-09-06, whole ladder, k=3:
     #
     #                    v0_idle    v1_developer  v2_reactive  v3_survival
-    #   ourfort16-final  0.467857   0.545397      0.544434     0.597084
-    #   region3-lab      0.535346   0.561454      0.594356     0.616001
+    #   ourfort16-final  0.467857   0.548168      0.549054     0.618651
+    #   region3-lab      0.535346   0.634433      0.594356     0.616350
+    #
+    # Re-measured 2026-09-13 after the tiers absorbed what the evolved player found:
+    # bank the whole horizon's digging at round 0, then top up only when the standing
+    # backlog runs low. The fresh reference rose 0.5971 -> 0.6187 and on the mature
+    # save the plain digger with the bank (158 tiles) now leads. The evolved player's
+    # normalised score fell from 1.54/1.23 to 1.32/0.99 as a result -- which is the
+    # cycle working: what the player finds becomes the rule, the yardstick rises, and
+    # what is left is genuinely beyond the rules.
     # (mature row re-measured once more after CONSTRUCTION left the solid count: a
     #  wall a dwarf raised is not ground, and a beast smashing one is not excavation)
     #
@@ -150,8 +158,8 @@ CALIBRATION = {
     # policy that farms and hauls above ground loses people that a policy digging under
     # it does not. That is the game being right, not the metric being wrong, and it is
     # why the endpoint is keyed by save.
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.597084},
-    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.616001},
+    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.618651},
+    ("region3-lab", 3600):     {"noop": 0.535346, "ref": 0.634433},
     # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
     # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
     # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
