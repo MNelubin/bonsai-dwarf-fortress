@@ -141,6 +141,10 @@ def wants_dig(obs: dict) -> bool:
 # switch caused. Enough for a workshop or two, and the fort re-asks when it runs low.
 CHOP_BATCH = 5
 
+# Food plus drink per dwarf below which the fort is hungry and eats its livestock before
+# it does anything else. The fed embark carries 24 for 7 (3.4); the hungry scenario opens at 0.
+HUNGRY_BELOW = 1.0
+
 
 def v2_reactive(obs: dict) -> list[dict]:
     """v1, but it stops expanding when the game says something is wrong.
@@ -258,6 +262,26 @@ def v3_survival(obs: dict) -> list[dict]:
     if inherited != ADVANCE:
         allowed = ("designate_dig", "create_stockpile") if wants_storage else ("designate_dig",)
         actions.extend(a for a in inherited if a["command"] in allowed)
+
+    # A hungry fort eats its livestock first. Measured on the hungry scenario over a
+    # month: every tier sat at comfort 0.44-0.68, provisioning 0.25-0.32, composite
+    # 0.16-0.26 and dug nothing, because hungry dwarves do not dig and the farm's soil
+    # never appears. A Butcher's plus the BUTCHER labour plus the three largest tame
+    # animals marked took food 0 -> 42 in a month, comfort to 0.939, provisioning to
+    # 0.500, composite to 0.380, seven of seven alive. Nothing else in the catalog came
+    # close; gathering measured no better than idling (below).
+    cohort = max(1, int(obs.get("cohort_size") or 1))
+    food_per_dwarf = (int(obs.get("food_count") or 0) + int(obs.get("drink_count") or 0)) / cohort
+    if round_index == 0:
+        v3_survival._slaughtered = False
+    if food_per_dwarf < HUNGRY_BELOW and not getattr(v3_survival, "_slaughtered", False):
+        if round_index == 0:
+            actions.append({"command": "set_labor", "args": ["BUTCHER", True]})
+        if (built.get("Butchers") or 0) > 0:
+            actions.append({"command": "slaughter_animal", "args": [3]})
+            v3_survival._slaughtered = True
+        elif (pending.get("Butchers") or 0) == 0 and (resources.get("wood") or 0) >= WOOD_FLOOR:
+            actions.append({"command": "build_workshop", "args": ["Butchers"]})
 
     # Gathering when hungry was tried here and REMOVED: on the hungry scenario over a
     # month every tier's provisioning rose to 0.25-0.32 -- the idle fort included --

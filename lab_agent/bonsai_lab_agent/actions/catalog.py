@@ -391,6 +391,18 @@ CATALOG: tuple[Verb, ...] = (
              "aquifer, so this feeds three other chains.",
     ),
     Verb(
+        name="slaughter_animal", category="food-water", tranche=0,
+        doc="Mark tame livestock for the butcher, largest first. Never pets.",
+        observable="units flagged slaughter; meat once a Butcher's with BUTCHER works them",
+        args=(Arg("count", "int", "how many animals", lo=1, hi=10,
+                  required=False, default=1),),
+        guide="14:20",
+        note="The fastest food there is. An embark's yak or llama is weeks of meals in "
+             "two days of work, where a farm is a season and gathering is what idle "
+             "dwarves do anyway. Measured on the hungry scenario: nothing else in this "
+             "catalog fed a starving fort inside a month.",
+    ),
+    Verb(
         name="build_construction", category="terrain", tranche=0,
         doc="Build a wall, floor, ramp or staircase out of stored material.",
         observable="the tiletype at the position becomes a construction",

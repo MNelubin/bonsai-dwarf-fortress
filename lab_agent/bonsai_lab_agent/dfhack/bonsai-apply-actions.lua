@@ -23,7 +23,7 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             add_workorder_conditional = 0, build_farm_plot = 0, brew_drink = 0, set_crop = 0,
             set_kitchen_flag = 0, create_zone = 0, assign_room = 0,
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
-            configure_stockpile = 0, chop_trees = 0, smooth = 0,
+            configure_stockpile = 0, chop_trees = 0, smooth = 0, slaughter_animal = 0,
             build_construction = 0, set_standing_order = 0,
             set_dig_priority = 0, apply_template = 0, build_room = 0,
             ensure_furniture = 0,
@@ -3230,6 +3230,56 @@ while QI <= #QUEUE do
             if pile_accepts(target) > 0 then
                 c.configure_stockpile = c.configure_stockpile + 1
             end
+        end)
+    elseif verb == "slaughter_animal" then
+        -- The fastest food a fort has. On the hungry scenario nothing else in the
+        -- catalog fed anyone inside a month: hungry dwarves will not dig, so the farm's
+        -- soil never appears, and gathering is what idle dwarves do on their own anyway.
+        -- The embark's livestock is weeks of meals standing in the wagon's shadow.
+        -- Marking is all this does; a Butcher's shop with the BUTCHER labour turns the
+        -- mark into a job on its own, the way a player's click does.
+        attempt("slaughter_animal", function()
+            local n = math.max(1, math.min(tonumber(a[2]) or 1, 10))
+            -- No pcall around the WHOLE predicate. The first version had one, plus a raw
+            -- read of u.relationship_ids.Pet that raises in 53.16 -- so every animal
+            -- errored out of the loop unseen and the verb refused a fort standing next to
+            -- a yak, a llama and a calf. Only the size read may fail harmlessly.
+            local herd, skipped = {}, {}
+            for _, u in ipairs(w.units.active) do
+                if not dfhack.units.isDead(u) and not dfhack.units.isCitizen(u)
+                    and dfhack.units.isTame(u) and dfhack.units.isAnimal(u) then
+                    local pet = false
+                    pcall(function() pet = dfhack.units.isPet(u) end)
+                    local race = "?"
+                    pcall(function() race = df.creature_raw.find(u.race).creature_id end)
+                    if pet then
+                        skipped[#skipped + 1] = race .. "(pet)"
+                    elseif u.flags2.slaughter then
+                        skipped[#skipped + 1] = race .. "(marked)"
+                    else
+                        local size = 0
+                        pcall(function() size = u.body.size_info.size_cur end)
+                        herd[#herd + 1] = { u = u, size = size, race = race }
+                    end
+                end
+            end
+            if #herd == 0 then
+                refuse("slaughter_animal", "the fort has no tame livestock that is not "
+                       .. "somebody's pet or already marked"
+                       .. (#skipped > 0 and ("; seen: " .. table.concat(skipped, ", ")) or ""))
+                return
+            end
+            -- largest first: a yak is a season of meals, a bunny is a snack
+            table.sort(herd, function(x, y) return x.size > y.size end)
+            local marked, names = 0, {}
+            for i = 1, math.min(n, #herd) do
+                herd[i].u.flags2.slaughter = true
+                marked = marked + 1
+                names[#names + 1] = herd[i].race
+            end
+            c.slaughter_animal = c.slaughter_animal + marked
+            note("slaughter_animal", string.format("marked %d: %s; a Butcher's with the "
+                 .. "BUTCHER labour will do the rest", marked, table.concat(names, ", ")))
         end)
     elseif verb == "chop_trees" then
         -- Wood is the fort's first material and it runs out. Felling uses the same

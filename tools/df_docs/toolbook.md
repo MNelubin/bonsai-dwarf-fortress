@@ -976,6 +976,32 @@ settings are per-subtype (food → seeds, drink, meat…) and nothing here reach
 
 ---
 
+## slaughter_animal
+
+Mark tame livestock for the butcher, largest first. Pets and war or hunting animals are
+never taken.
+
+**Refuses:** when the fort has no tame animal that is not somebody's pet or already
+marked, and says so. Marking is all the verb does; a Butcher's shop with the `BUTCHER`
+labour on turns the mark into a job by itself, exactly as a player's click does, so a
+fort with no Butcher's marks animals and butchers nothing — the note says which animals
+were marked so that is visible.
+
+**Why it exists:** the hungry scenario. With the larder gone, hungry dwarves will not dig
+for at least a month, so the farm's soil never appears; gathering is what idle dwarves do
+on their own, and a herbalist labour added nothing measurable; over a year most of the
+seven died under every tier. An embark's yak or llama is weeks of meals in two days of
+work, and it arrives with the wagon. Nothing else in the catalog feeds a starving fort
+inside a month.
+
+**Measured:** see the hungry-scenario record for the first live chain.
+
+**Still unknown:** whether DF's own `autobutcher` is enabled anywhere in the lab's
+dfhack config — if it were, the hungry embark would have eaten its yak unbidden, and the
+fact that it starved for a year says it is not, but that is inference, not a reading.
+
+---
+
 ## chop_trees
 
 Mark surface trees for felling.

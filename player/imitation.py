@@ -25,6 +25,7 @@ ADVANCE = [{"command": "advance"}]
 
 # Workshop kinds the dependency view reports individually.
 SHOP_KINDS = ("Carpenters", "Masons", "Still", "Craftsdwarfs", "Farmers")
+NEW_SHOP_KINDS = ("Butchers", "Fishery", "Kitchen")   # appended 2026-09-13, see FEATURE_NAMES
 
 # The feature order IS the contract between collector, trainer and student. Append
 # only; never reorder, or every saved model silently reads the wrong columns.
@@ -42,7 +43,7 @@ FEATURE_NAMES: tuple[str, ...] = (
     # appended 2026-09-12: the player's own dig backlog, so "do the miners have work" is
     # something it can see rather than something a weight has to guess
     "designated_log", "dig_backlog_log",
-)
+) + tuple(f"built_{k}" for k in NEW_SHOP_KINDS) + tuple(f"pending_{k}" for k in NEW_SHOP_KINDS)
 
 
 def _log(x) -> float:
@@ -101,6 +102,8 @@ def featurize(obs: dict) -> list[float]:
     f += [_log(pend.get(k)) for k in SHOP_KINDS]
     designated = _num((deps.get("digging") or {}).get("designated_total"))
     f += [_log(designated), _log(designated - _num(obs.get("dug_tiles")))]
+    f += [_log(built.get(k)) for k in NEW_SHOP_KINDS]
+    f += [_log(pend.get(k)) for k in NEW_SHOP_KINDS]
     assert len(f) == len(FEATURE_NAMES), (len(f), len(FEATURE_NAMES))
     return f
 

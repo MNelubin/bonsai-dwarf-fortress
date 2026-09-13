@@ -162,7 +162,12 @@ end)
 -- 0.971 and the composite 0.4949 to 0.5453. The fort could not say "I already have
 -- storage", so nobody could ask.
 local nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile = 0, 0, 0, 0, 0
-local shop_names = { 'Carpenters', 'Masons', 'Still', 'Craftsdwarfs', 'Farmers' }
+-- The kinds a policy can ask about by name. Butchers, Fishery and Kitchen were missing,
+-- so a policy that built a Butcher's to feed a starving fort could not see it stand,
+-- asked for another every round, and fed the wagon's logs to a row of butcher's shops
+-- while marking nothing for slaughter. What the fort cannot say, nobody can decide on.
+local shop_names = { 'Carpenters', 'Masons', 'Still', 'Craftsdwarfs', 'Farmers',
+                     'Butchers', 'Fishery', 'Kitchen' }
 local shops, pending_shops = {}, {}
 for _, name in ipairs(shop_names) do shops[name], pending_shops[name] = 0, 0 end
 pcall(function()

@@ -9,8 +9,13 @@ from bonsai_lab_agent.baselines import (TIERS, v0_idle, v1_developer, v2_reactiv
 
 
 def obs(round=0, **kw):
+    # A FED embark, said so: seven dwarves with the wagon's dozen food and dozen drink.
+    # The fixture used to leave these out, which read as food_count 0 -- a starving fort --
+    # once the survival tier learned to eat its livestock when hungry, and the tests that
+    # describe a fed opening suddenly saw a Butcher's in it.
     base = {"round": round, "rounds_total": 24, "hostiles": 0, "injured": 0,
-            "danger_events": 0, "warnings": [], "under_threat": False}
+            "danger_events": 0, "warnings": [], "under_threat": False,
+            "cohort_size": 7, "food_count": 12, "drink_count": 12}
     base.update(kw)
     return base
 

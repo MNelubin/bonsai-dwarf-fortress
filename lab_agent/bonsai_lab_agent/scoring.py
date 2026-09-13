@@ -171,6 +171,20 @@ CALIBRATION = {
     # carried free stockpiles. calibration_for() refuses an unmeasured pair on purpose;
     # better no number than one taken against a counter that has since changed meaning.
     # ("ourfort16-final", 33600): {"noop": 0.478571, "ref": 0.610626},
+
+    # The hungry embark over a fort-month, measured 2026-09-13, k=3, stepped driver.
+    # bonsai-prep-hungry strips every food and drink item from the wagon and sets the
+    # citizens' hunger and thirst timers close to the edge, so the fort starts in the
+    # state a neglected one drifts into. The floor is the idle tier: nobody eats, the
+    # composite is the survival factor times a bare comfort term (0.163, one episode
+    # 0.195 - the spread is which dwarf dies first). The reference is v3_survival with
+    # the butchering chain: BUTCHER labour on the first dwarf, a Butchers shop once wood
+    # allows, then `slaughter_animal 3` once. Food goes 0 -> 42 units, comfort 0.939,
+    # composite 0.421 (episodes 0.421 / 0.318 / 0.421). v1_developer digs 206 tiles
+    # and lands at 0.276 - development bought at the cost of the people who would use
+    # it; v2_reactive 0.195, indistinguishable from idle. The key is the scenario id
+    # (save + prep), because the same save without the prep is a different world.
+    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.163391, "ref": 0.421191},
 }
 
 DEFAULT_SAVE = "bonsaifort2"

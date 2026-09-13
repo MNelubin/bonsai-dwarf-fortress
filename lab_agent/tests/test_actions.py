@@ -392,9 +392,15 @@ def test_the_schema_stays_small_enough_to_ship_every_round():
 
     So 25 verbs in 9.5 KB. The increase buys one request that replaces repeated model
     turns for dig/wait/zone/build/assign and therefore lowers episode context overall.
+
+    2026-09-13, 26 verbs, 9.8 KB: slaughter_animal. The hungry scenario had no way out --
+    hungry dwarves will not dig, so no farm; gathering is what idle dwarves do anyway;
+    over a year most of the seven died under every tier. Livestock is the one food that
+    arrives with the wagon and is ready in days. A capability the catalog lacked entirely
+    is worth a hundred bytes a round; the ceiling moves to 9900.
     """
     import json
-    assert len(json.dumps(available_actions())) < 9700
+    assert len(json.dumps(available_actions())) < 9900
 
 
 def test_every_live_verb_has_a_toolbook_entry():
