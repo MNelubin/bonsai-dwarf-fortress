@@ -94,11 +94,13 @@ provisioning is identical for every policy.** Half the weight carries no signal 
 horizon we run; all discrimination is development, and on the fresh fort `orders` is
 structurally 0 because the embark arrives with fifteen barrels. Two live terms out of five.
 
-0. **Do not run horizons above ~12000 ticks: they measure nothing.** Swept the fresh
+0. **On a FED fort, horizons above ~12000 ticks measure nothing.** Swept the fresh
    embark at 3600 / 12000 / 33600, k=2. Twelve thousand and thirty-three thousand six
    hundred are identical to six decimals for EVERY tier -- v0 0.478571, v1 0.531472 with
    93 dug, v3 0.569934 with 93 dug and 3 builds -- because the fort finishes what it can
-   and then stands still for the remaining 21600 ticks. Only 3600 vs 12000 differ.
+   and then stands still for the remaining 21600 ticks. Only 3600 vs 12000 differ. The
+   long horizon earns its keep only when the fort is in trouble: see the hungry scenario
+   below, where a month separates the tiers by 0.26.
 
    The 93-tile plateau is NOT the dig verb running out of levels. That was the obvious
    explanation and it was built and measured twice, losing both times: cutting on every
@@ -110,19 +112,47 @@ structurally 0 because the embark arrives with fifteen barrels. Two live terms o
    code so it is not rebuilt a third time.
 
    What a competent fort actually reaches, against the saturation scales it is measured
-   with: dug 93 against a scale of 200, orders 0 against 20, builds 3 against 10. Every
-   scale is two to seven times what is achievable, so development spends its whole life
-   in its own lower tail.
+   with (now 100 dug / 10 orders / 3 builds): dug 83-94 and builds 3 on the fresh embark
+   at 3600, so development can reach its ceiling; orders stays 0 there because the embark
+   arrives with fifteen barrels.
 
-1. Either make comfort and provisioning able to move within a scored episode — a scenario
-   that starts short of food or drink would do it — or stop weighting them as if they
-   discriminate and say plainly that they are failure penalties.
-2. Size `development`'s saturation scales (200 dug / 20 orders / 10 builds) from what a
-   competent fort actually reaches at the chosen horizon, instead of from constants sized
-   for a far longer run.
+1. DONE, as a scenario. **A scenario is a save plus a prep script**
+   (`BONSAI_EPISODE_PREP`, `scenario_id() = "save+prep"`), because DFHack cannot write a
+   save headless. `bonsai-prep-hungry` strips every food and drink item from the wagon
+   and sets the citizens' hunger and thirst near the edge. Over a fort-month (33600
+   ticks), k=3:
+
+       ourfort16-final + bonsai-prep-hungry, 33600   composite   what happened
+       v0_idle                                       0.163       nobody eats
+       v2_reactive                                   0.195       same, with a stockpile
+       v1_developer                                  0.276       206 tiles, dead dwarves
+       v3_survival                                   0.421       butchers, food 0 -> 42, comfort 0.939
+
+   Nobody had a way out until `slaughter_animal` existed: the embark carries seven
+   animals and no verb could turn them into food. The rule is in `v3_survival` (BUTCHER
+   labour, a Butchers shop, `slaughter_animal 3` once) and the pair is in CALIBRATION.
+   Comfort and provisioning finally carry signal here: 0.442 vs 0.939, 0.25 vs 0.50.
+   A gathering rule was tried on the same scenario and removed - it never moved
+   provisioning inside a month.
+
+2. DONE. Saturation scales are 100 dug / 10 orders / 3 builds, sized from what the
+   reference reaches at 3600; workshops count once per kind, so eight stills are one
+   still and the champion's building trick stopped paying.
 3. `k >= 3` is now mandatory. The fresh fort stopped being deterministic once the
    reference began felling timber and raising buildings: identical code measured 0.5854
    and 0.5921. Do not claim a win inside +/- 0.006.
+
+4. **Decision density follows the calendar past a month.** 24 rounds from three days to
+   a fort-month (a decision every ~1.2 days at the top); beyond that `rounds_for()` caps
+   the chunk at 1400 ticks, so a fort-year is 288 decisions and not one a fortnight. Both
+   calibrated horizons still land on exactly 24, so no endpoint moved.
+5. **DFHack automations stay OFF.** Read on the lab 2026-09-13: autobutcher, autofarm,
+   seedwatch, autoclothing, autofish, autolabor - all disabled. Nothing to switch off to
+   help learning, and nothing switched on to do the player's work for it. Exposing one
+   (say `autobutcher`) as a verb would let the policy delegate the whole mechanic; the
+   line taken is the raw verb (`slaughter_animal`) so the chain - labour, shop, order -
+   is the thing learned. Revisit only if a mechanic turns out to be unreachable through
+   raw verbs.
 
 ## C — The player (was: "the autonomous agent")
 
@@ -130,31 +160,40 @@ The player is a compact CPU model, per PROJECT_VISION: no large language model i
 loop during play. A language model may act as an occasional oracle (`player/oracle_llm.py`)
 whose answers become training data; it must never be the thing that plays.
 
-Stage B, imitation — DONE. `player/imitation.py` (44 features, reversible action labels,
-a pure-Python Student), `collect_trajectories`, `train_imitation` (numpy, CPU, seconds),
-`evaluate_student`. The student reproduces v3_survival: fresh 0.5980 vs 0.5971, mature
-0.616001 to the digit.
+Stage B, imitation — DONE. `player/imitation.py` (52 features, append-only; older
+weights carried forward by `widen.py`), reversible action labels, a pure-Python Student,
+`collect_trajectories`, `train_imitation` (numpy, CPU, seconds), `evaluate_student`. The
+student reproduces v3_survival: fresh 0.5980 vs 0.5971, mature 0.616001 to the digit.
 
-Stage C, improvement against the scorer — RUNNING and it works. `player/evolve.py` is a
-cross-entropy method over the Student's output layer, twelve candidates a generation
-played in parallel, mature fort as an unselected holdout. 25 generations, 50 minutes:
+Stage C, improvement against the scorer — RUNNING. `player/evolve.py` is a cross-entropy
+method over the Student's output layer, twelve candidates a generation played in
+parallel. The first run (25 generations, 50 minutes) reported fresh 0.6666 / mature
+0.6342 against the teacher's 0.5971 / 0.6160. Half of that was real and half was a
+hole: it found the mature fort's opening on its own -- bank the digging before the
+threat locks you out, 132 tiles at round 0 -- and it also found that eight stills were
+eight buildings. Once workshops counted once per kind and the rule had absorbed the
+dig bank, the same weights re-measured (k=3, 2026-09-13):
 
-    k=3, 3600 ticks        evolved student   teacher v3   normalised
-    ourfort16-final        0.6666            0.5971       1.54
-    region3-lab            0.6342            0.6160       1.23
+    champion (student_evolved_v1, widened to 52)   composite   normalised
+    ourfort16-final, 3600                          0.6153      0.99
+    region3-lab, 3600                              0.6334      0.99
+    ourfort16-final + hungry, 33600                0.2622      0.38   (never butchers)
 
-Everyone alive on both. It found, on its own, the mature fort's opening — bank the
-digging before the threat locks you out — and carried it to the fresh embark where no
-tier does it: 132 tiles designated at round 0, then the miners work all episode. The
-whole final population sits above the teacher (worst of twelve 0.6514).
+Parity with the teacher on the fed forts, and no idea what to do when the wagon is
+empty, because the teacher only learned that after the champion was trained. The
+evolution now selects on the SUM of normalised scores across fresh, mature and hungry
+(`--scenarios fresh,mature,hungry`; everyone plays fresh, the top six play the rest),
+so the next champion has to survive the month to be a champion. Run `evolve5` from the
+widened champion is in progress; its log lands beside the weights when it finishes.
 
 Weights: `player/weights/student_evolved_v1.json` (3968 params, 88 KB); the per-
 generation log beside it.
 
-Next for the player, in order: (1) evolve the hidden layer too, not only the output;
-(2) feed the player's discoveries back into the tiers -- dig_request under-asks on the
-fresh embark; (3) DAgger on the states where student and teacher disagree; (4) a
-scarcity scenario so comfort and provisioning carry signal, which is the owner's call.
+Next for the player, in order: (1) retrain imitation on 52 features with hungry
+trajectories in the set, so the student starts out knowing the butcher chain instead
+of having to stumble on it; (2) evolve the hidden layer too; (3) DAgger on the states
+where student and teacher disagree; (4) a fort-year scenario now that decision density
+follows the calendar.
 
 ## C′ — What "autonomous" meant before
 
