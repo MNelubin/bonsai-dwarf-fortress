@@ -146,6 +146,8 @@ CHOP_BATCH = 5
 HUNGRY_BELOW = 1.0
 DRINK_FLOOR = 1.0      # drink units per dwarf below which the fort starts gathering to brew
 GATHER_BATCH = 20     # shrubs per gather_plants request
+BARREL_FLOOR = 6      # empty barrels to keep ahead of the Still
+FARM_PLOTS = 2        # plots to build before the fort stops asking
 
 
 def v2_reactive(obs: dict) -> list[dict]:
@@ -261,6 +263,11 @@ def v3_survival(obs: dict) -> list[dict]:
     wants_storage = not stockpiles          # None (old observer) reads as "none known"
     if round_index == 0 and wants_storage:
         actions.append({"command": "create_stockpile", "args": [2, "food"]})
+        # ... and keep the barrels out of it. Traced on the hungry embark over a year:
+        # barrels 15 -> 3 with drink 12 -> 0, because the food pile swallowed them for
+        # meat and plants, and the Still had nothing to brew INTO. Thirst reached 470k
+        # with the pond frozen. A food pile without containers is the guide's own fix.
+        actions.append({"command": "configure_stockpile", "args": [0, "food", False]})
     if inherited != ADVANCE:
         allowed = ("designate_dig", "create_stockpile") if wants_storage else ("designate_dig",)
         actions.extend(a for a in inherited if a["command"] in allowed)
@@ -320,9 +327,11 @@ def v3_survival(obs: dict) -> list[dict]:
 
     # A failed early placement is expected while the soil chamber is still being dug.
     # Re-asking is idempotent once a plot exists and is evidence-driven before then.
-    if (food_chain.get("farm_plots") or 0) == 0:
+    # One 4x3 plot fed nobody over a year: plants 0-3, seeds piling up unplanted from
+    # autumn. Two plots is what the guide starts with.
+    if (food_chain.get("farm_plots") or 0) < FARM_PLOTS:
         actions.append({"command": "build_farm_plot", "args": [4, 3, "best"]})
-    else:
+    if (food_chain.get("farm_plots") or 0) > 0:
         actions.append({"command": "set_crop", "args": ["best", "all"]})
 
     materials = sum(resources.get(name) or 0 for name in ("wood", "boulders", "blocks"))
@@ -336,7 +345,10 @@ def v3_survival(obs: dict) -> list[dict]:
             and materials > 0):
         actions.append({"command": "build_workshop", "args": ["Still"]})
 
-    if (resources.get("barrels") or 0) < 2 and (built.get("Carpenters") or 0) > 0:
+    # Barrels are what drink lives in; two was never enough once brewing started using
+    # them (the year trace above), so the floor is a brew's worth ahead.
+    if ((resources.get("barrels") or 0) < BARREL_FLOOR and (built.get("Carpenters") or 0) > 0
+            and (resources.get("wood") or 0) > 0):
         actions.append({"command": "add_workorder", "args": ["MakeBarrel", 3, "wood"]})
 
     can_brew = ((built.get("Still") or 0) > 0

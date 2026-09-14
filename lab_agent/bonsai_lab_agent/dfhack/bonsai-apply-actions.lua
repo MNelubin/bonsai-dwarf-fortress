@@ -3695,13 +3695,32 @@ while QI <= #QUEUE do
             local want = a[2]
             local season = a[3]
             local n = 0
+            -- "best" is spread across the plots, not copied onto each. An embark ships
+            -- six crops with five seeds apiece; with every plot sown to the same best
+            -- crop, two 4x3 plots planted five tiles between them and nineteen stood
+            -- bare - measured over a season on the hungry embark: seeds 5 in the plots,
+            -- 15 still in their bags, plants 0-1, drink 12 -> 0 with nothing to brew.
+            -- Plot k takes the k-th crop by preference that suits its ground.
+            local prefs = {}
+            for _, e in ipairs(crops_by_preference()) do prefs[#prefs + 1] = e end
+            local k, kept = 0, 0
             for _, b in ipairs(w.buildings.all) do
                 if b:getType() == df.building_type.FarmPlot then
                     local des = dfhack.maps.getTileFlags(b.x1, b.y1, b.z)
                     local underground = not (des and des.outside)
                     local crop = want
                     if not crop or crop == "" or crop == "best" then
-                        crop = best_seed(underground)
+                        -- A plot that is already sown keeps its crop. The teacher asks
+                        -- every round, and re-picking "best" each time as the seed
+                        -- counts shifted re-sowed both plots to a new crop every round.
+                        if b.plant_id[0] >= 0 then crop = nil; kept = kept + 1 else
+                            local fit = {}
+                            for _, e in ipairs(prefs) do
+                                if e.under == underground then fit[#fit + 1] = e.id end
+                            end
+                            if #fit > 0 then crop = fit[(k % #fit) + 1] end
+                            k = k + 1
+                        end
                     end
                     local idx = crop and plant_index(crop) or nil
                     if idx then
@@ -3719,6 +3738,8 @@ while QI <= #QUEUE do
             -- indistinguishable from a broken verb: zero counter, no reason.
             if n > 0 then
                 c.set_crop = c.set_crop + 1
+            elseif kept > 0 then
+                note("set_crop", string.format("%d plot(s) already sown, left as they are", kept))
             else
                 local plots = 0
                 for _, b in ipairs(w.buildings.all) do

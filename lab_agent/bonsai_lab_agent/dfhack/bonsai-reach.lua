@@ -118,13 +118,14 @@ function item(item, groups)
     if item.flags.dump then return false, 'marked for dumping' end
     if item.flags.removed or item.flags.garbage_collect then return false, 'removed' end
     if item.flags.in_job then return false, 'already claimed by a job' end
-    -- Embark supplies stay flagged foreign until a dwarf hauls them out of the wagon, so
-    -- a plain foreign test reported a fresh fort as owning nothing at all: 30 seeds, 15
-    -- barrels and 3 logs each came back "another civilisation owns it". Ownership only
-    -- disqualifies an item that is not in our own wagon.
-    if item.flags.foreign and not in_wagon(item) then
-        return false, 'another civilisation owns it'
-    end
+    -- `foreign` is where an item was MADE, not who owns it, and it never clears: the
+    -- embark's seeds carried it in their bags in the wagon, in the food pile a month
+    -- later, and planted in the farm plot in autumn. The earlier test here ("foreign
+    -- and not in the wagon") therefore reported every embark supply as gone the moment
+    -- a dwarf hauled it - seeds 30 -> 0 by round 8 on every fresh fort, with all
+    -- thirty still in their bags. What a merchant owns is flagged `trader`; a citizen's
+    -- own things are `owned`. Those are the ones a fort cannot take.
+    if item.flags.trader then return false, 'a merchant owns it' end
     local x, y, z = item_pos(item)
     if adjacent(x, y, z, groups) or tile(x, y, z, groups) then return true end
     return false, string.format('unreachable at %d,%d,%d', x, y, z)
