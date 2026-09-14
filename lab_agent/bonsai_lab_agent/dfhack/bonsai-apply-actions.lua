@@ -2042,8 +2042,6 @@ while QI <= #QUEUE do
                 end
                 return nil
             end
-            P.dig = P.dig or existing_shaft() or { u1.pos.x, u1.pos.y, u1.pos.z }
-            local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
             local placed = 0
             local DIG = df.tile_dig_designation
             -- A tile is damp when water sits in any of the 26 tiles around it. Mining it
@@ -2071,6 +2069,42 @@ while QI <= #QUEUE do
                 end
                 return false
             end
+            -- The head must be a tile a stair can actually be cut through. Citizen[1]'s
+            -- own tile is not always one: on the hungry scenario the first call lands
+            -- while the dwarves still stand IN the wagon, and a designation under a
+            -- building is never turned into a job. Measured, fresh embark, prep hungry:
+            -- shaft head 96,94 "building=Wagon", 89 tiles designated at z-1, zero dig
+            -- jobs for a fort-year, every tier that used this verb dug nothing while
+            -- seven miners with picks stood idle. Moving the head off the wagon was not
+            -- enough: the same dwarves stand at the POND (they drink there when the
+            -- larder is empty), and a head beside water is damp, so mark() below
+            -- silently skipped the stair while 89 tiles under it were designated and
+            -- unreachable. The fed embark put the head on grass at 100,91 only because
+            -- the dwarves had wandered off to work first. So the head is the nearest
+            -- floor tile with no building on it, not damp on this level or the one
+            -- below (the stair cuts into z-1), and walkable from the dwarf.
+            local function free_head(x0, y0, z0)
+                for r = 0, 12 do
+                    for dx = -r, r do
+                        for dy = -r, r do
+                            if math.max(math.abs(dx), math.abs(dy)) == r then
+                                local x, y = x0 + dx, y0 + dy
+                                local ok, good = pcall(function()
+                                    if dfhack.buildings.findAtTile(xyz2pos(x, y, z0)) then return false end
+                                    local tt = dfhack.maps.getTileType(x, y, z0)
+                                    if not tt or df.tiletype.attrs[tt].shape ~= df.tiletype_shape.FLOOR then return false end
+                                    if damp(x, y, z0) or damp(x, y, z0 - 1) then return false end
+                                    return dfhack.maps.canWalkBetween(u1.pos, xyz2pos(x, y, z0))
+                                end)
+                                if ok and good then return { x, y, z0 } end
+                            end
+                        end
+                    end
+                end
+                return { x0, y0, z0 }
+            end
+            P.dig = P.dig or existing_shaft() or free_head(u1.pos.x, u1.pos.y, u1.pos.z)
+            local ox, oy, oz = P.dig[1], P.dig[2], P.dig[3]
             local function mark(x, y, z, kind)
                 if placed >= n then return end
                 pcall(function()

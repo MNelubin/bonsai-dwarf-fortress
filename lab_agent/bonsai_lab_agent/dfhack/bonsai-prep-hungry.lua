@@ -21,10 +21,16 @@ for i = #w.items.all - 1, 0, -1 do
   local it = w.items.all[i]
   local ok, ty = pcall(function() return it:getType() end)
   if ok then
-    -- items.remove() fails silently on anything held inside the wagon; the garbage flag
-    -- lets DF delete it on the next tick, holder or not
-    if ty == df.item_type.DRINK then it.flags.garbage_collect = true; it.flags.forbid = true; drink = drink + 1
-    elseif edible[ty] then it.flags.garbage_collect = true; it.flags.forbid = true; food = food + 1 end
+    -- FORBID, do not delete. The first version set garbage_collect as well, so DF
+    -- deleted the larder on the next tick -- and with it the fort's ability to take
+    -- anything else out of the wagon: the three picks stayed at the wagon's tile with
+    -- unit=none for a whole fort-year while a carved-stair job sat reachable and posted,
+    -- and every tier that digs dug nothing on this scenario. Deleting only the items
+    -- (no timers) reproduced it; forbidding only did not (a pick was in a miner's hands
+    -- by round 5). A forbidden meal is one no dwarf will eat, which is all the scenario
+    -- needs; the observer leaves forbidden items out of food_count for the same reason.
+    if ty == df.item_type.DRINK then it.flags.forbid = true; drink = drink + 1
+    elseif edible[ty] then it.flags.forbid = true; food = food + 1 end
   end
 end
 for _, u in ipairs(w.units.active) do

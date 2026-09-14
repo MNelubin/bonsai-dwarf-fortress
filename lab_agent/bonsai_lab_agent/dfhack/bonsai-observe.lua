@@ -20,7 +20,14 @@ local ndrink, nfood = 0, 0
 pcall(function()
   for _, it in ipairs(w.items.all) do
     local ok, ty = pcall(function() return it:getType() end)
-    if ok then
+    -- Only what the fort can actually eat. Traced on the hungry embark over a year:
+    -- food_count jumped 8 -> 77 in autumn and stayed there while the dwarves starved
+    -- to the last one -- the caravan's goods, counted as ours. Forbidden items are the
+    -- same lie in the other direction (the hungry prep forbids the larder instead of
+    -- deleting it, see bonsai-prep-hungry.lua), and so are items marked for dumping or
+    -- already condemned to garbage collection.
+    local f = it.flags
+    if ok and not (f.forbid or f.dump or f.garbage_collect or f.trader or f.rotten) then
       if ty == df.item_type.DRINK then ndrink = ndrink + 1
       elseif ty == df.item_type.MEAT or ty == df.item_type.FISH or ty == df.item_type.PLANT
           or ty == df.item_type.CHEESE or ty == df.item_type.EGG or ty == df.item_type.FISH_RAW then nfood = nfood + 1 end
