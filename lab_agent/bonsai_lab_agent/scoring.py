@@ -163,7 +163,12 @@ CALIBRATION = {
     # provenance, not ownership), and after the teacher learned to keep barrels out of
     # the food pile and sow two plots: v0 0.467857 to the digit, v3 0.626242 (k=3,
     # 0.615-0.628: the second plot lands in some episodes and not others).
-    ("ourfort16-final", 3600): {"noop": 0.467857, "ref": 0.626242},
+    # 2026-09-14, evening: raw fish stopped counting as food (a Fishery has to prepare
+    # it) and the teacher learned the fish chain. The idle floor fell by exactly the
+    # fisherdwarf's catch, 0.467857 -> 0.457143; v3 0.617422 (k=3, one episode at 0.588
+    # with two buildings instead of four - the plots' placement is the fresh fort's
+    # run-to-run noise now).
+    ("ourfort16-final", 3600): {"noop": 0.457143, "ref": 0.617422},
     # Re-measured 2026-09-14 after the observer stopped counting forbidden, dumped,
     # condemned, traders' and rotten items as food and drink (bonsai-observe.lua). The
     # fresh embark did not move (v0 0.467857 to the digit, v3 0.617456 against 0.616847
@@ -171,7 +176,7 @@ CALIBRATION = {
     # provisioning term fell for everyone: v0 0.535346 -> 0.530528, v3 0.634433 ->
     # 0.611877 (k=3, spread 0.001). The old pair scored a larder the dwarves would not
     # touch.
-    ("region3-lab", 3600):     {"noop": 0.530528, "ref": 0.611183},   # 0.611183 re-measured 2026-09-14 after the reach fix, spread 0.0004
+    ("region3-lab", 3600):     {"noop": 0.530528, "ref": 0.611531},   # re-measured twice on 2026-09-14 (reach fix, then raw fish): 0.6112-0.6115
     # Twenty-eight fort-days on the fresh embark: the horizon where the survival chain
     # finally pays for itself. v3 0.610626 against v1 0.600100, where at 3600 ticks the
     # two are indistinguishable inside run-to-run spread. The floor is dead steady, both
@@ -205,7 +210,8 @@ CALIBRATION = {
     # comfort 1.0, provisioning 0.93; spread 0.003). The teacher's hunger rule now counts
     # food alone - with food+drink it read fifteen barrels as a full larder and starved
     # the fort beside its livestock, which is what the old 0.4217 reference was.
-    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.260714, "ref": 0.709722},   # ref re-measured after the reach fix: 0.702-0.713, five buildings
+    # ref 0.716667 with the fish chain (Fishery up by round 7, six buildings; 0.709-0.720)
+    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.260714, "ref": 0.716667},
 }
 
 DEFAULT_SAVE = "bonsaifort2"

@@ -149,6 +149,7 @@ GATHER_BATCH = 20     # shrubs per gather_plants request
 BARREL_FLOOR = 6      # empty barrels to keep ahead of the Still
 FARM_PLOTS = 2        # plots to build before the fort stops asking
 FISH_FLOOR = 3        # raw fish on hand before a Fishery is worth building
+SLAUGHTER_EVERY = 12  # rounds between butcher marks, so the marks become meat first
 
 
 def v2_reactive(obs: dict) -> list[dict]:
@@ -286,16 +287,26 @@ def v3_survival(obs: dict) -> list[dict]:
     # on the hungry embark, hunger 364k -> 482k over a month with the livestock alive.
     food_per_dwarf = int(obs.get("food_count") or 0) / cohort
     if round_index == 0:
-        v3_survival._slaughtered = False
+        v3_survival._last_slaughter = None
         v3_survival._fish_labour = False
-    if food_per_dwarf < HUNGRY_BELOW and not getattr(v3_survival, "_slaughtered", False):
-        if round_index == 0:
-            actions.append({"command": "set_labor", "args": ["BUTCHER", True]})
-        if (built.get("Butchers") or 0) > 0:
-            actions.append({"command": "slaughter_animal", "args": [3]})
-            v3_survival._slaughtered = True
-        elif (pending.get("Butchers") or 0) == 0 and (resources.get("wood") or 0) >= WOOD_FLOOR:
-            actions.append({"command": "build_workshop", "args": ["Butchers"]})
+    # The herd is eaten more than once. The first version marked three animals ONCE:
+    # traced over the year, the fort had four animals standing while food went 15 -> 0
+    # in winter and comfort read 0. The observer now says how many stand unmarked;
+    # a hungry fort with a Butcher's marks up to three of them again, no more often
+    # than every SLAUGHTER_EVERY rounds so the marks have time to become meat. On the
+    # month this fires once, as before.
+    livestock = int(obs.get("livestock") or 0)
+    last = getattr(v3_survival, "_last_slaughter", None)
+    hungry_now = food_per_dwarf < HUNGRY_BELOW
+    if hungry_now and round_index == 0:
+        actions.append({"command": "set_labor", "args": ["BUTCHER", True]})
+    if hungry_now and (built.get("Butchers") or 0) > 0:
+        if livestock > 0 and (last is None or round_index - last >= SLAUGHTER_EVERY):
+            actions.append({"command": "slaughter_animal", "args": [min(3, livestock)]})
+            v3_survival._last_slaughter = round_index
+    elif (hungry_now and (pending.get("Butchers") or 0) == 0
+            and (resources.get("wood") or 0) >= WOOD_FLOOR):
+        actions.append({"command": "build_workshop", "args": ["Butchers"]})
 
     # The drink chain when the fort cannot dig. Traced on the hungry embark over a
     # year: meat from the butcher keeps everyone alive for months, but the Still has
