@@ -133,6 +133,7 @@ def featurize(obs: dict) -> list[float]:
 # teacher happened to use. Ranges are the catalogue's.
 COUNT_VERBS: dict[str, tuple[int, int]] = {
     "designate_dig": (1, 400), "chop_trees": (1, 60), "slaughter_animal": (1, 10), "brew_drink": (1, 5),
+    "gather_plants": (1, 200), "clean_fish": (1, 10),   # added 2026-09-14 with the verbs
 }
 COUNT_MARK = "#"
 
