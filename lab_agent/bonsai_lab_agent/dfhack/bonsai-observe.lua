@@ -439,7 +439,28 @@ pcall(function()
   end
 end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d ndesig=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d cids=%s",
+-- The herd and the calendar. Traced on the hungry embark over a year: the policy that
+-- butchered three animals in spring had no way to know four more stood there in
+-- winter, and no way to know it WAS winter - the pond freezes, the shrubs bear
+-- nothing in spring, the caravan comes in autumn. Livestock: tame animals that are
+-- nobody's pet and not already marked; season 0-3 and the tick within the year.
+local nlivestock, nmarked = 0, 0
+pcall(function()
+  for _, u in ipairs(w.units.active) do
+    if not dfhack.units.isDead(u) and dfhack.units.isTame(u) and dfhack.units.isAnimal(u)
+        and not dfhack.units.isHunter(u) and not dfhack.units.isWar(u) then
+      local pet = false
+      pcall(function() pet = dfhack.units.isPet(u) end)
+      if not pet then
+        if u.flags2.slaughter then nmarked = nmarked + 1 else nlivestock = nlivestock + 1 end
+      end
+    end
+  end
+end)
+local season, yeartick = -1, -1
+pcall(function() season = df.global.cur_season; yeartick = df.global.cur_year_tick end)
+
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d ndesig=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d nlivestock=%d nmarked=%d season=%d yeartick=%d cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, nbuild_all, worders,
   nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
   stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile, (_G.BONSAI_DESIGNATED or 0),
@@ -449,4 +470,4 @@ print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang
   (#warn > 0 and table.concat(warn, ";") or "none"),
   (#cancels > 0 and table.concat(cancels, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
-  #w.items.all, #w.units.all, table.concat(cids, ",")))
+  #w.items.all, #w.units.all, nlivestock, nmarked, season, yeartick, table.concat(cids, ",")))

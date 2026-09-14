@@ -226,3 +226,30 @@ def test_map_events_are_written_when_a_map_recorder_is_present(tmp_path):
 def test_recording_path_is_sanitized(eid, expect, tmp_path):
     """episode_id can carry submission-derived text; it must never escape the dir."""
     assert rec.recording_path(eid, str(tmp_path)).endswith(expect)
+
+
+def test_every_episode_records_itself_when_the_directory_is_set(tmp_path, monkeypatch):
+    # No recorder passed: the driver makes one from BONSAI_REC_DIR, and the file can be
+    # read back as the per-round trace a probe used to print live.
+    monkeypatch.setenv("BONSAI_REC_DIR", str(tmp_path))
+    monkeypatch.setenv("BONSAI_REC_LABEL", "v3_survival")
+    monkeypatch.setenv("BONSAI_EPISODE_SAVE", "ourfort16-final")
+    se.run_stepped_episode(lambda o: [{"command": "create_stockpile", "args": [5]}],
+                           horizon_ticks=1200, rounds=4, session=FakeSession())
+    files = list(tmp_path.glob("*.rec.jsonl.gz"))
+    assert len(files) == 1
+    assert "ourfort16-final_1200_v3_survival" in files[0].name
+    lines = rec.trace_lines(str(files[0]), every=1)
+    assert lines[0].startswith("ourfort16-final horizon=1200 rounds=4")
+    assert sum(1 for l in lines if l.startswith("r")) == 4
+    assert lines[-1].startswith("END alive=")
+    events = rec.read_recording(str(files[0]))
+    rounds = [e for e in events if e["kind"] == "round"]
+    assert rounds[0]["obs"]["round"] == 0 and "dependencies" not in rounds[0]["obs"]
+
+
+def test_no_directory_means_no_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("BONSAI_REC_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    se.run_stepped_episode(lambda o: [], horizon_ticks=600, rounds=2, session=FakeSession())
+    assert not list(tmp_path.rglob("*.rec.jsonl.gz"))

@@ -26,10 +26,34 @@ def test_featurize_is_the_length_of_feature_names_on_any_obs():
     assert all(isinstance(v, float) for v in x)
 
 
-def test_the_new_shop_kinds_are_appended_not_inserted():
-    # widen() depends on this: older weights are extended, never re-ordered
-    tail = FEATURE_NAMES[-len(imitation.NEW_SHOP_KINDS):]
-    assert all(any(k in name for k in imitation.NEW_SHOP_KINDS) for name in tail)
+def test_features_are_only_ever_appended():
+    # widen() depends on this: older weights are extended, never re-ordered. The first
+    # 44 are the 2026-09-12 set, then the dig backlog pair, then the three shop kinds,
+    # then the hungry-year block; a saved model's feature list must be a prefix.
+    names = list(FEATURE_NAMES)
+    assert names.index("designated_log") == 44
+    shops = [n for n in names if any(k in n for k in imitation.NEW_SHOP_KINDS)]
+    assert names.index(shops[0]) == 46 and len(shops) == 6
+    assert names[52:] == ["hunger_per_dwarf", "thirst_per_dwarf", "livestock_log", "livestock_marked_log",
+                          "season_spring", "season_summer", "season_autumn", "season_winter", "year_frac"]
+
+
+def test_an_older_model_is_widened_on_load_and_unchanged():
+    old_names = FEATURE_NAMES[:52]
+    old = _tiny_model(old_names)
+    s = Student(old)                                   # 52 -> 61 on load
+    assert s.features == list(FEATURE_NAMES)
+    obs = {"round": 5, "rounds_total": 24, "cohort_alive": 7, "cohort_size": 7, "season": 3,
+           "hunger_sum": 300000, "livestock": 4, "food_count": 3, "built_by_type": {"Butchers": 2}}
+    x_old = featurize(obs)[:52]
+    import math
+
+    def forward(model, x):
+        for i, L in enumerate(model["layers"]):
+            y = [sum(w * v for w, v in zip(row, x)) + b for row, b in zip(L["W"], L["b"])]
+            x = [v if v > 0 else 0.0 for v in y] if i < len(model["layers"]) - 1 else y
+        return x
+    assert s.probabilities(obs) == pytest.approx([1 / (1 + math.exp(-v)) for v in forward(old, x_old)], abs=1e-12)
 
 
 @pytest.mark.parametrize("action", [
@@ -51,7 +75,7 @@ def _tiny_model(features):
 
 
 def test_widen_keeps_the_forward_pass_identical():
-    old_names = FEATURE_NAMES[:-len(imitation.NEW_SHOP_KINDS)]
+    old_names = FEATURE_NAMES[:49]
     old = _tiny_model(old_names)
     new = widen.widen(old)
     assert new["features"] == list(FEATURE_NAMES)
@@ -73,7 +97,7 @@ def test_widen_keeps_the_forward_pass_identical():
 
 def test_widen_refuses_a_reordered_feature_set():
     with pytest.raises(ValueError):
-        widen.widen(_tiny_model(list(reversed(FEATURE_NAMES[:-3]))))
+        widen.widen(_tiny_model(list(reversed(FEATURE_NAMES[:49]))))
 
 
 @pytest.mark.skipif(not (WEIGHTS / "student_evolved_v1.json").exists(), reason="weights not checked in")

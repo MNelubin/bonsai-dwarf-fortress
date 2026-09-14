@@ -107,8 +107,15 @@ class EpisodeRecorder:
             "dispatched": [a.get("verb") for a in dispatched],
             "dropped": _dropped(raw_actions),
             "gate_messages": [message[:240] for message in gate_messages[:16]],
-            "applied": (applied or "")[:400],
+            # The REFUSED / NOTE lines are the verbs explaining themselves; 400 bytes
+            # cut them off after the first two. The APPLY summary line is kept whole.
+            "applied": (applied or "")[:6000],
             "controller_error": error,
+            # the scalar observation the controller saw, minus the dependency tree
+            # already stored above: enough to redraw any trace without replaying
+            "obs": {k: v for k, v in cobs.items()
+                    if k not in ("dependencies", "previous_action_feedback", "available_actions", "schema")
+                    and isinstance(v, (int, float, str, bool, type(None)))},
         })
 
     def on_post_round(self, i: int, tick: int, obs) -> None:
@@ -227,3 +234,41 @@ def read_recording(path: str) -> list[dict]:
 def recording_path(episode_id: str, rec_dir: str = REC_DIR) -> str:
     safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in episode_id)[:120]
     return os.path.join(rec_dir, f"{safe}.rec.jsonl.gz")
+
+
+# ---------------------------------------------------------------- reading back
+TRACE_COLUMNS = ("alive", "food", "drink", "hunger", "thirst")
+
+
+def trace_lines(path: str, every: int = 12) -> list[str]:
+    """The per-round view a probe used to print, from the recording: one line per
+    `every` rounds and on every change in the living, with the verbs' refusals."""
+    events = read_recording(path)
+    meta = next((e for e in events if e.get("kind") == "meta"), {})
+    rounds = {e["i"]: e for e in events if e.get("kind") == "round"}
+    stats = {e["i"]: e for e in events if e.get("kind") == "stat" and e.get("phase") == "post"}
+    out = [f"{meta.get('scenario')} horizon={meta.get('horizon_ticks')} rounds={meta.get('rounds')} label={meta.get('label')}"]
+    last_alive = None
+    for i in sorted(rounds):
+        r, st = rounds[i], stats.get(i, {})
+        deps = r.get("post_dependencies") or {}
+        res = deps.get("resources") or {}
+        fc = deps.get("food_chain") or {}
+        alive = st.get("alive")
+        if i % every == 0 or alive != last_alive:
+            refused = [l[:90] for l in (r.get("applied") or "").splitlines() if l.startswith("REFUSED")]
+            out.append(f"r{i:3} alive={alive} food={st.get('food')} drink={st.get('drink')} "
+                       f"hunger={st.get('hunger')} thirst={st.get('thirst')} dug={st.get('dug')} "
+                       f"plants={res.get('plant_stacks')} seeds={res.get('seed_stacks')} barrels={res.get('barrels')} "
+                       f"plots={fc.get('farm_plots')} threat={r.get('obs', {}).get('under_threat')} "
+                       f"acts={r.get('dispatched')} {refused[:2]}")
+        last_alive = alive
+    end = next((e for e in events if e.get("kind") == "stat" and e.get("phase") == "horizon"), None)
+    if end:
+        out.append(f"END alive={end.get('alive')} food={end.get('food')} drink={end.get('drink')} dug={end.get('dug')} buildings={end.get('buildings')}")
+    return out
+
+
+if __name__ == "__main__":                          # python -m bonsai_lab_agent.recorder FILE [every]
+    import sys
+    print("\n".join(trace_lines(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 12)))

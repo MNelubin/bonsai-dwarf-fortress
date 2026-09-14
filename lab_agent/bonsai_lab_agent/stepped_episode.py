@@ -29,6 +29,7 @@ submission would be indistinguishable from infrastructure failure.
 from __future__ import annotations
 
 import math
+import os
 import time
 from typing import Callable
 
@@ -285,6 +286,21 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
     # on the fresh embark is (403200 ticks at ~190/s). Size it to the horizon at a
     # pessimistic 3 ticks/s plus boot, and let the reaper still catch a real hang.
     sess = session or DFSession(watchdog_seconds=max(1800, horizon_ticks // 3 + 600))
+    # Every episode leaves a recording when BONSAI_REC_DIR is set, so a question about
+    # what happened in round 140 is answered by reading a file, not by playing the year
+    # again with a probe. The metric track is free (the driver observes every round
+    # anyway); the round track is a few KB gzipped. Five ad-hoc year traces were run on
+    # 2026-09-14 for answers that were all in the observations already made.
+    if recorder is None and os.environ.get("BONSAI_REC_DIR"):
+        try:
+            from bonsai_lab_agent.recorder import EpisodeRecorder, recording_path
+            from bonsai_lab_agent.session import scenario_id
+            label = os.environ.get("BONSAI_REC_LABEL", getattr(controller_fn, "__name__", "policy"))
+            episode_id = f"{time.strftime('%Y%m%d-%H%M%S')}_{scenario_id()}_{horizon_ticks}_{label}_{os.getpid()}"
+            recorder = EpisodeRecorder(recording_path(episode_id, os.environ["BONSAI_REC_DIR"]),
+                                       meta={"scenario": scenario_id(), "label": label})
+        except Exception:                             # noqa: BLE001 - a recorder never costs an episode
+            recorder = None
     try:
         if own_session:
             sess.boot()
@@ -339,6 +355,11 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
                 c for c in (cur_raw.get("cancels", "none") or "").split(";")
                 if c and c != "none"]
             cobs["hostiles_on_map"] = int(cur_raw.get("nhostile_map", 0) or 0)
+            # the herd and the calendar (bonsai-observe.lua, 2026-09-14); -1 = old observer
+            cobs["livestock"] = int(cur_raw.get("nlivestock", -1) or 0)
+            cobs["livestock_marked"] = int(cur_raw.get("nmarked", 0) or 0)
+            cobs["season"] = int(cur_raw.get("season", -1) or 0)
+            cobs["year_tick"] = int(cur_raw.get("yeartick", -1) or 0)
             cobs["dependencies"] = dependency_state(cur_raw)
             cobs["previous_action_feedback"] = previous_feedback
 

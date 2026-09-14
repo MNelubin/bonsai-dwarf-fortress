@@ -43,7 +43,15 @@ FEATURE_NAMES: tuple[str, ...] = (
     # appended 2026-09-12: the player's own dig backlog, so "do the miners have work" is
     # something it can see rather than something a weight has to guess
     "designated_log", "dig_backlog_log",
-) + tuple(f"built_{k}" for k in NEW_SHOP_KINDS) + tuple(f"pending_{k}" for k in NEW_SHOP_KINDS)
+) + tuple(f"built_{k}" for k in NEW_SHOP_KINDS) + tuple(f"pending_{k}" for k in NEW_SHOP_KINDS) + (
+    # appended 2026-09-14, from the hungry year. The player never saw how hungry or
+    # thirsty the fort was (only how much stock it had), how many animals stood in
+    # the pasture, or what season it was - and the year turns on all three: the pond
+    # freezes in winter, shrubs bear in autumn, the herd is meals the policy forgot.
+    "hunger_per_dwarf", "thirst_per_dwarf",     # timers / 50 000: 1.0 is the edge of harm
+    "livestock_log", "livestock_marked_log",
+    "season_spring", "season_summer", "season_autumn", "season_winter", "year_frac",
+)
 
 
 def _log(x) -> float:
@@ -104,6 +112,15 @@ def featurize(obs: dict) -> list[float]:
     f += [_log(designated), _log(designated - _num(obs.get("dug_tiles")))]
     f += [_log(built.get(k)) for k in NEW_SHOP_KINDS]
     f += [_log(pend.get(k)) for k in NEW_SHOP_KINDS]
+    season = int(_num(obs.get("season"), -1))
+    f += [
+        min(3.0, _num(obs.get("hunger_sum")) / cohort / 50000.0),
+        min(3.0, _num(obs.get("thirst_sum")) / cohort / 50000.0),
+        _log(max(0.0, _num(obs.get("livestock"), 0))), _log(obs.get("livestock_marked")),
+        1.0 if season == 0 else 0.0, 1.0 if season == 1 else 0.0,
+        1.0 if season == 2 else 0.0, 1.0 if season == 3 else 0.0,
+        max(0.0, _num(obs.get("year_tick"), 0)) / 403200.0,
+    ]
     assert len(f) == len(FEATURE_NAMES), (len(f), len(FEATURE_NAMES))
     return f
 
@@ -152,6 +169,24 @@ def key_action(key: str) -> dict:
     return {"command": parts[0], "args": args}
 
 
+def widen_weights(model: dict) -> dict:
+    """Give an older model the columns a newer featurizer emits, without changing
+    what it computes: zero weights and a unit normaliser for every appended feature."""
+    have, want = list(model["features"]), list(FEATURE_NAMES)
+    if have == want:
+        return model
+    if want[: len(have)] != have:
+        raise ValueError("feature order changed, not just extended; a model cannot be widened across that")
+    k = len(want) - len(have)
+    m = json.loads(json.dumps(model))
+    m["features"] = want
+    m["norm"]["mean"] += [0.0] * k
+    m["norm"]["std"] += [1.0] * k
+    for row in m["layers"][0]["W"]:
+        row += [0.0] * k
+    return m
+
+
 class Student:
     """Pure-Python MLP: features -> per-action probabilities -> the actions above a
     threshold, in the teacher's usual order. Nothing here imports anything heavier
@@ -171,7 +206,14 @@ class Student:
         self.count_mean = cn.get("mean") or [0.0] * len(self.counts)
         self.count_std = cn.get("std") or [1.0] * len(self.counts)
         if self.features != list(FEATURE_NAMES):
-            raise ValueError("saved model was trained on a different feature order")
+            # Features are append-only, so an older model is widened on load: zero
+            # columns for what it never saw, and it computes exactly what it did before.
+            if list(FEATURE_NAMES)[: len(self.features)] != self.features:
+                raise ValueError("saved model was trained on a different feature order")
+            weights = widen_weights(weights)
+            self.features = list(weights["features"])
+            self.mean = weights["norm"]["mean"]; self.std = weights["norm"]["std"]
+            self.layers = [(w["W"], w["b"]) for w in weights["layers"]]
 
     @classmethod
     def load(cls, path: str | Path) -> "Student":

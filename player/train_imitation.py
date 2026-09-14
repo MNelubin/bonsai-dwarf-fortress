@@ -36,7 +36,14 @@ def load(paths: list[str]) -> tuple[np.ndarray, list[list[str]], list[dict]]:
                         r = json.loads(l)
                         r["_src"] = p          # parallel collectors all number from 0
                         rows.append(r)
-    X = np.array([r["x"] for r in rows], dtype=np.float64)
+    # Rows recorded before a feature was appended carry a shorter vector; they are
+    # padded with zeros, which is what widen() gives an older model for the same
+    # columns. Prefer re-collecting: zero is "unknown", not the value the fort had.
+    n = len(FEATURE_NAMES)
+    short = sum(1 for r in rows if len(r["x"]) < n)
+    if short:
+        print(f"note: {short} of {len(rows)} rows predate the current features; zero-padded", flush=True)
+    X = np.array([list(r["x"]) + [0.0] * (n - len(r["x"])) for r in rows], dtype=np.float64)
     Y = [r["y"] for r in rows]
     return X, Y, rows
 

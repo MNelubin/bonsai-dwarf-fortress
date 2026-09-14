@@ -13,24 +13,11 @@ import argparse
 import json
 from pathlib import Path
 
-from player.imitation import FEATURE_NAMES
+from player.imitation import widen_weights
 
 
 def widen(model: dict) -> dict:
-    have = list(model["features"])
-    want = list(FEATURE_NAMES)
-    if have == want:
-        return model
-    if want[: len(have)] != have:
-        raise ValueError("feature order changed, not just extended; a model cannot be widened across that")
-    k = len(want) - len(have)
-    m = json.loads(json.dumps(model))
-    m["features"] = want
-    m["norm"]["mean"] += [0.0] * k
-    m["norm"]["std"] += [1.0] * k
-    for row in m["layers"][0]["W"]:
-        row += [0.0] * k
-    return m
+    return widen_weights(model)
 
 
 def main() -> None:
