@@ -416,6 +416,17 @@ CATALOG: tuple[Verb, ...] = (
              "Shrubs break that loop.",
     ),
     Verb(
+        name="clean_fish", category="food-water", tranche=0,
+        doc="Queue raw fish for preparation at a built Fishery. Needs the CLEAN_FISH labour.",
+        observable="PrepareRawFish jobs at the Fishery; raw fish becomes fish",
+        args=(Arg("count", "int", "how many fish", lo=1, hi=10,
+                  required=False, default=5),),
+        guide="14:31",
+        note="Raw fish is not food: a fisherdwarf brings it in all year and it rots in "
+             "the pile. The hungry year needs more food than two plots and one herd, "
+             "and the pond fishes from spring to autumn without a dug tile.",
+    ),
+    Verb(
         name="build_construction", category="terrain", tranche=0,
         doc="Build a wall, floor, ramp or staircase out of stored material.",
         observable="the tiletype at the position becomes a construction",

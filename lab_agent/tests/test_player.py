@@ -34,8 +34,9 @@ def test_features_are_only_ever_appended():
     assert names.index("designated_log") == 44
     shops = [n for n in names if any(k in n for k in imitation.NEW_SHOP_KINDS)]
     assert names.index(shops[0]) == 46 and len(shops) == 6
-    assert names[52:] == ["hunger_per_dwarf", "thirst_per_dwarf", "livestock_log", "livestock_marked_log",
-                          "season_spring", "season_summer", "season_autumn", "season_winter", "year_frac"]
+    assert names[52:61] == ["hunger_per_dwarf", "thirst_per_dwarf", "livestock_log", "livestock_marked_log",
+                            "season_spring", "season_summer", "season_autumn", "season_winter", "year_frac"]
+    assert names[61] == "fish_raw_log"
 
 
 def test_an_older_model_is_widened_on_load_and_unchanged():
@@ -116,15 +117,18 @@ def test_split_count_factors_only_count_verbs():
     assert split_count("build_workshop|Butchers") == ("build_workshop|Butchers", None)
 
 
-@pytest.mark.skipif(not (WEIGHTS / "student_v3.json").exists(), reason="weights not checked in")
+@pytest.mark.skipif(not (WEIGHTS / "student_v4.json").exists(), reason="weights not checked in")
 def test_factored_student_emits_counts_inside_the_catalogue_and_matches_numpy():
     np = pytest.importorskip("numpy")
     from player import train_imitation as ti
-    from player.imitation import COUNT_VERBS
-    model = json.loads((WEIGHTS / "student_v3.json").read_text(encoding="utf-8"))
+    from player.imitation import COUNT_VERBS, widen_weights
+    model = widen_weights(json.loads((WEIGHTS / "student_v4.json").read_text(encoding="utf-8")))
     s = Student(model)
-    assert s.counts, "v3 is a factored model"
+    assert s.counts, "v4 is a factored model"
     rows = [json.loads(l) for l in (ROOT / "player" / "traj" / "fresh.jsonl").read_text(encoding="utf-8").splitlines()[:5]]
+    n = len(FEATURE_NAMES)
+    for r in rows:
+        r["x"] = list(r["x"]) + [0.0] * (n - len(r["x"]))
     # the pure-Python forward pass and the numpy one agree on identical vectors
     X = np.array([r["x"] for r in rows])
     P = ti.predict(model, X)

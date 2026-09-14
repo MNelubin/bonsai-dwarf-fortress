@@ -16,7 +16,7 @@ pcall(function()
     end)
   end
 end)
-local ndrink, nfood = 0, 0
+local ndrink, nfood, nfishraw = 0, 0, 0
 pcall(function()
   for _, it in ipairs(w.items.all) do
     local ok, ty = pcall(function() return it:getType() end)
@@ -28,9 +28,11 @@ pcall(function()
     -- already condemned to garbage collection.
     local f = it.flags
     if ok and not (f.forbid or f.dump or f.garbage_collect or f.trader or f.rotten) then
+      -- raw fish is not a meal until a Fishery prepares it; counted apart
       if ty == df.item_type.DRINK then ndrink = ndrink + 1
+      elseif ty == df.item_type.FISH_RAW then nfishraw = nfishraw + 1
       elseif ty == df.item_type.MEAT or ty == df.item_type.FISH or ty == df.item_type.PLANT
-          or ty == df.item_type.CHEESE or ty == df.item_type.EGG or ty == df.item_type.FISH_RAW then nfood = nfood + 1 end
+          or ty == df.item_type.CHEESE or ty == df.item_type.EGG then nfood = nfood + 1 end
     end
   end
 end)
@@ -460,7 +462,7 @@ end)
 local season, yeartick = -1, -1
 pcall(function() season = df.global.cur_season; yeartick = df.global.cur_year_tick end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d ndesig=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d nlivestock=%d nmarked=%d season=%d yeartick=%d cids=%s",
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d ndesig=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d nlivestock=%d nmarked=%d season=%d yeartick=%d nfishraw=%d cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, nbuild_all, worders,
   nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
   stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile, (_G.BONSAI_DESIGNATED or 0),
@@ -470,4 +472,4 @@ print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang
   (#warn > 0 and table.concat(warn, ";") or "none"),
   (#cancels > 0 and table.concat(cancels, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
-  #w.items.all, #w.units.all, nlivestock, nmarked, season, yeartick, table.concat(cids, ",")))
+  #w.items.all, #w.units.all, nlivestock, nmarked, season, yeartick, nfishraw, table.concat(cids, ",")))

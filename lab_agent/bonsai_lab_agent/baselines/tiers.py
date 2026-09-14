@@ -148,6 +148,7 @@ DRINK_FLOOR = 1.0      # drink units per dwarf below which the fort starts gathe
 GATHER_BATCH = 20     # shrubs per gather_plants request
 BARREL_FLOOR = 6      # empty barrels to keep ahead of the Still
 FARM_PLOTS = 2        # plots to build before the fort stops asking
+FISH_FLOOR = 3        # raw fish on hand before a Fishery is worth building
 
 
 def v2_reactive(obs: dict) -> list[dict]:
@@ -286,6 +287,7 @@ def v3_survival(obs: dict) -> list[dict]:
     food_per_dwarf = int(obs.get("food_count") or 0) / cohort
     if round_index == 0:
         v3_survival._slaughtered = False
+        v3_survival._fish_labour = False
     if food_per_dwarf < HUNGRY_BELOW and not getattr(v3_survival, "_slaughtered", False):
         if round_index == 0:
             actions.append({"command": "set_labor", "args": ["BUTCHER", True]})
@@ -309,6 +311,20 @@ def v3_survival(obs: dict) -> list[dict]:
         if round_index == 0:
             actions.append({"command": "set_dwarf_labor", "args": ["best", "HERBALIST", True]})
         actions.append({"command": "gather_plants", "args": [GATHER_BATCH]})
+
+    # The fish chain. A fisherdwarf brings raw fish in from the pond all year on its own
+    # (the "Fish" job ran unbidden on every fresh embark traced), and raw fish is not
+    # food until a Fishery prepares it. Over the hungry year two plots and one herd
+    # were not enough; this is the third source, and it needs no dug tile.
+    fish_raw = int(obs.get("fish_raw") or 0)
+    if fish_raw >= FISH_FLOOR:
+        if (built.get("Fishery") or 0) > 0:
+            if round_index == 0 or not getattr(v3_survival, "_fish_labour", False):
+                actions.append({"command": "set_dwarf_labor", "args": ["best", "CLEAN_FISH", True]})
+                v3_survival._fish_labour = True
+            actions.append({"command": "clean_fish", "args": [min(10, fish_raw)]})
+        elif (pending.get("Fishery") or 0) == 0 and (resources.get("wood") or 0) + (resources.get("boulders") or 0) > 0:
+            actions.append({"command": "build_workshop", "args": ["Fishery"]})
 
     # Gathering when hungry was tried here and REMOVED: on the hungry scenario over a
     # month every tier's provisioning rose to 0.25-0.32 -- the idle fort included --

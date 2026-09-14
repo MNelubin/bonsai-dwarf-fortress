@@ -51,6 +51,7 @@ FEATURE_NAMES: tuple[str, ...] = (
     "hunger_per_dwarf", "thirst_per_dwarf",     # timers / 50 000: 1.0 is the edge of harm
     "livestock_log", "livestock_marked_log",
     "season_spring", "season_summer", "season_autumn", "season_winter", "year_frac",
+    "fish_raw_log",      # appended 2026-09-14 with clean_fish: raw fish waiting for a Fishery
 )
 
 
@@ -120,6 +121,7 @@ def featurize(obs: dict) -> list[float]:
         1.0 if season == 0 else 0.0, 1.0 if season == 1 else 0.0,
         1.0 if season == 2 else 0.0, 1.0 if season == 3 else 0.0,
         max(0.0, _num(obs.get("year_tick"), 0)) / 403200.0,
+        _log(obs.get("fish_raw")),
     ]
     assert len(f) == len(FEATURE_NAMES), (len(f), len(FEATURE_NAMES))
     return f

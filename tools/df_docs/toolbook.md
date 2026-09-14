@@ -976,6 +976,24 @@ settings are per-subtype (food → seeds, drink, meat…) and nothing here reach
 
 ---
 
+## clean_fish
+
+Queue up to N `PrepareRawFish` jobs at a built Fishery, never more than the unrotten,
+unforbidden raw fish on hand. A dwarf with the `CLEAN_FISH` labour turns each raw fish
+into a meal.
+
+**Refuses:** when the fort has no built Fishery, or no raw fish to prepare, and says
+which. Prints `FISH raw= target= existing= queued=` so a re-ask that finds the jobs
+already queued is visible as such.
+
+**Why it exists:** the third food source for the hungry year. A fisherdwarf brings raw
+fish in from the pond unbidden on every fresh embark traced, and raw fish is not food:
+the observer counted it as food until 2026-09-14 and the pile let it rot. Two plots and
+one herd did not carry seven dwarves through a year; the pond fishes from spring to
+autumn without a dug tile.
+
+---
+
 ## gather_plants
 
 Mark up to N surface shrubs within 30 tiles of a citizen for gathering

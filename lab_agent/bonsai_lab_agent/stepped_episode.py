@@ -360,6 +360,7 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
             cobs["livestock_marked"] = int(cur_raw.get("nmarked", 0) or 0)
             cobs["season"] = int(cur_raw.get("season", -1) or 0)
             cobs["year_tick"] = int(cur_raw.get("yeartick", -1) or 0)
+            cobs["fish_raw"] = int(cur_raw.get("nfishraw", 0) or 0)
             cobs["dependencies"] = dependency_state(cur_raw)
             cobs["previous_action_feedback"] = previous_feedback
 

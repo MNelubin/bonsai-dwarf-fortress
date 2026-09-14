@@ -23,7 +23,7 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             add_workorder_conditional = 0, build_farm_plot = 0, brew_drink = 0, set_crop = 0,
             set_kitchen_flag = 0, create_zone = 0, assign_room = 0,
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
-            configure_stockpile = 0, chop_trees = 0, gather_plants = 0, smooth = 0, slaughter_animal = 0,
+            configure_stockpile = 0, chop_trees = 0, gather_plants = 0, clean_fish = 0, smooth = 0, slaughter_animal = 0,
             build_construction = 0, set_standing_order = 0,
             set_dig_priority = 0, apply_template = 0, build_room = 0,
             ensure_furniture = 0,
@@ -3687,6 +3687,65 @@ while QI <= #QUEUE do
                                 want, existing, queued, #reaction.reagents))
         end)
         if not ok then print('REFUSED brew_drink: ' .. tostring(why)) end
+    elseif verb == "clean_fish" then
+        -- Raw fish is not food. A fisherdwarf brings it in all year (the "Fish" job
+        -- runs on every fresh embark unbidden), and it rots in the pile unless a
+        -- Fishery with the CLEAN_FISH labour prepares it. That is a plain job at the
+        -- shop, PrepareRawFish, taking one unrotten FISH_RAW - queued here the way a
+        -- player queues it, so many as asked and no more than the raw fish on hand.
+        local ok, why = pcall(function()
+            local want = math.max(1, math.min(tonumber(a[2]) or 1, 10))
+            local shop = nil
+            for _, b in ipairs(w.buildings.all) do
+                if df.building_workshopst:is_instance(b)
+                    and b.type == df.workshop_type.Fishery and built(b) then
+                    shop = b
+                    break
+                end
+            end
+            if not shop then
+                error('the fort has no built Fishery; build_workshop Fishery first', 0)
+            end
+            local raw = 0
+            for _, it in ipairs(w.items.all) do
+                local okt, ty = pcall(function() return it:getType() end)
+                if okt and ty == df.item_type.FISH_RAW and not it.flags.rotten
+                    and not it.flags.forbid and not it.flags.in_job and not it.flags.trader then
+                    raw = raw + 1
+                end
+            end
+            if raw == 0 then
+                error('the fort has no raw fish to prepare', 0)
+            end
+            local existing = 0
+            for _, job in ipairs(shop.jobs) do
+                if job.job_type == df.job_type.PrepareRawFish then existing = existing + 1 end
+            end
+            local target = math.min(want, raw)
+            local queued = 0
+            for _ = existing + 1, target do
+                local job = df.job:new()
+                job.job_type = df.job_type.PrepareRawFish
+                job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
+                dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
+                shop.jobs:insert('#', job)
+                dfhack.job.linkIntoWorld(job, true)
+                local ji = df.job_item:new()
+                ji.item_type = df.item_type.FISH_RAW
+                ji.item_subtype = -1
+                ji.mat_type = -1
+                ji.mat_index = -1
+                ji.quantity = 1
+                -- the shape DFHack's own hack/lua/dfhack/workshops.lua gives this job:
+                -- one FISH_RAW, unrotten, nothing else
+                ji.flags1.unrotten = true
+                job.job_items.elements:insert('#', ji)
+                queued = queued + 1
+            end
+            c.clean_fish = c.clean_fish + ((queued > 0 or existing >= target) and 1 or 0)
+            print(string.format('FISH raw=%d target=%d existing=%d queued=%d', raw, target, existing, queued))
+        end)
+        if not ok then print('REFUSED clean_fish: ' .. tostring(why)) end
     elseif verb == "set_crop" then
         -- Which crop, in which season, PER PLOT: a surface plot and a dug-out one want
         -- different plants, and sowing the wrong one is invisible — the plot reads as
