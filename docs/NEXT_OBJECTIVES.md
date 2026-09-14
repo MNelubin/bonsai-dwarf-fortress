@@ -142,6 +142,33 @@ structurally 0 because the embark arrives with fifteen barrels. Two live terms o
    reference began felling timber and raising buildings: identical code measured 0.5854
    and 0.5921. Do not claim a win inside +/- 0.006.
 
+3b. **The hungry year is the open frontier.** Traced five times on 2026-09-14 after the
+   prep, the observer and the teacher were repaired (below). The month is solved: v3
+   0.710, comfort 1.0, butchered by round 5, two plots by round 12. The year is not:
+   drink 12 -> 0 by autumn and never back, the pond freezes in winter, thirst 250-460k
+   per fort, and in late winter three of seven die (death_cause NONE - dehydration).
+   The brewing chain never starts because plants stay 0 all year: two plots with six
+   crops of five seeds plant ten tiles a season, and every plant harvested is eaten raw
+   by a hungry fort before the Still sees it. Barrels sit at 15, unused.
+
+   What a year needs and the catalog does not yet give the teacher: more food than two
+   plots (fishing through a Fishery, hunting, a second slaughter when the herd has
+   grown), water in winter (a well over a cistern, or an underground source), and
+   trading with the autumn caravan. Each is a mechanic to cover; each will show on the
+   year and on nothing shorter. Do not calibrate the year until one of them lands.
+
+   Fixed on the way, each measured: the prep forbids food only (with food AND drink
+   gone DF never lets a miner take a pick - "Equipment mismatch" for a fort-year); the
+   teacher's hunger rule counts food alone (food+drink read fifteen barrels as a full
+   larder and starved the fort beside its yak); the food pile takes no barrels and
+   MakeBarrel keeps six ahead; two plots, crops spread round-robin and never re-picked;
+   `foreign` is provenance, not ownership (every embark supply vanished from the counts
+   when hauled); the shaft head is the nearest free dry floor tile; food_count leaves
+   out forbidden, dumped, condemned, traders' and rotten items; `gather_plants` exists
+   (marks clear in spring - shrubs bear nothing then; autumn showed plants 3-6).
+   Also seen, not fixed: chop_trees marks five trees a round and FellTree jobs pile up
+   5 -> 42 in a month - the verb needs a backlog check like digging's.
+
 4. **Decision density follows the calendar past a month.** 24 rounds from three days to
    a fort-month (a decision every ~1.2 days at the top); beyond that `rounds_for()` caps
    the chunk at 1400 ticks, so a fort-year is 288 decisions and not one a fortnight. Both
@@ -220,7 +247,13 @@ Weights: `player/weights/student_evolved_v3.json` (current champion, factored he
 features); `student_v3.json` is its imitation base; older champions and every
 per-generation log sit beside them.
 
-Next for the player, in order: (1) read what the CEM champion does on the mature fort
+The observation changed underneath the player on 2026-09-14 (seed, wood and barrel
+counts are honest now; food_count no longer counts the caravan's goods), and the
+teacher changed with it. Every trajectory in `player/traj` predates that, so the next
+student is a re-collection first: fresh, mature, hungry month, then imitation v4, then
+one ARS pass.
+
+Next for the player, in order: (0) re-collect and retrain, above; (1) read what the CEM champion does on the mature fort
 (one more order, one building) and, if it is a rule, put it in the teacher; (2) keep
 the trajectories every evolution run deletes and train on them weighted by normalised
 score (docs/player-ml-research.md §2); (3) DAgger on the states where student and
