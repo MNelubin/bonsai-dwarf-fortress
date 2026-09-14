@@ -197,11 +197,28 @@ three said 0.20. That gap is the winner's curse the ARS method exists to remove:
 shipped model is now the re-played mean, never the best candidate. Kept as
 `student_evolved_v2_cem.json` for the mature-fort trick it carries.
 
-`evolve6` runs ARS from `student_v3` on all three scenarios. Whatever it ships has been
-measured on every scenario as itself.
+ARS from `student_v3` on all three scenarios, twice. `evolve6` stood still: mature and
+hungry ran side by side, 19 forts on 32 GB, 40% of hungry episodes died and in ten of
+twenty generations no mirrored pair survived. `evolve7`, scenarios one after the other
+and failed episodes replayed: 0 failures in 20 generations, every pair used. What it
+shipped (the re-played mean, never a candidate), k=3:
 
-Weights: `player/weights/student_evolved_v1.json` (3968 params, 88 KB); the per-
-generation log beside it.
+    student_evolved_v3 (ARS, evolve7)        0.6187 [1.01]  0.6283 [0.94]  0.4217 [1.00]    2.95
+    claimed by evolve7 for the same weights                                                 2.96
+
+No winner's curse this time: claimed 2.96, measured 2.95. The whole gain is the mature
+fort, 0.6227 -> 0.6283, three episodes to the digit, from digging 157 tiles instead of
+136. Fresh and hungry sit at exactly 1.0 the entire run -- the student already does what
+the teacher does there and twenty generations found nothing above it.
+
+So: five hours of search on the output layer bought +0.06 on the sum; the butcher verb
+and two hungry trajectories bought +0.5 the same day. Search is now the second lever,
+not the first. Next champion comes from a new mechanic and new data, then one ARS pass
+to tune it.
+
+Weights: `player/weights/student_evolved_v3.json` (current champion, factored head, 52
+features); `student_v3.json` is its imitation base; older champions and every
+per-generation log sit beside them.
 
 Next for the player, in order: (1) read what the CEM champion does on the mature fort
 (one more order, one building) and, if it is a rule, put it in the teacher; (2) keep
