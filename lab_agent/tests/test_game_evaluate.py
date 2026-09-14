@@ -148,11 +148,12 @@ def test_calibration_is_keyed_by_save_and_horizon():
     assert (calibration_for("region3-lab", 3600)
             != calibration_for("ourfort16-final", 3600))
     # The hungry embark is the same save with a prep script, and its own world: the floor
-    # is a fort that starves (0.163) and the reference is the butchering chain (0.421).
+    # is a fort that starves beside its drink (0.261) and the reference is the butchering
+    # chain plus the digging it unlocks (0.701).
     # The bare save at this horizon is still withdrawn, so the prep suffix is what
     # makes the pair scorable at all.
     assert calibration_for("ourfort16-final+bonsai-prep-hungry", 33600) == {
-        "noop": 0.131249, "ref": 0.421725}
+        "noop": 0.260714, "ref": 0.700794}
     assert calibration_for("ourfort16-final", 33600) is None
 
 

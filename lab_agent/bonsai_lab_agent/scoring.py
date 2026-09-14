@@ -191,12 +191,16 @@ CALIBRATION = {
     # and lands at 0.276 - development bought at the cost of the people who would use
     # it; v2_reactive 0.195, indistinguishable from idle. The key is the scenario id
     # (save + prep), because the same save without the prep is a different world.
-    # Re-measured 2026-09-14, k=3, after the prep stopped deleting the larder (it locked
-    # the picks in the wagon; the food is forbidden now) and the observer stopped
-    # counting forbidden food: the idle floor fell 0.163 -> 0.131 because the forbidden
-    # larder no longer counts as provisioning; the butchering reference is unchanged,
-    # 0.421725 against 0.421191, spread 0.0004.
-    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.131249, "ref": 0.421725},
+    # Re-measured 2026-09-14, k=3, after the prep changed for the third and last time:
+    # it forbids the FOOD and leaves the drink. With both gone DF never lets a miner take
+    # a pick ("Pickup equipment: Equipment mismatch", every round, for a fort-year), so
+    # every earlier number on this scenario measured a fort that could not dig. Under
+    # this prep the ladder is a ladder: v0 0.2607 (comfort 0.50), v1 0.4091 (320 tiles,
+    # still hungry), v2 0.4335, v3 0.7008 (butchered by round 5, a farm plot by round 4,
+    # comfort 1.0, provisioning 0.93; spread 0.003). The teacher's hunger rule now counts
+    # food alone - with food+drink it read fifteen barrels as a full larder and starved
+    # the fort beside its livestock, which is what the old 0.4217 reference was.
+    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.260714, "ref": 0.700794},
 }
 
 DEFAULT_SAVE = "bonsaifort2"
