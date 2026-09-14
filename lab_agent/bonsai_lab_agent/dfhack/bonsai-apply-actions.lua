@@ -3321,6 +3321,25 @@ while QI <= #QUEUE do
         attempt("chop_trees", function()
             local n = math.max(1, math.min(tonumber(a[2]) or 10, 100))
             if not u1 then return end
+            -- Trees already marked are work already asked for. The teacher asks for
+            -- five whenever wood is short, every round, and the first version marked
+            -- five NEW trees each time: FellTree jobs piled 5 -> 42 in a month while
+            -- two woodcutters felled one or two a round. Count the standing jobs and
+            -- mark only the shortfall, the way designate_dig honours its backlog.
+            local pending = 0
+            pcall(function()
+                local link = w.jobs.list.next
+                while link do
+                    local j = link.item
+                    if j and j.job_type == df.job_type.FellTree then pending = pending + 1 end
+                    link = link.next
+                end
+            end)
+            if pending >= n then
+                note("chop_trees", string.format("%d trees already marked; asked for %d, marking none", pending, n))
+                return
+            end
+            n = n - pending
             local marked = 0
             for r = 1, 25 do
                 for dx = -r, r do
