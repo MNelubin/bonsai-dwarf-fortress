@@ -403,6 +403,19 @@ CATALOG: tuple[Verb, ...] = (
              "catalog fed a starving fort inside a month.",
     ),
     Verb(
+        name="gather_plants", category="food-water", tranche=0,
+        doc="Mark surface shrubs near the fort for gathering. Needs the HERBALIST labour.",
+        observable="plant stacks rise once a herbalist works the marks",
+        args=(Arg("count", "int", "how many shrubs", lo=1, hi=200,
+                  required=False, default=20),),
+        guide="12:10",
+        note="The only plants a fort gets without digging, and plants are what a Still "
+             "brews. Traced on the hungry embark over a year: meat from the butcher, "
+             "nothing to brew, drink 0 all year, and DF keeps the miners' picks in the "
+             "wagon while the larder holds neither food nor drink - so no soil, no farm. "
+             "Shrubs break that loop.",
+    ),
+    Verb(
         name="build_construction", category="terrain", tranche=0,
         doc="Build a wall, floor, ramp or staircase out of stored material.",
         observable="the tiletype at the position becomes a construction",

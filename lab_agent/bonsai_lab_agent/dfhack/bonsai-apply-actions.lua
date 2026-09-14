@@ -23,7 +23,7 @@ local c = { set_labor = 0, designate_dig = 0, create_stockpile = 0, add_workorde
             add_workorder_conditional = 0, build_farm_plot = 0, brew_drink = 0, set_crop = 0,
             set_kitchen_flag = 0, create_zone = 0, assign_room = 0,
             place_furniture = 0, set_dwarf_labor = 0, cancel_dwarf_job = 0,
-            configure_stockpile = 0, chop_trees = 0, smooth = 0, slaughter_animal = 0,
+            configure_stockpile = 0, chop_trees = 0, gather_plants = 0, smooth = 0, slaughter_animal = 0,
             build_construction = 0, set_standing_order = 0,
             set_dig_priority = 0, apply_template = 0, build_room = 0,
             ensure_furniture = 0,
@@ -3354,6 +3354,53 @@ while QI <= #QUEUE do
             if marked > 0 then
                 pcall(function() df.global.process_dig = true end)
                 c.chop_trees = c.chop_trees + marked
+            end
+        end)
+    elseif verb == "gather_plants" then
+        -- The only plants a fort can get without digging. Traced on the hungry embark
+        -- over a year: the wagon's food is gone, butchering gives meat but nothing to
+        -- brew, plants stay 0, drink stays 0, and DF will not even let the miners take
+        -- a pick while the larder holds neither food nor drink (measured: forbid both
+        -- and no pick is ever picked up; forbid either alone and picks are in hands by
+        -- round 6). So the farm's soil never appears and the drink chain cannot start.
+        -- Shrubs on the surface are the way in: mark them for gathering, give someone
+        -- the HERBALIST labour, and the Still has something to brew.
+        attempt("gather_plants", function()
+            local n = math.max(1, math.min(tonumber(a[2]) or 20, 200))
+            if not u1 then return end
+            local marked, seen = 0, 0
+            for r = 1, 30 do
+                for dx = -r, r do
+                    for dy = -r, r do
+                        if marked >= n then break end
+                        for dz = -1, 1 do
+                            local x, y, z = u1.pos.x + dx, u1.pos.y + dy, u1.pos.z + dz
+                            local okt, tt = pcall(function() return dfhack.maps.getTileType(x, y, z) end)
+                            if okt and tt and df.tiletype.attrs[tt].shape == df.tiletype_shape.SHRUB then
+                                seen = seen + 1
+                                local des = dfhack.maps.getTileFlags(x, y, z)
+                                if des and des.dig == df.tile_dig_designation.No
+                                    and (not reach or reach.adjacent(x, y, z, REACH_GROUPS)) then
+                                    des.dig = df.tile_dig_designation.GatherPlants
+                                    local blk = dfhack.maps.getTileBlock(xyz2pos(x, y, z))
+                                    if blk then blk.flags.designated = true end
+                                    marked = marked + 1
+                                end
+                            end
+                        end
+                    end
+                end
+                if marked >= n then break end
+            end
+            if marked == 0 then
+                refuse("gather_plants", string.format(
+                    "%d shrub tile(s) within 30 of a citizen, none unmarked and reachable", seen))
+            else
+                if marked < n then
+                    note("gather_plants", string.format("marked %d of %d asked: %d shrubs in range", marked, n, seen))
+                end
+                pcall(function() df.global.process_dig = true end)
+                c.gather_plants = c.gather_plants + marked
             end
         end)
     elseif verb == "smooth" then

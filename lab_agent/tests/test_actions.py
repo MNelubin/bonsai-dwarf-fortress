@@ -398,9 +398,14 @@ def test_the_schema_stays_small_enough_to_ship_every_round():
     over a year most of the seven died under every tier. Livestock is the one food that
     arrives with the wagon and is ready in days. A capability the catalog lacked entirely
     is worth a hundred bytes a round; the ceiling moves to 9900.
+
+    2026-09-14, 27 verbs: gather_plants. The butcher feeds the hungry embark but brews
+    nothing; with no plants there is no drink, and DF will not let miners take a pick
+    while the larder holds neither food nor drink, so the farm's soil never appears.
+    Shrubs are the plants a fort gets without digging. Ceiling 10300.
     """
     import json
-    assert len(json.dumps(available_actions())) < 9900
+    assert len(json.dumps(available_actions())) < 10300
 
 
 def test_every_live_verb_has_a_toolbook_entry():

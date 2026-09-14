@@ -144,7 +144,7 @@ def test_calibration_is_keyed_by_save_and_horizon():
     # fresh embark and falls below idling on the mature one, where Forgotten Beasts kill
     # anyone sent to work above ground.
     assert calibration_for("ourfort16-final", 3600) == {"noop": 0.467857, "ref": 0.616847}
-    assert calibration_for("region3-lab", 3600) == {"noop": 0.535346, "ref": 0.634433}
+    assert calibration_for("region3-lab", 3600) == {"noop": 0.530528, "ref": 0.611877}
     assert (calibration_for("region3-lab", 3600)
             != calibration_for("ourfort16-final", 3600))
     # The hungry embark is the same save with a prep script, and its own world: the floor
@@ -152,7 +152,7 @@ def test_calibration_is_keyed_by_save_and_horizon():
     # The bare save at this horizon is still withdrawn, so the prep suffix is what
     # makes the pair scorable at all.
     assert calibration_for("ourfort16-final+bonsai-prep-hungry", 33600) == {
-        "noop": 0.163391, "ref": 0.421191}
+        "noop": 0.131249, "ref": 0.421725}
     assert calibration_for("ourfort16-final", 33600) is None
 
 

@@ -16,7 +16,7 @@ local w = df.global.world
 local HUNGER, THIRST = 52000, 28000
 local edible = { [df.item_type.MEAT] = 1, [df.item_type.FISH] = 1, [df.item_type.PLANT] = 1,
                  [df.item_type.CHEESE] = 1, [df.item_type.EGG] = 1, [df.item_type.FISH_RAW] = 1 }
-local food, drink, set = 0, 0, 0
+local food, drink, set = 0, 0, 0   -- drink stays 0: see below
 for i = #w.items.all - 1, 0, -1 do
   local it = w.items.all[i]
   local ok, ty = pcall(function() return it:getType() end)
@@ -29,8 +29,15 @@ for i = #w.items.all - 1, 0, -1 do
     -- (no timers) reproduced it; forbidding only did not (a pick was in a miner's hands
     -- by round 5). A forbidden meal is one no dwarf will eat, which is all the scenario
     -- needs; the observer leaves forbidden items out of food_count for the same reason.
-    if ty == df.item_type.DRINK then it.flags.forbid = true; drink = drink + 1
-    elseif edible[ty] then it.flags.forbid = true; food = food + 1 end
+    -- FOOD ONLY. The drink stays. With both food and drink forbidden, DF never lets a
+    -- miner take a pick: three picks lay at the wagon for a fort-year, the carved-stair
+    -- job posted and reachable, "Miner cancels Pickup equipment: Equipment mismatch"
+    -- every round, and nothing changed it -- not the head of the shaft, not moving the
+    -- picks to the ground, not butchering (food back at 33 by round 4), not turning
+    -- MINE off and on again. Forbid food alone, or drink alone, and the picks are in
+    -- hands by round 6. Whatever DF does there is DF's; the scenario only needs the
+    -- fort to start hungry, and a fort with fifteen barrels and no food is that.
+    if edible[ty] then it.flags.forbid = true; food = food + 1 end
   end
 end
 for _, u in ipairs(w.units.active) do

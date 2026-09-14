@@ -976,6 +976,26 @@ settings are per-subtype (food → seeds, drink, meat…) and nothing here reach
 
 ---
 
+## gather_plants
+
+Mark up to N surface shrubs within 30 tiles of a citizen for gathering
+(`GatherPlants` designation, the same mark as the "gather plants" tool). A dwarf with
+the `HERBALIST` labour turns each mark into a plant stack.
+
+**Refuses:** when no unmarked, reachable shrub stands within range, and says how many
+shrubs it saw. Notes the shortfall when fewer than asked were marked.
+
+**Why it exists:** the drink chain on a fort that cannot dig. Traced on the hungry
+embark over a year: the butcher's meat keeps the dwarves alive for months, but the Still
+has nothing to brew, drink stays 0, and DF keeps the miners' picks in the wagon for as
+long as the larder holds neither food nor drink (measured: forbid both and no pick is
+ever taken; forbid either alone and picks are in hands by round 6). No digging means no
+soil, no farm, no plants. Shrubs are the one source of plants that needs no dug tile.
+A `PlantGathering` zone (`create_zone gather_fruit`) is a different thing: it gathers
+fruit from trees, seasonally.
+
+---
+
 ## slaughter_animal
 
 Mark tame livestock for the butcher, largest first. Pets and war or hunting animals are

@@ -144,6 +144,8 @@ CHOP_BATCH = 5
 # Food plus drink per dwarf below which the fort is hungry and eats its livestock before
 # it does anything else. The fed embark carries 24 for 7 (3.4); the hungry scenario opens at 0.
 HUNGRY_BELOW = 1.0
+DRINK_FLOOR = 1.0      # drink units per dwarf below which the fort starts gathering to brew
+GATHER_BATCH = 20     # shrubs per gather_plants request
 
 
 def v2_reactive(obs: dict) -> list[dict]:
@@ -271,7 +273,10 @@ def v3_survival(obs: dict) -> list[dict]:
     # 0.500, composite to 0.380, seven of seven alive. Nothing else in the catalog came
     # close; gathering measured no better than idling (below).
     cohort = max(1, int(obs.get("cohort_size") or 1))
-    food_per_dwarf = (int(obs.get("food_count") or 0) + int(obs.get("drink_count") or 0)) / cohort
+    # Food alone. The first version summed food and drink, so a fort with fifteen
+    # barrels and nothing to eat read as fed (12/7 = 1.7) and never butchered: traced
+    # on the hungry embark, hunger 364k -> 482k over a month with the livestock alive.
+    food_per_dwarf = int(obs.get("food_count") or 0) / cohort
     if round_index == 0:
         v3_survival._slaughtered = False
     if food_per_dwarf < HUNGRY_BELOW and not getattr(v3_survival, "_slaughtered", False):
@@ -282,6 +287,21 @@ def v3_survival(obs: dict) -> list[dict]:
             v3_survival._slaughtered = True
         elif (pending.get("Butchers") or 0) == 0 and (resources.get("wood") or 0) >= WOOD_FLOOR:
             actions.append({"command": "build_workshop", "args": ["Butchers"]})
+
+    # The drink chain when the fort cannot dig. Traced on the hungry embark over a
+    # year: meat from the butcher keeps everyone alive for months, but the Still has
+    # nothing to brew, drink stays 0, and DF keeps the picks in the wagon for as long as
+    # the larder holds neither food nor drink (forbid both: no pick is ever taken; forbid
+    # either alone: picks in hands by round 6). No digging, so no soil, no farm, no
+    # plants. Shrubs are the plants a fort gets without a dug tile: one herbalist and
+    # a gathering mark, and can_brew below does the rest. This is not the gathering
+    # rule that was removed (next comment): that one measured provisioning over a
+    # month, when the question was drink over a year.
+    drink_per_dwarf = int(obs.get("drink_count") or 0) / cohort
+    if drink_per_dwarf < DRINK_FLOOR and (resources.get("plant_stacks") or 0) == 0:
+        if round_index == 0:
+            actions.append({"command": "set_dwarf_labor", "args": ["best", "HERBALIST", True]})
+        actions.append({"command": "gather_plants", "args": [GATHER_BATCH]})
 
     # Gathering when hungry was tried here and REMOVED: on the hungry scenario over a
     # month every tier's provisioning rose to 0.25-0.32 -- the idle fort included --
