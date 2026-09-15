@@ -178,4 +178,28 @@ def test_every_tier_emits_only_allow_listed_verbs():
 
 
 def test_tier_registry_is_ordered_and_complete():
-    assert list(TIERS) == ["v0_idle", "v1_developer", "v2_reactive", "v3_survival"]
+    assert list(TIERS) == ["v0_idle", "v1_developer", "v2_reactive", "v3_survival", "v4_settlement"]
+
+
+def test_v4_uses_the_verbs_v3_never_touched():
+    # v3 used 16 of the catalog's 29 verbs and none about housing, furniture, zones or
+    # administration; v4 is v3 plus that chain, gated on what the fort reports.
+    from bonsai_lab_agent.baselines import v3_survival, v4_settlement
+    from bonsai_lab_agent.actions import sanitize
+    obs = {"round": 6, "rounds_total": 24, "ticks_remaining": 3000, "cohort_alive": 7, "cohort_size": 7,
+           "citizens": 16, "dug_tiles": 120, "food_count": 30, "drink_count": 12,
+           "dependencies": {"resources": {"wood": 20, "beds": 2, "barrels": 10, "seed_stacks": 5, "plant_stacks": 0},
+                            "workshops": {"built_by_type": {"Carpenters": 1, "Still": 1}, "pending_by_type": {}},
+                            "logistics": {"stockpiles": 2}, "food_chain": {"farm_plots": 3},
+                            "digging": {"designated_total": 150}, "jobs": {}, "manager_orders": {}}}
+    v3 = {a["command"] for a in v3_survival(obs)}
+    v4 = [a["command"] for a in v4_settlement(obs)]
+    assert v3 <= set(v4)
+    assert {"apply_template", "add_workorder", "place_furniture", "assign_room"} <= set(v4)
+    clean, messages = sanitize(v4_settlement(obs))
+    assert not messages, messages                     # every intent passes the gate as written
+    obs["round"] = 0
+    first = [a["command"] for a in v4_settlement(obs)]
+    assert first.count("assign_noble") == 2 and first.count("create_zone") == 2
+    obs["under_threat"] = True
+    assert "apply_template" not in [a["command"] for a in v4_settlement(obs)]

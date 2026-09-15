@@ -13,6 +13,6 @@ something is wrong — so it must visibly change behaviour when the threat chann
 lights up, not merely carry a branch that never fires.
 """
 from bonsai_lab_agent.baselines.tiers import (TIERS, v0_idle, v1_developer, v2_reactive,
-                                              v3_survival)
+                                              v3_survival, v4_settlement)
 
-__all__ = ["TIERS", "v0_idle", "v1_developer", "v2_reactive", "v3_survival"]
+__all__ = ["TIERS", "v0_idle", "v1_developer", "v2_reactive", "v3_survival", "v4_settlement"]

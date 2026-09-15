@@ -361,6 +361,8 @@ def run_stepped_episode(controller_fn: Callable[[dict], list[dict]], *,
             cobs["season"] = int(cur_raw.get("season", -1) or 0)
             cobs["year_tick"] = int(cur_raw.get("yeartick", -1) or 0)
             cobs["fish_raw"] = int(cur_raw.get("nfishraw", 0) or 0)
+            # everyone living here now, migrants included; cohort_* is the scored T0 group
+            cobs["citizens"] = int(cur_raw.get("ncit", 0) or 0)
             cobs["dependencies"] = dependency_state(cur_raw)
             cobs["previous_action_feedback"] = previous_feedback
 

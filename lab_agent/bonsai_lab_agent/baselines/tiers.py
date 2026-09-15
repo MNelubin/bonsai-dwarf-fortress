@@ -387,9 +387,88 @@ def v3_survival(obs: dict) -> list[dict]:
     return actions or ADVANCE
 
 
+# ---------------------------------------------------------------- v4: settlement
+#
+# The catalog had 29 verbs and v3 used 16 of them; the thirteen it never touched are
+# every verb about housing, furniture, zones, administration and finish. A student
+# learns only what its teacher does, so in two days of forts nobody ever built a bed.
+# Ten-year runs started 2026-09-15 showed why it matters: the population tripled in
+# the first year on both fresh forts (7 -> 16, 7 -> 19) with nowhere to sleep or eat.
+# This tier is v3 plus the settlement chain, in dependency order, each rule gated on
+# what the fort reports so it re-asks only for what is still missing.
+BEDROOMS_AFTER_DUG = 60     # tiles dug before the bedroom block is stamped
+SMOOTH_AFTER_DUG = 150      # tiles dug before smoothing is worth a miner's time
+FURNISH_EVERY = 6           # rounds between re-asking for beds, tables and rooms
+SMOOTH_BATCH = 40
+DINING_SEATS = 4
+
+
+def v4_settlement(obs: dict) -> list[dict]:
+    """v3_survival, and then the fort becomes a place to live."""
+    base = [a for a in v3_survival(obs) if a.get("command") != "advance"]
+    if obs.get("under_threat"):
+        return base or ADVANCE                      # v3 already holds; so does this
+    deps = obs.get("dependencies") or {}
+    resources = deps.get("resources") or {}
+    workshops = deps.get("workshops") or {}
+    built = workshops.get("built_by_type") or {}
+    round_index = int(obs.get("round", 0))
+    citizens = max(int(obs.get("citizens") or 0), int(obs.get("cohort_alive") or 0), 1)
+    dug = int(obs.get("dug_tiles") or 0)
+    wood = int(resources.get("wood") or 0)
+    beds = int(resources.get("beds") or 0)
+    carpenters = (built.get("Carpenters") or 0) > 0
+    actions = list(base)
+
+    if round_index == 0:
+        # A manager turns work orders into jobs; a bookkeeper keeps the stock counts the
+        # policy reads honest. The herd needs a pasture or it does not eat (guide 21:18),
+        # and idle dwarves need somewhere to be that is not the wagon.
+        actions += [
+            {"command": "assign_noble", "args": ["MANAGER", "best"]},
+            {"command": "assign_noble", "args": ["BOOKKEEPER", "best"]},
+            {"command": "create_zone", "args": ["pasture", 8, 8]},
+            {"command": "create_zone", "args": ["meeting", 6, 6]},
+        ]
+    periodic = round_index % FURNISH_EVERY == 0
+
+    # Housing: stamp the bedroom block once the miners have a shaft to hang it on, keep
+    # a bed per citizen coming from the carpenter, furnish the block once beds exist,
+    # and hand rooms out to whoever has none. Each verb refuses when its turn has not
+    # come (nothing dug, no bed in stock) and says so; re-asking every sixth round is
+    # what makes the chain advance without the policy tracking its own state.
+    if dug >= BEDROOMS_AFTER_DUG and carpenters:
+        if periodic:
+            actions.append({"command": "apply_template", "args": ["bedrooms28", "dig"]})
+        if beds < citizens and wood > 0 and periodic:
+            actions.append({"command": "add_workorder", "args": ["ConstructBed", min(10, citizens - beds), "wood"]})
+        if beds > 0 and periodic:
+            actions.append({"command": "apply_template", "args": ["bedrooms28", "rooms"]})
+            actions.append({"command": "place_furniture", "args": ["bed", min(beds, 10)]})
+            actions.append({"command": "assign_room", "args": ["bedroom", "any"]})
+
+    # A dining hall: tables and chairs from the carpenter, a zone, and the seats put in.
+    if dug >= BEDROOMS_AFTER_DUG and carpenters and wood > 0 and periodic and round_index >= 2 * FURNISH_EVERY:
+        actions += [
+            {"command": "add_workorder", "args": ["ConstructTable", 2, "wood"]},
+            {"command": "add_workorder", "args": ["ConstructThrone", DINING_SEATS, "wood"]},
+            {"command": "create_zone", "args": ["dining", 5, 5]},
+            {"command": "place_furniture", "args": ["table", 2]},
+            {"command": "place_furniture", "args": ["chair", DINING_SEATS]},
+        ]
+
+    # Finish: smooth the stone once there is a fort's worth of it. Value and, on this
+    # embark, the aquifer's seepage.
+    if dug >= SMOOTH_AFTER_DUG and round_index % (2 * FURNISH_EVERY) == 0:
+        actions.append({"command": "smooth", "args": [SMOOTH_BATCH]})
+
+    return actions or ADVANCE
+
+
 TIERS = {
     "v0_idle": v0_idle,
     "v1_developer": v1_developer,
     "v2_reactive": v2_reactive,
     "v3_survival": v3_survival,
+    "v4_settlement": v4_settlement,
 }
