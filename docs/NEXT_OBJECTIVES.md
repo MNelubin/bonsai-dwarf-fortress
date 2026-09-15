@@ -243,8 +243,25 @@ and two hungry trajectories bought +0.5 the same day. Search is now the second l
 not the first. Next champion comes from a new mechanic and new data, then one ARS pass
 to tune it.
 
-Weights: `player/weights/student_evolved_v3.json` (current champion, factored head, 52
-features); `student_v3.json` is its imitation base; older champions and every
+The night of 2026-09-14/15, all under the observer that counts honestly and the
+teacher that fishes and butchers twice (k=3, normalised in brackets, 3.0 = teacher
+on every scenario):
+
+    weights                          fresh          mature         hungry month   sum
+    student_v4 (61 features)         0.6162 [0.99]  0.6115 [1.00]  0.5597 [0.66]  2.65
+    evolve8 champion (ARS from v4)   0.6142 [0.98]  0.6223 [1.13]  0.5734 [0.69]  2.80
+    student_v5 (62, fish + herd)     0.6055 [0.93]  0.6115 [1.00]  0.6768 [0.91]  2.84
+    evolve9 champion (ARS from v5)   0.6097 [0.95]  0.6217 [1.13]  0.6768 [0.91]  2.99
+
+Same pattern three times now: the search finds the mature fort's extra digging
+(148-150 tiles against the teacher's 116, three episodes to the digit) and nothing
+the teacher does not know on the fresh or hungry forts; the data moves the hungry
+month (0.66 -> 0.91 from six episodes of the fish and herd rules). The claims were
+3.18 and 3.12; the re-measurements 2.80 and 2.99 - the mean's single selection
+episode still flatters it a little, less than the old best-candidate did.
+
+Weights: `player/weights/student_evolved_v5.json` (current champion, factored head, 62
+features); `student_v5.json` is its imitation base; older champions and every
 per-generation log sit beside them.
 
 The observation changed underneath the player on 2026-09-14 (seed, wood and barrel
