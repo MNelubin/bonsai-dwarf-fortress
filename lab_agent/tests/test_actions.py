@@ -403,9 +403,13 @@ def test_the_schema_stays_small_enough_to_ship_every_round():
     nothing; with no plants there is no drink, and DF will not let miners take a pick
     while the larder holds neither food nor drink, so the farm's soil never appears.
     Shrubs are the plants a fort gets without digging. Ceiling 10300.
+
+    2026-09-15, four more orderable jobs (ConstructQuern, MillPlants, ProcessPlants,
+    PrepareMeal) and two materials: a Quern or Kitchen could always be built and
+    nothing ordered at it. Ceiling 10500.
     """
     import json
-    assert len(json.dumps(available_actions())) < 10300
+    assert len(json.dumps(available_actions())) < 10500
 
 
 def test_every_live_verb_has_a_toolbook_entry():

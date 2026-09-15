@@ -303,6 +303,19 @@ local JOB_SPEC = {
     ConstructWeaponRack = { { mat = 'wood',  shop = 'Carpenters', item = 'WOOD' },
                             { mat = 'stone', shop = 'Masons',     item = 'BOULDER' } },
     ConstructStatue     = { { mat = 'stone', shop = 'Masons',     item = 'BOULDER' } },
+    -- The food side, added 2026-09-15. build_workshop takes any df.workshop_type, so a
+    -- Quern, a Kitchen or a Farmer's workshop could always be built - and nothing could
+    -- be ordered at them, because this table is what add_workorder can say. The seed
+    -- loop runs through the Still (measured: sweet pods brewed came back as twenty
+    -- seeds, plump helmets eaten came back as none) and through these: milling and
+    -- processing return seeds too, and a cooked meal is what keeps raw plants off the
+    -- table. `flags1` is copied onto the job item, the way DFHack's workshops.lua does
+    -- it; `extra` are further reagents; `mat_type` is the job's own field (meal size).
+    ConstructQuern      = { { mat = 'stone', shop = 'Masons',     item = 'BOULDER' } },
+    MillPlants          = { { mat = 'plant', shop = 'Quern',      item = 'PLANT', flags1 = { millable = true, unrotten = true } },
+                            { mat = 'plant', shop = 'Millstone',  item = 'PLANT', flags1 = { millable = true, unrotten = true } } },
+    ProcessPlants       = { { mat = 'plant', shop = 'Farmers',    item = 'PLANT', flags1 = { processable = true, unrotten = true } } },
+    PrepareMeal         = { { mat = 'food',  shop = 'Kitchen',    item = 'NONE', mat_type = 2, flags1 = { solid = true, cookable = true, unrotten = true }, extra = { { flags1 = { cookable = true, unrotten = true } } } } },
 }
 
 -- What a design's furniture is called, on both sides: the job that makes it and the item
@@ -558,26 +571,39 @@ local function dispatch_orders()
                     -- a built Carpenters, drink 0 from autumn. A generic job item - the
                     -- shape DFHack's own workshops.lua gives ConstructBed and MakeBarrel -
                     -- lets DF pick any suitable log when the job is taken.
-                    local item = free_material(df.item_type[variant.item])
+                    local item = true
+                    if variant.item ~= 'NONE' then
+                        item = free_material(df.item_type[variant.item])
+                    end
                     if not item then break end
                     local job = df.job:new()
                     job.job_type = o.job_type
                     job.pos = xyz2pos(shop.centerx, shop.centery, shop.z)
                     job.flags.by_manager = true
                     job.order_id = o.id
+                    if variant.mat_type then pcall(function() job.mat_type = variant.mat_type end) end
                     pcall(function() job.material_category[variant.mat] = true end)
                     dfhack.job.addGeneralRef(job, df.general_ref_type.BUILDING_HOLDER, shop.id)
                     shop.jobs:insert('#', job)
                     dfhack.job.linkIntoWorld(job, true)
-                    local ok = pcall(function()
+                    local function reagent(spec, itype)
                         local ji = df.job_item:new()
-                        ji.item_type = df.item_type[variant.item]
+                        ji.item_type = itype
                         ji.item_subtype = -1
                         ji.mat_type = -1
                         ji.mat_index = -1
                         ji.quantity = 1
                         ji.vector_id = df.job_item_vector_id.IN_PLAY
+                        for key, value in pairs(spec.flags1 or {}) do
+                            if value == true then ji.flags1[key] = true end
+                        end
                         job.job_items.elements:insert('#', ji)
+                    end
+                    local ok = pcall(function()
+                        reagent(variant, variant.item == 'NONE' and -1 or df.item_type[variant.item])
+                        for _, ex in ipairs(variant.extra or {}) do
+                            reagent(ex, ex.item and df.item_type[ex.item] or -1)
+                        end
                     end)
                     if ok and #job.job_items.elements > 0 then
                         queued = queued + 1
@@ -1293,7 +1319,15 @@ local function crops_by_preference()
         -- through to dimple cups (dye) and quarry bushes (leaves nobody processes) and
         -- sowed all three plots with them - seeds gone, plots full, nothing to eat or
         -- brew. A plant that is neither EDIBLE_RAW nor DRINK is not a crop here.
-        if idx and (p.flags.DRINK or p.flags.EDIBLE_RAW) then
+        local edible = false
+        pcall(function()
+            -- EDIBLE_RAW is a MATERIAL flag, not a plant flag: the plump helmet's
+            -- structural material carries it, the plant itself carries DRINK/MILL/SEED
+            for _, m in ipairs(p.material) do
+                if m.flags.EDIBLE_RAW then edible = true end
+            end
+        end)
+        if idx and (p.flags.DRINK or edible) then
             list[#list + 1] = { id = id, idx = idx, n = n,
                                 drink = p.flags.DRINK or false,
                                 under = subterranean(p) }
@@ -3919,9 +3953,12 @@ while QI <= #QUEUE do
                 -- pushed a copy of entry 0 or a literal 0: the live kitchen list read
                 -- 110 SEEDS entries whose kind printed as a stray pointer. "Do not
                 -- cook" is Cook, explicitly.
-                local cook = 1
-                pcall(function() cook = df.kitchen_exc_type.Cook end)
-                k.exc_types:insert('#', cook)
+                -- an enum vector takes neither insert() of a number nor a numeric
+                -- assignment; the enum's NAME writes (DFHack resolves it), Cook == 0
+                k.exc_types:resize(#k.exc_types + 1)
+                local i = #k.exc_types - 1
+                local okw = pcall(function() k.exc_types[i] = 'Cook' end)
+                if not okw then pcall(function() k.exc_types[i] = df.kitchen_exc_type.Cook end) end
             end
             local changed, reached = 0, 0
             local seen = {}

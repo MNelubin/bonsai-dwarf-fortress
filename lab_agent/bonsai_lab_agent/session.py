@@ -37,7 +37,10 @@ _INT = re.compile(r"-?\d+")
 
 # The project convention: every dfhack-run call is bounded. An unbounded call against
 # a wedged DF hangs forever (observed 2026-07-29 against the unresponsive port-5000 DF).
-RPC_TIMEOUT = int(os.environ.get("BONSAI_RPC_TIMEOUT", "25"))
+# 90, not 25: on the 136-dwarf fort a plain frame poll ran past 25 s twice in a
+# fort-year (a season roll, an autosave) and each time ended a ten-year run with
+# "dfhack-run lua timed out". A bound this generous costs nothing when DF answers.
+RPC_TIMEOUT = int(os.environ.get("BONSAI_RPC_TIMEOUT", "90"))
 
 # Advance polling. Measured 2026-07-29: one frame+pause RPC costs ~7ms, so polling
 # finely is nearly free, while a coarse interval dominates the cost of small chunks.

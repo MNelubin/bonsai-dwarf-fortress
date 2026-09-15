@@ -150,6 +150,7 @@ BARREL_FLOOR = 6      # empty barrels to keep ahead of the Still
 FARM_PLOTS = 3        # plots to build before the fort stops asking; two fed nobody over a year
 FISH_FLOOR = 3        # raw fish on hand before a Fishery is worth building
 SLAUGHTER_EVERY = 12  # rounds between butcher marks, so the marks become meat first
+MEAL_FLOOR = 6        # raw food on hand before the kitchen is asked for meals
 
 
 def v2_reactive(obs: dict) -> list[dict]:
@@ -479,6 +480,20 @@ def v4_settlement(obs: dict) -> list[dict]:
             actions.append({"command": "place_furniture", "args": ["table", 2 - tables]})
         if chairs < DINING_SEATS:
             actions.append({"command": "place_furniture", "args": ["chair", DINING_SEATS - chairs]})
+
+    # The kitchen: meals from meat and fish, never from plants, so the plants reach the
+    # Still and come back as seeds (measured 2026-09-15: brewed plants return seeds,
+    # eaten ones do not). A Kitchen once the fort is dug in; PLANT excluded from
+    # cooking; easy meals whenever there is meat or fish to spare.
+    kitchen = (built.get("Kitchen") or 0) > 0
+    food = int(obs.get("food_count") or 0)
+    if dug >= BEDROOMS_AFTER_DUG and carpenters and periodic:
+        if not kitchen and (workshops.get("pending_by_type") or {}).get("Kitchen", 0) == 0 and wood + int(resources.get("boulders") or 0) > 0:
+            actions.append({"command": "build_workshop", "args": ["Kitchen"]})
+        if kitchen:
+            actions.append({"command": "set_kitchen_flag", "args": ["PLANT", False]})
+            if food >= MEAL_FLOOR:
+                actions.append({"command": "add_workorder", "args": ["PrepareMeal", 3, "food"]})
 
     # Finish: smooth the stone once there is a fort's worth of it. Value and, on this
     # embark, the aquifer's seepage.

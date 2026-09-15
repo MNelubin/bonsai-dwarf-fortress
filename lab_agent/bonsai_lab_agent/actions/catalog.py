@@ -56,11 +56,15 @@ ORDERABLE_JOBS = (
     # ConstructArmorStand=76, ConstructWeaponRack=77, ConstructStatue=79 exist;
     # MakeArmorStand, MakeWeaponRack and MakeStatue do not.
     "ConstructArmorStand", "ConstructWeaponRack", "ConstructStatue",
+    # 2026-09-15: the food side. A Quern, Kitchen or Farmer's could always be built and
+    # nothing ordered at them. Milling and processing return seeds; a cooked meal keeps
+    # raw plants off the table so the Still gets them.
+    "ConstructQuern", "MillPlants", "ProcessPlants", "PrepareMeal",
 )
 
 # Material classes the dispatcher can pick a reagent and a workshop for. "any" lets it
 # take whichever the job supports and the fort has a workshop for.
-ORDER_MATERIALS = ("any", "wood", "stone")
+ORDER_MATERIALS = ("any", "wood", "stone", "plant", "food")
 
 # DF's own comparison and schedule enums (df.logic_condition_type,
 # df.workquota_frequency_type), so a condition the agent writes is the same shape a
