@@ -419,6 +419,12 @@ def v4_settlement(obs: dict) -> list[dict]:
     beds = int(resources.get("beds") or 0)
     carpenters = (built.get("Carpenters") or 0) > 0
     actions = list(base)
+    periodic = round_index % FURNISH_EVERY == 0
+    housing = deps.get("housing") or {}
+    beds_built = int(housing.get("bed") or 0)
+    tables = int(housing.get("table") or 0)
+    chairs = int(housing.get("chair") or 0)
+    bedrooms_free = int(housing.get("bedroom_free") or 0)
 
     if round_index == 0:
         # A manager turns work orders into jobs; a bookkeeper keeps the stock counts the
@@ -427,35 +433,42 @@ def v4_settlement(obs: dict) -> list[dict]:
         actions += [
             {"command": "assign_noble", "args": ["MANAGER", "best"]},
             {"command": "assign_noble", "args": ["BOOKKEEPER", "best"]},
-            {"command": "create_zone", "args": ["pasture", 8, 8]},
-            {"command": "create_zone", "args": ["meeting", 6, 6]},
         ]
-    periodic = round_index % FURNISH_EVERY == 0
+    if periodic and int(housing.get("pasture") or 0) == 0:
+        actions.append({"command": "create_zone", "args": ["pasture", 8, 8]})
+    if periodic and int(housing.get("meeting") or 0) == 0:
+        actions.append({"command": "create_zone", "args": ["meeting", 6, 6]})
 
     # Housing: stamp the bedroom block once the miners have a shaft to hang it on, keep
-    # a bed per citizen coming from the carpenter, furnish the block once beds exist,
-    # and hand rooms out to whoever has none. Each verb refuses when its turn has not
-    # come (nothing dug, no bed in stock) and says so; re-asking every sixth round is
-    # what makes the chain advance without the policy tracking its own state.
+    # a bed per citizen coming from the carpenter - counting the beds already BUILT,
+    # not only the loose ones, which is the difference between seven beds and a
+    # hundred and forty-seven - furnish the block while loose beds exist, and hand
+    # rooms out while any bedroom has no owner.
     if dug >= BEDROOMS_AFTER_DUG and carpenters:
-        if periodic:
+        if periodic and int(housing.get("bedroom") or 0) == 0:
             actions.append({"command": "apply_template", "args": ["bedrooms28", "dig"]})
-        if beds < citizens and wood > 0 and periodic:
-            actions.append({"command": "add_workorder", "args": ["ConstructBed", min(10, citizens - beds), "wood"]})
+        want_beds = citizens - beds_built - beds
+        if want_beds > 0 and wood > 0 and periodic:
+            actions.append({"command": "add_workorder", "args": ["ConstructBed", min(10, want_beds), "wood"]})
         if beds > 0 and periodic:
-            actions.append({"command": "apply_template", "args": ["bedrooms28", "rooms"]})
+            if int(housing.get("bedroom") or 0) == 0:
+                actions.append({"command": "apply_template", "args": ["bedrooms28", "rooms"]})
             actions.append({"command": "place_furniture", "args": ["bed", min(beds, 10)]})
+        if bedrooms_free > 0:
             actions.append({"command": "assign_room", "args": ["bedroom", "any"]})
 
-    # A dining hall: tables and chairs from the carpenter, a zone, and the seats put in.
-    if dug >= BEDROOMS_AFTER_DUG and carpenters and wood > 0 and periodic and round_index >= 2 * FURNISH_EVERY:
-        actions += [
-            {"command": "add_workorder", "args": ["ConstructTable", 2, "wood"]},
-            {"command": "add_workorder", "args": ["ConstructThrone", DINING_SEATS, "wood"]},
-            {"command": "create_zone", "args": ["dining", 5, 5]},
-            {"command": "place_furniture", "args": ["table", 2]},
-            {"command": "place_furniture", "args": ["chair", DINING_SEATS]},
-        ]
+    # A dining hall: tables and chairs from the carpenter, one zone, the seats put in.
+    if dug >= BEDROOMS_AFTER_DUG and carpenters and periodic and round_index >= 2 * FURNISH_EVERY:
+        if wood > 0 and tables < 2:
+            actions.append({"command": "add_workorder", "args": ["ConstructTable", 2 - tables, "wood"]})
+        if wood > 0 and chairs < DINING_SEATS:
+            actions.append({"command": "add_workorder", "args": ["ConstructThrone", DINING_SEATS - chairs, "wood"]})
+        if int(housing.get("dining") or 0) == 0:
+            actions.append({"command": "create_zone", "args": ["dining", 5, 5]})
+        if tables < 2:
+            actions.append({"command": "place_furniture", "args": ["table", 2 - tables]})
+        if chairs < DINING_SEATS:
+            actions.append({"command": "place_furniture", "args": ["chair", DINING_SEATS - chairs]})
 
     # Finish: smooth the stone once there is a fort's worth of it. Value and, on this
     # embark, the aquifer's seepage.

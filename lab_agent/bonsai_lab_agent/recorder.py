@@ -74,6 +74,11 @@ class EpisodeRecorder:
         try:
             self._fh.write(json.dumps(obj, separators=(",", ":"), default=str) + "\n")
             self.events += 1
+            # A ten-year recording is unreadable until close() without this: gzip
+            # buffers whole blocks, and a run that dies or is still running shows as a
+            # 0-byte file. A sync flush every few events costs nothing measurable.
+            if self.events % 8 == 0:
+                self._fh.flush()
         except Exception as e:                       # noqa: BLE001
             self.errors.append(f"{type(e).__name__}: {e}"[:200])
 

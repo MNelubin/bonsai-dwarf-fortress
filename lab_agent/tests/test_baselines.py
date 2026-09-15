@@ -191,11 +191,15 @@ def test_v4_uses_the_verbs_v3_never_touched():
            "dependencies": {"resources": {"wood": 20, "beds": 2, "barrels": 10, "seed_stacks": 5, "plant_stacks": 0},
                             "workshops": {"built_by_type": {"Carpenters": 1, "Still": 1}, "pending_by_type": {}},
                             "logistics": {"stockpiles": 2}, "food_chain": {"farm_plots": 3},
-                            "digging": {"designated_total": 150}, "jobs": {}, "manager_orders": {}}}
+                            "digging": {"designated_total": 150}, "jobs": {}, "manager_orders": {},
+                            "housing": {"bed": 0, "table": 0, "chair": 0, "bedroom": 0, "bedroom_free": 0,
+                                        "dining": 0, "meeting": 0, "pasture": 0, "office": 0}}}
     v3 = {a["command"] for a in v3_survival(obs)}
     v4 = [a["command"] for a in v4_settlement(obs)]
     assert v3 <= set(v4)
-    assert {"apply_template", "add_workorder", "place_furniture", "assign_room"} <= set(v4)
+    assert {"apply_template", "add_workorder", "place_furniture"} <= set(v4)
+    obs["dependencies"]["housing"]["bedroom_free"] = 2
+    assert "assign_room" in [a["command"] for a in v4_settlement(obs)]
     clean, messages = sanitize(v4_settlement(obs))
     assert not messages, messages                     # every intent passes the gate as written
     obs["round"] = 0
@@ -203,3 +207,11 @@ def test_v4_uses_the_verbs_v3_never_touched():
     assert first.count("assign_noble") == 2 and first.count("create_zone") == 2
     obs["under_threat"] = True
     assert "apply_template" not in [a["command"] for a in v4_settlement(obs)]
+    # a fort that already has its housing is asked for nothing more: 147 beds on a
+    # fort of six is what asking for the loose count every sixth round did
+    obs["under_threat"] = False
+    obs["dependencies"]["housing"] = {"bed": 16, "table": 2, "chair": 4, "bedroom": 16, "bedroom_free": 0,
+                                       "dining": 1, "meeting": 1, "pasture": 1, "office": 0}
+    obs["dependencies"]["resources"]["beds"] = 0
+    later = [a["command"] for a in v4_settlement(obs)]
+    assert "add_workorder" not in later and "create_zone" not in later and "place_furniture" not in later

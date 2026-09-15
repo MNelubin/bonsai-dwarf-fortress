@@ -128,6 +128,9 @@ def dependency_state(raw: dict) -> dict:
         "food_chain": {
             "farm_plots": _raw_int(raw, "nfarmplots"),
         },
+        # Built furniture and zones by kind (bonsai-observe.lua `housing=`), so a policy
+        # asks for what is missing. Absent on an old observer: every count reads 0.
+        "housing": counts("housing"),
     }
 
 

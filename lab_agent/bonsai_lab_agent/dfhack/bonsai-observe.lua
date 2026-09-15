@@ -459,10 +459,36 @@ pcall(function()
     end
   end
 end)
+-- Housing, so a policy can ask for what is missing instead of what it asked for last
+-- time. Ten fort-years under v4 on 2026-09-15: 147 beds and 121 zones on a fort of
+-- six, food 0, drink 0, fifteen dead - the bed order counted only LOOSE beds, so every
+-- bed built made the next order larger, and the carpenter fed the whole forest into
+-- bedsteads while the barrels went unmade. Built furniture and zones by kind.
+local hb = { bed = 0, table = 0, chair = 0, bedroom = 0, bedroom_free = 0, dining = 0, meeting = 0, pasture = 0, office = 0 }
+pcall(function()
+  for _, b in ipairs(w.buildings.all) do
+    pcall(function()
+      local ty = b:getType()
+      if ty == df.building_type.Bed then hb.bed = hb.bed + 1
+      elseif ty == df.building_type.Table then hb.table = hb.table + 1
+      elseif ty == df.building_type.Chair then hb.chair = hb.chair + 1
+      elseif ty == df.building_type.Civzone then
+        local zt = b.type
+        if zt == df.civzone_type.Bedroom then
+          hb.bedroom = hb.bedroom + 1
+          if b.assigned_unit_id == -1 then hb.bedroom_free = hb.bedroom_free + 1 end
+        elseif zt == df.civzone_type.DiningHall then hb.dining = hb.dining + 1
+        elseif zt == df.civzone_type.MeetingHall then hb.meeting = hb.meeting + 1
+        elseif zt == df.civzone_type.Pen then hb.pasture = hb.pasture + 1
+        elseif zt == df.civzone_type.Office then hb.office = hb.office + 1 end
+      end
+    end)
+  end
+end)
 local season, yeartick = -1, -1
 pcall(function() season = df.global.cur_season; yeartick = df.global.cur_year_tick end)
 
-print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d ndesig=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d nlivestock=%d nmarked=%d season=%d yeartick=%d nfishraw=%d cids=%s",
+print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang=%d nfood=%d ndrink=%d nbuild=%d nbuild_all=%d worders=%d nsolid=%d nbbox=%d nwood=%d nboulder=%d nblocks=%d nbars=%d nbeds=%d nbarrels=%d nseeds=%d nplants=%d nworkshop=%d nbuiltshop=%d nunbuiltshop=%d nfarmplots=%d nstockpile=%d ndesig=%d shops=%s pending_shops=%s njobs=%d nunassignedjobs=%d nmanagerjobs=%d nbrewjobs=%d norders=%d norderleft=%d nhostile=%d nhostile_map=%d ninjured=%d nwounded=%d nannounce=%d ndanger=%d ncancel=%d warn=%s cancels=%s nwild=%d nitems=%d nunits=%d nlivestock=%d nmarked=%d season=%d yeartick=%d nfishraw=%d housing=%s cids=%s",
   tickabs, ncit, ndead, hsum, tsum, strsum, strdang, nfood, ndrink, nbuild, nbuild_all, worders,
   nsolid, nbbox, stock.WOOD, stock.BOULDER, stock.BLOCKS, stock.BAR, stock.BED,
   stock.BARREL, stock.SEEDS, stock.PLANT, nworkshop, nbuiltshop, nunbuiltshop, nfarmplots, nstockpile, (_G.BONSAI_DESIGNATED or 0),
@@ -472,4 +498,6 @@ print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang
   (#warn > 0 and table.concat(warn, ";") or "none"),
   (#cancels > 0 and table.concat(cancels, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
-  #w.items.all, #w.units.all, nlivestock, nmarked, season, yeartick, nfishraw, table.concat(cids, ",")))
+  #w.items.all, #w.units.all, nlivestock, nmarked, season, yeartick, nfishraw,
+  string.format("bed:%d,table:%d,chair:%d,bedroom:%d,bedroom_free:%d,dining:%d,meeting:%d,pasture:%d,office:%d", hb.bed, hb.table, hb.chair, hb.bedroom, hb.bedroom_free, hb.dining, hb.meeting, hb.pasture, hb.office),
+  table.concat(cids, ",")))

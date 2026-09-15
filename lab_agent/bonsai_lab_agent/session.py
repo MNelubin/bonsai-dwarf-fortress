@@ -216,7 +216,11 @@ class DFSession:
                 if isinstance(args, dict):
                     args = list(args.values())
                 f.write("\t".join([a["verb"], *[str(x) for x in args]]) + "\n")
-        return self.run("bonsai-apply-actions", self.actions_file)
+        # A settlement round on the mature fort - two blueprint stamps, orders, a zone,
+        # furniture and forty tiles of smoothing - ran past the 25 s RPC bound and
+        # ended a ten-year run at year 260 with "dfhack-run lua timed out". The apply
+        # call is the one RPC whose work scales with what was asked; give it room.
+        return self.run("bonsai-apply-actions", self.actions_file, timeout=max(RPC_TIMEOUT, 180))
 
     def advance(self, ticks: int, poll_timeout: int | None = None) -> int:
         """Advance exactly `ticks` sim frames, then pause. Returns the new frame counter.
