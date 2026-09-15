@@ -151,6 +151,7 @@ FARM_PLOTS = 3        # plots to build before the fort stops asking; two fed nob
 FISH_FLOOR = 3        # raw fish on hand before a Fishery is worth building
 SLAUGHTER_EVERY = 12  # rounds between butcher marks, so the marks become meat first
 MEAL_FLOOR = 6        # raw food on hand before the kitchen is asked for meals
+DRINK_TARGET = 3      # drink per dwarf the Still keeps topped up to
 
 
 def v2_reactive(obs: dict) -> list[dict]:
@@ -386,8 +387,19 @@ def v3_survival(obs: dict) -> list[dict]:
     # table: over four fort-years on the hungry embark the sweet pods, which are only
     # brewable, came back as twenty seeds, and the plump helmets, eaten raw, came back
     # as none. A plant brewed is a seed kept; a plant eaten is gone.
-    if can_brew and (jobs.get("brewing") or 0) == 0:
-        actions.append({"command": "brew_drink", "args": [max(1, min(5, int(resources.get("plant_stacks") or 0)))]})
+    # ...but not the fort's last meal. Plants are also food when the meat and fish run
+    # out, and a fort that brews everything starves beside full barrels (food 0, drink
+    # 0 in the same winter, twice). So: keep one plant per dwarf back while raw food is
+    # short of two servings a head, and brew what stands above that reserve - when
+    # drink is under three a head, or when plants pile past twice the reserve and
+    # would only rot or be eaten seedless.
+    plants = int(resources.get("plant_stacks") or 0)
+    food_now = int(obs.get("food_count") or 0)
+    drink_now = int(obs.get("drink_count") or 0)
+    reserve = cohort if food_now < 2 * cohort else 0
+    brewable = plants - reserve
+    if can_brew and (jobs.get("brewing") or 0) == 0 and brewable > 0             and (drink_now < DRINK_TARGET * cohort or plants > 2 * max(1, reserve)):
+        actions.append({"command": "brew_drink", "args": [max(1, min(5, brewable))]})
 
     return actions or ADVANCE
 
