@@ -147,7 +147,7 @@ HUNGRY_BELOW = 1.0
 DRINK_FLOOR = 1.0      # drink units per dwarf below which the fort starts gathering to brew
 GATHER_BATCH = 20     # shrubs per gather_plants request
 BARREL_FLOOR = 6      # empty barrels to keep ahead of the Still
-FARM_PLOTS = 2        # plots to build before the fort stops asking
+FARM_PLOTS = 3        # plots to build before the fort stops asking; two fed nobody over a year
 FISH_FLOOR = 3        # raw fish on hand before a Fishery is worth building
 SLAUGHTER_EVERY = 12  # rounds between butcher marks, so the marks become meat first
 

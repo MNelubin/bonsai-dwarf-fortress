@@ -3788,10 +3788,20 @@ while QI <= #QUEUE do
                     local underground = not (des and des.outside)
                     local crop = want
                     if not crop or crop == "" or crop == "best" then
-                        -- A plot that is already sown keeps its crop. The teacher asks
-                        -- every round, and re-picking "best" each time as the seed
-                        -- counts shifted re-sowed both plots to a new crop every round.
-                        if b.plant_id[0] >= 0 then crop = nil; kept = kept + 1 else
+                        -- A plot that is already sown keeps its crop while there is seed
+                        -- for it. The teacher asks every round, and re-picking "best"
+                        -- each time as the seed counts shifted re-sowed both plots to a
+                        -- new crop every round. But a plot kept on a crop with no seed
+                        -- left is a bare plot: traced over a year, seeds of the four
+                        -- unplanted kinds piled up 16 -> 33 through winter while both
+                        -- plots waited on the two kinds the fort had eaten through.
+                        local has_seed = false
+                        if b.plant_id[0] >= 0 then
+                            local cur = w.raws.plants.all[b.plant_id[0]]
+                            local n_seed = cur and seed_counts()[cur.id] or 0
+                            has_seed = (n_seed or 0) > 0
+                        end
+                        if has_seed then crop = nil; kept = kept + 1 else
                             local fit = {}
                             for _, e in ipairs(prefs) do
                                 if e.under == underground then fit[#fit + 1] = e.id end
