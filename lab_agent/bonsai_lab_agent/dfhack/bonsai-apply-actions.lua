@@ -1288,7 +1288,12 @@ local function crops_by_preference()
     local list = {}
     for id, n in pairs(seed_counts()) do
         local idx, p = plant_index(id)
-        if idx then
+        -- Only crops the fort can eat or drink. Traced over a season on the hungry
+        -- embark (2026-09-15): once the plump helmet seed was planted out, "best" fell
+        -- through to dimple cups (dye) and quarry bushes (leaves nobody processes) and
+        -- sowed all three plots with them - seeds gone, plots full, nothing to eat or
+        -- brew. A plant that is neither EDIBLE_RAW nor DRINK is not a crop here.
+        if idx and (p.flags.DRINK or p.flags.EDIBLE_RAW) then
             list[#list + 1] = { id = id, idx = idx, n = n,
                                 drink = p.flags.DRINK or false,
                                 under = subterranean(p) }
@@ -2211,7 +2216,13 @@ while QI <= #QUEUE do
             -- it starts at the first step that still holds undug wall, and everything
             -- between there and the shaft is designated by definition -- so the bound is
             -- a courtesy against runaway designation, not a correctness condition.
-            local MAX_REACH = 30
+            -- Raised 30 -> 90 on 2026-09-15: on this embark the aquifer sits at z=47, so
+            -- the fort has ONE level to live on, and a fort-year traced under v4 stood at
+            -- 313 tiles from its second month on - "the band within 30 tiles holds no
+            -- more undug wall" 198 rounds running - with sixteen dwarves, no room for a
+            -- bedroom block and nothing more to do. A 90-tile band on one level is a
+            -- fort's worth of rock; the frontier walk still keeps it connected.
+            local MAX_REACH = 90
 
             local function at(step, side, d)
                 if d[1] ~= 0 then return ox + d[1] * step, oy + side end
