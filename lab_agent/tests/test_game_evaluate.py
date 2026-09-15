@@ -155,6 +155,9 @@ def test_calibration_is_keyed_by_save_and_horizon():
     assert calibration_for("ourfort16-final+bonsai-prep-hungry", 33600) == {
         "noop": 0.260714, "ref": 0.722222}
     assert calibration_for("ourfort16-final", 33600) is None
+    # the year: idle 0.042, v3 0.403 with everyone alive; noisy, recorded, see scoring.py
+    assert calibration_for("ourfort16-final+bonsai-prep-hungry", 403200) == {
+        "noop": 0.042100, "ref": 0.402635}
 
 
 def test_an_unmeasured_save_refuses_instead_of_scoring(monkeypatch):

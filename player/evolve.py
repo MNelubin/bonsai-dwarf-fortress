@@ -57,6 +57,9 @@ SCENARIOS = {
     # a fort-month on a wagon with no food: the composite here is mostly whether the
     # policy finds the livestock before the dwarves die
     "hungry": (FRESH, "bonsai-prep-hungry", 33600, 2400),
+    # the year: 25 minutes an episode and +-0.2 of noise normalised. Not for selection;
+    # a champion plays it as a holdout, by hand.
+    "year": (FRESH, "bonsai-prep-hungry", 403200, 4800),
 }
 
 

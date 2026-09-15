@@ -214,6 +214,15 @@ CALIBRATION = {
     # 0.722222 on 2026-09-15 with three plots and crops re-picked when their seed runs
     # out (seven buildings; 0.714-0.725)
     ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.260714, "ref": 0.722222},
+    # The hungry YEAR, measured 2026-09-15, k=3 each, 288 decisions. Idle: 0.042 / 0.073
+    # / 0.004 - the fort eats its larder, then its dwarves. v3_survival: 0.389 / 0.517 /
+    # 0.403, seven of seven alive every time, 327-361 tiles, three plots, a Fishery, the
+    # herd butchered as it goes - and comfort 0.0-0.5, provisioning 0.07-0.36, because
+    # drink runs out by autumn and the pond freezes. The spread on the reference is
+    # 0.13, a third of the gap; a normalised year score carries +-0.2 of noise and a
+    # single episode says little. Recorded because survival is now reproducible here
+    # and nothing shorter shows the winter at all.
+    ("ourfort16-final+bonsai-prep-hungry", 403200): {"noop": 0.042100, "ref": 0.402635},
 }
 
 DEFAULT_SAVE = "bonsaifort2"
