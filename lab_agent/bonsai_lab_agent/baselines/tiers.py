@@ -381,8 +381,12 @@ def v3_survival(obs: dict) -> list[dict]:
     can_brew = ((built.get("Still") or 0) > 0
                 and (resources.get("plant_stacks") or 0) > 0
                 and (resources.get("barrels") or 0) > 0)
+    # Brew everything the plots give. Seeds come back through the Still, not the
+    # table: over four fort-years on the hungry embark the sweet pods, which are only
+    # brewable, came back as twenty seeds, and the plump helmets, eaten raw, came back
+    # as none. A plant brewed is a seed kept; a plant eaten is gone.
     if can_brew and (jobs.get("brewing") or 0) == 0:
-        actions.append({"command": "brew_drink", "args": [2]})
+        actions.append({"command": "brew_drink", "args": [max(1, min(5, int(resources.get("plant_stacks") or 0)))]})
 
     return actions or ADVANCE
 

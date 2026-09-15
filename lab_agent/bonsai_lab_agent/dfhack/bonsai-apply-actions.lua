@@ -3915,11 +3915,13 @@ while QI <= #QUEUE do
             -- works. This was invisible until the mature fort exercised it.
             local k = df.global.plotinfo.kitchen
             local function push_exc()
-                if #k.exc_types > 0 then
-                    k.exc_types:insert('#', k.exc_types[0])
-                else
-                    k.exc_types:insert('#', 0)
-                end
+                -- The exclusion kind is an enum (Cook, Brew), and the first version
+                -- pushed a copy of entry 0 or a literal 0: the live kitchen list read
+                -- 110 SEEDS entries whose kind printed as a stray pointer. "Do not
+                -- cook" is Cook, explicitly.
+                local cook = 1
+                pcall(function() cook = df.kitchen_exc_type.Cook end)
+                k.exc_types:insert('#', cook)
             end
             local changed, reached = 0, 0
             local seen = {}
