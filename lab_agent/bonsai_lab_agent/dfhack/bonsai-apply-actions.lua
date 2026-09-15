@@ -549,6 +549,15 @@ local function dispatch_orders()
 
                 local queued = 0
                 for _ = 1, batch do
+                    -- Only to know a log exists; the job is NOT pinned to it. The first
+                    -- version attached that one item as the job's reagent, and when the
+                    -- log was taken by another job first the bed job sat in the shop's
+                    -- queue forever with an item nobody could fetch. Five such jobs fill
+                    -- the shop's cap and every later order is refused as "nothing can
+                    -- work it": measured over a fort-year, 109 MakeBarrel refusals with
+                    -- a built Carpenters, drink 0 from autumn. A generic job item - the
+                    -- shape DFHack's own workshops.lua gives ConstructBed and MakeBarrel -
+                    -- lets DF pick any suitable log when the job is taken.
                     local item = free_material(df.item_type[variant.item])
                     if not item then break end
                     local job = df.job:new()
@@ -561,9 +570,16 @@ local function dispatch_orders()
                     shop.jobs:insert('#', job)
                     dfhack.job.linkIntoWorld(job, true)
                     local ok = pcall(function()
-                        dfhack.job.attachJobItem(job, item, df.job_role_type.Reagent, 0, -1)
+                        local ji = df.job_item:new()
+                        ji.item_type = df.item_type[variant.item]
+                        ji.item_subtype = -1
+                        ji.mat_type = -1
+                        ji.mat_index = -1
+                        ji.quantity = 1
+                        ji.vector_id = df.job_item_vector_id.IN_PLAY
+                        job.job_items.elements:insert('#', ji)
                     end)
-                    if ok and #job.items > 0 then
+                    if ok and #job.job_items.elements > 0 then
                         queued = queued + 1
                     else
                         -- a job with no reagent is cancelled by DF and silently removed
@@ -3016,19 +3032,20 @@ while QI <= #QUEUE do
                         shops[#shops + 1] = variant.shop
                     end
                 end
-                local have = 0
+                local have, busy = 0, 0
                 for _, b in ipairs(w.buildings.all) do
                     if df.building_workshopst:is_instance(b) and built(b)
                         and seen[tostring(df.workshop_type[b.type])] then
                         have = have + 1
+                        busy = busy + #b.jobs
                     end
                 end
                 refuse("add_workorder", string.format(
                     "%s is queued in the ledger but nothing can work it yet: it needs a "
-                    .. "built %s and the fort has %d",
+                    .. "built %s and the fort has %d, holding %d queued job(s)",
                     tostring(jname),
                     #shops > 0 and table.concat(shops, " or ") or "workshop",
-                    have))
+                    have, busy))
             end
         end)
     elseif verb == "add_workorder_conditional" then
@@ -3068,7 +3085,27 @@ while QI <= #QUEUE do
             local width = math.max(1, math.min(tonumber(a[3]) or 6, 20))
             local height = math.max(1, math.min(tonumber(a[4]) or width, 20))
             local x, y, z
+            -- A sleeping zone goes where the beds are, or it sleeps nobody: a dormitory
+            -- or bedroom painted on a free rectangle somewhere else covers no bed, and a
+            -- bed outside a sleeping zone is furniture. Measured (season, hungry
+            -- embark, 2026-09-15): seven beds placed, zero bedrooms, dwarves on the
+            -- floor. Centre the zone on the beds already built.
+            if (kind == 'dormitory' or kind == 'bedroom') then
+                local sx, sy, sz, n = 0, 0, nil, 0
+                for _, b in ipairs(w.buildings.all) do
+                    if b:getType() == df.building_type.Bed then
+                        sx, sy, n = sx + b.centerx, sy + b.centery, n + 1
+                        sz = sz or b.z
+                    end
+                end
+                if n > 0 then
+                    x = math.floor(sx / n) - math.floor(width / 2)
+                    y = math.floor(sy / n) - math.floor(height / 2)
+                    z = sz
+                end
+            end
             for _ = 1, 16 do
+                if x then break end
                 local cx, cy, cz = find_site(width, height, 5, P.zone or 0, 8)
                 P.zone = (P.zone or 0) + 1
                 if cx then

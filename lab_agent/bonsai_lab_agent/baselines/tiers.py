@@ -454,6 +454,12 @@ def v4_settlement(obs: dict) -> list[dict]:
             if int(housing.get("bedroom") or 0) == 0:
                 actions.append({"command": "apply_template", "args": ["bedrooms28", "rooms"]})
             actions.append({"command": "place_furniture", "args": ["bed", min(beds, 10)]})
+        # Beds outside a sleeping zone are furniture, not sleep. The bedroom block's
+        # rooms stage makes bedrooms when its block was dug; when it was not (no site
+        # fits the 22x23 blueprint on this embark), a dormitory over the placed beds is
+        # the zone that puts everyone in a bed.
+        if beds_built > 0 and int(housing.get("bedroom") or 0) == 0 and int(housing.get("dormitory") or 0) == 0 and periodic:
+            actions.append({"command": "create_zone", "args": ["dormitory", 8, 8]})
         if bedrooms_free > 0:
             actions.append({"command": "assign_room", "args": ["bedroom", "any"]})
 

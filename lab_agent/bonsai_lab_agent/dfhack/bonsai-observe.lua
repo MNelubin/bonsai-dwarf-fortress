@@ -148,6 +148,11 @@ pcall(function()
       -- An item already consumed by furniture/workshop construction is reachable but
       -- not stock. The embark wagon is the deliberate exception: its contents are the
       -- fort's starting supplies and the dispatcher can claim them directly.
+      -- ...but a workshop's OUTPUT sits in the workshop too, with the workshop as its
+      -- holder, until a hauler moves it. Thirteen finished beds stood in the Carpenter's
+      -- for a month reading as zero beds (2026-09-15), so the policy placed none and
+      -- ordered more. A workshop holds products; only a non-workshop building (a bed
+      -- built into a room, a stockpile's bin, a wagon) holds consumed or stored things.
       if usable and not wagon then
         local holder_bld = nil
         if reach then
@@ -155,7 +160,13 @@ pcall(function()
         else
           pcall(function() holder_bld = dfhack.items.getHolderBuilding(it) end)
         end
-        if holder_bld then usable = false end
+        if holder_bld then
+          local is_shop = false
+          pcall(function() is_shop = df.building_workshopst:is_instance(holder_bld) or df.building_furnacest:is_instance(holder_bld) end)
+          if not is_shop then usable = false end
+        end
+        -- the logs a workshop is BUILT of are held by it too; those carry in_building
+        if it.flags.in_building then usable = false end
       end
       if usable then stock[name] = stock[name] + 1 end
     end
@@ -464,7 +475,7 @@ end)
 -- six, food 0, drink 0, fifteen dead - the bed order counted only LOOSE beds, so every
 -- bed built made the next order larger, and the carpenter fed the whole forest into
 -- bedsteads while the barrels went unmade. Built furniture and zones by kind.
-local hb = { bed = 0, table = 0, chair = 0, bedroom = 0, bedroom_free = 0, dining = 0, meeting = 0, pasture = 0, office = 0 }
+local hb = { bed = 0, table = 0, chair = 0, bedroom = 0, bedroom_free = 0, dining = 0, meeting = 0, pasture = 0, office = 0, dormitory = 0 }
 pcall(function()
   for _, b in ipairs(w.buildings.all) do
     pcall(function()
@@ -480,7 +491,8 @@ pcall(function()
         elseif zt == df.civzone_type.DiningHall then hb.dining = hb.dining + 1
         elseif zt == df.civzone_type.MeetingHall then hb.meeting = hb.meeting + 1
         elseif zt == df.civzone_type.Pen then hb.pasture = hb.pasture + 1
-        elseif zt == df.civzone_type.Office then hb.office = hb.office + 1 end
+        elseif zt == df.civzone_type.Office then hb.office = hb.office + 1
+        elseif zt == df.civzone_type.Dormitory then hb.dormitory = hb.dormitory + 1 end
       end
     end)
   end
@@ -499,5 +511,5 @@ print(string.format("OBS t=%d ncit=%d ndead=%d hsum=%d tsum=%d strsum=%d strdang
   (#cancels > 0 and table.concat(cancels, ";") or "none"),
   (function() local n=0; pcall(function() for _,u in ipairs(w.units.active) do if dfhack.units.isWildlife(u) then n=n+1 end end end); return n end)(),
   #w.items.all, #w.units.all, nlivestock, nmarked, season, yeartick, nfishraw,
-  string.format("bed:%d,table:%d,chair:%d,bedroom:%d,bedroom_free:%d,dining:%d,meeting:%d,pasture:%d,office:%d", hb.bed, hb.table, hb.chair, hb.bedroom, hb.bedroom_free, hb.dining, hb.meeting, hb.pasture, hb.office),
+  string.format("bed:%d,table:%d,chair:%d,bedroom:%d,bedroom_free:%d,dining:%d,meeting:%d,pasture:%d,office:%d,dormitory:%d", hb.bed, hb.table, hb.chair, hb.bedroom, hb.bedroom_free, hb.dining, hb.meeting, hb.pasture, hb.office, hb.dormitory),
   table.concat(cids, ",")))
