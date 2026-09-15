@@ -210,8 +210,10 @@ CALIBRATION = {
     # comfort 1.0, provisioning 0.93; spread 0.003). The teacher's hunger rule now counts
     # food alone - with food+drink it read fifteen barrels as a full larder and starved
     # the fort beside its livestock, which is what the old 0.4217 reference was.
-    # ref 0.716667 with the fish chain (Fishery up by round 7, six buildings; 0.709-0.720)
-    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.260714, "ref": 0.716667},
+    # ref 0.716667 with the fish chain (Fishery up by round 7, six buildings; 0.709-0.720);
+    # 0.722222 on 2026-09-15 with three plots and crops re-picked when their seed runs
+    # out (seven buildings; 0.714-0.725)
+    ("ourfort16-final+bonsai-prep-hungry", 33600): {"noop": 0.260714, "ref": 0.722222},
 }
 
 DEFAULT_SAVE = "bonsaifort2"
